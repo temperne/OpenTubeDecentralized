@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OpenTube Decentralized</title>
-<meta name="description" content="A serverless, peer-to-peer video platform that runs entirely in your browser.">
+<title>OpenTube</title>
+<meta name="description" content="A serverless video platform where every browser is a blockchain node and a video host.">
 <style>
   :root {
     --bg: #0f1115; --panel: #171a21; --panel-2: #1f232c; --border: #2a2f3a;
-    --text: #e8eaf0; --muted: #9aa3b2; --accent: #ff4d5e; --accent-2: #3ea6ff; --ok: #3ecf8e;
+    --text: #e8eaf0; --muted: #9aa3b2; --accent: #ff4d5e; --accent-2: #3ea6ff; --ok: #3ecf8e; --warn: #f5a524;
     --radius: 12px;
   }
   @media (prefers-color-scheme: light) {
@@ -16,593 +16,1073 @@
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-  a { color: var(--accent-2); }
-  header {
-    position: sticky; top: 0; z-index: 10; display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
-    padding: 12px 16px; background: var(--panel); border-bottom: 1px solid var(--border);
-  }
-  .logo { font-weight: 800; font-size: 20px; letter-spacing: -0.5px; cursor: pointer; white-space: nowrap; }
+  a { color: var(--accent-2); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  header { position: sticky; top: 0; z-index: 10; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border); }
+  .logo { font-weight: 800; font-size: 20px; letter-spacing: -0.5px; white-space: nowrap; color: var(--text); }
   .logo span { color: var(--accent); }
-  #search { flex: 1 1 220px; min-width: 0; padding: 9px 14px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel-2); color: var(--text); }
-  nav { display: flex; gap: 8px; flex-wrap: wrap; }
-  button, .btn {
-    font: inherit; cursor: pointer; border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
-    padding: 8px 14px; border-radius: 8px;
-  }
+  nav { display: flex; gap: 6px; flex-wrap: wrap; }
+  nav a { padding: 6px 12px; border-radius: 8px; color: var(--text); }
+  nav a.active { background: var(--panel-2); }
+  .status { margin-left: auto; font-size: 12px; color: var(--muted); display: flex; gap: 12px; flex-wrap: wrap; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 5px; vertical-align: middle; }
+  .dot.on { background: var(--ok); } .dot.busy { background: var(--warn); }
+  button { font: inherit; cursor: pointer; border: 1px solid var(--border); background: var(--panel-2); color: var(--text); padding: 7px 14px; border-radius: 8px; }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.on { border-color: var(--ok); color: var(--ok); }
+  button.small { padding: 3px 9px; font-size: 12px; }
   button:disabled { opacity: .5; cursor: not-allowed; }
   main { max-width: 1200px; margin: 0 auto; padding: 20px 16px 60px; }
-  .status { font-size: 12px; color: var(--muted); display: flex; gap: 14px; flex-wrap: wrap; }
-  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 5px; }
-  .dot.on { background: var(--ok); }
+  h1, h2, h3 { line-height: 1.25; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 18px; }
-  .card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; cursor: pointer; transition: transform .1s; }
-  .card:hover { transform: translateY(-2px); }
-  .thumb { aspect-ratio: 16/9; background: #000 center/cover no-repeat; display: grid; place-items: center; color: #555; font-size: 32px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; cursor: pointer; color: var(--text); display: block; }
+  .card:hover { text-decoration: none; border-color: var(--muted); }
+  .thumb { aspect-ratio: 16/9; background: #000 center/cover no-repeat; display: grid; place-items: center; color: #666; font-size: 32px; }
   .card .meta { padding: 10px 12px; }
   .card h3 { margin: 0 0 4px; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sub { color: var(--muted); font-size: 13px; }
-  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; margin-bottom: 18px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .avatar { width: 56px; height: 56px; border-radius: 50%; background: var(--panel-2) center/cover; flex: none; display: grid; place-items: center; font-weight: 700; font-size: 22px; color: var(--muted); }
+  .avatar.sm { width: 36px; height: 36px; font-size: 15px; }
+  .chan-row { display: flex; gap: 12px; align-items: center; padding: 10px; border-radius: 10px; color: var(--text); }
+  .chan-row:hover { background: var(--panel-2); text-decoration: none; }
+  .fp { font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); }
+  .badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
+  .badge.ok { color: var(--ok); border-color: var(--ok); } .badge.warn { color: var(--warn); border-color: var(--warn); }
   .watch { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 20px; }
   @media (max-width: 900px) { .watch { grid-template-columns: 1fr; } }
   video { width: 100%; aspect-ratio: 16/9; background: #000; border-radius: var(--radius); display: block; }
-  .stats { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--muted); margin: 10px 0; }
-  .bar { height: 4px; background: var(--panel-2); border-radius: 2px; overflow: hidden; }
+  .bar { height: 4px; background: var(--panel-2); border-radius: 2px; overflow: hidden; margin-top: 4px; }
   .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
-  label { display: block; font-weight: 600; margin: 14px 0 6px; }
-  input[type=text], textarea {
-    width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel-2); color: var(--text); font: inherit;
-  }
-  textarea { min-height: 90px; resize: vertical; }
-  .drop { border: 2px dashed var(--border); border-radius: var(--radius); padding: 30px; text-align: center; color: var(--muted); cursor: pointer; }
+  .stats { display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; color: var(--muted); margin: 8px 0; }
+  label { display: block; font-weight: 600; margin: 12px 0 6px; }
+  input[type=text], input[type=search], input[type=number], textarea, select { width: 100%; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel-2); color: var(--text); font: inherit; }
+  textarea { min-height: 80px; resize: vertical; }
+  .drop { border: 2px dashed var(--border); border-radius: var(--radius); padding: 24px; text-align: center; color: var(--muted); cursor: pointer; }
   .drop.over { border-color: var(--accent); color: var(--text); }
-  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-  .comment { border-top: 1px solid var(--border); padding: 10px 0; }
-  .comment b { font-size: 13px; }
-  .comment p { margin: 4px 0 0; white-space: pre-wrap; word-break: break-word; }
-  .desc { white-space: pre-wrap; word-break: break-word; }
-  code.magnet { display: block; font-size: 11px; word-break: break-all; background: var(--panel-2); padding: 8px; border-radius: 6px; color: var(--muted); }
-  .empty { text-align: center; color: var(--muted); padding: 60px 20px; }
-  .hidden { display: none !important; }
-  #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--panel-2); border: 1px solid var(--border); padding: 10px 18px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: calc(100% - 32px); }
+  .item { border-top: 1px solid var(--border); padding: 10px 0; }
+  .item:first-child { border-top: 0; }
+  .item p, .pre { margin: 4px 0 0; white-space: pre-wrap; word-break: break-word; }
+  .hidden-item { opacity: .45; }
+  .empty { text-align: center; color: var(--muted); padding: 40px 20px; }
+  .tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--border); margin: 16px 0; }
+  .tabs a { padding: 8px 14px; color: var(--muted); border-bottom: 2px solid transparent; }
+  .tabs a.active { color: var(--text); border-color: var(--accent); }
+  code, .mono { font-family: ui-monospace, monospace; font-size: 12px; word-break: break-all; }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; font-size: 13px; }
+  .kv div:nth-child(odd) { color: var(--muted); }
+  #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--panel-2); border: 1px solid var(--border); padding: 10px 18px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: calc(100% - 32px); z-index: 20; }
   #toast.show { opacity: 1; }
-  .badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); }
-  .badge.seed { color: var(--ok); border-color: var(--ok); }
+  .hidden { display: none !important; }
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  @media (max-width: 800px) { .split { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
 <header>
-  <div class="logo" id="home">Open<span>Tube</span></div>
-  <input id="search" type="search" placeholder="Search videos…" aria-label="Search videos">
+  <a class="logo" href="#/">Open<span>Tube</span></a>
   <nav>
-    <button class="primary" id="nav-upload">Upload</button>
-    <button id="nav-mine">My videos</button>
-    <button id="nav-settings">Settings</button>
+    <a href="#/" data-nav="home">Feed</a>
+    <a href="#/explore" data-nav="explore">Explore</a>
+    <a href="#/me" data-nav="me">My node</a>
   </nav>
-  <div class="status" style="width:100%">
-    <span><span class="dot" id="dot-db"></span><span id="st-db">Catalog: connecting…</span></span>
-    <span><span class="dot" id="dot-p2p"></span><span id="st-p2p">P2P: starting…</span></span>
-    <span id="st-seed"></span>
+  <div class="status">
+    <span><span class="dot" id="dot-net"></span><span id="st-net">connecting…</span></span>
+    <span><span class="dot" id="dot-chain"></span><span id="st-chain">main chain…</span></span>
+    <span id="st-p2p"></span>
   </div>
 </header>
-
-<main>
-  <!-- Browse -->
-  <section id="view-browse">
-    <div class="grid" id="grid"></div>
-    <div class="empty hidden" id="grid-empty">
-      <p><strong>No videos yet.</strong></p>
-      <p>Be the first: click <b>Upload</b>. Your browser will share the video directly with other viewers — no server required.</p>
-    </div>
-  </section>
-
-  <!-- Watch -->
-  <section id="view-watch" class="hidden">
-    <div class="watch">
-      <div>
-        <video id="player" controls playsinline></video>
-        <div class="bar"><div id="w-progress"></div></div>
-        <div class="stats" id="w-stats"></div>
-        <h2 id="w-title" style="margin:8px 0 4px"></h2>
-        <div class="sub" id="w-sub"></div>
-        <div class="row" style="margin:12px 0">
-          <button id="w-share">Copy share link</button>
-          <button id="w-download" disabled>Download</button>
-          <span class="badge" id="w-badge"></span>
-        </div>
-        <div class="panel"><div class="desc" id="w-desc"></div></div>
-        <h3>Comments</h3>
-        <div class="row">
-          <input type="text" id="c-text" placeholder="Add a comment…" maxlength="1000" style="flex:1">
-          <button id="c-post">Post</button>
-        </div>
-        <div id="comments"></div>
-      </div>
-      <aside>
-        <h3 style="margin-top:0">More videos</h3>
-        <div id="related" style="display:grid;gap:12px"></div>
-      </aside>
-    </div>
-  </section>
-
-  <!-- Upload -->
-  <section id="view-upload" class="hidden">
-    <div class="panel" style="max-width:720px;margin:0 auto">
-      <h2 style="margin-top:0">Publish a video</h2>
-      <p class="sub">Your video is never uploaded to a server. Your browser becomes a seed and streams it peer‑to‑peer (WebRTC / WebTorrent). Other viewers re‑share it while they watch. Keep at least one tab open (yours or a viewer's) so the video stays available.</p>
-      <div class="drop" id="drop">Drop a video file here or click to choose<br><small>MP4 (H.264/AAC) or WebM stream best</small></div>
-      <input type="file" id="file" accept="video/*" class="hidden">
-      <div id="u-preview" class="hidden" style="margin-top:14px">
-        <video id="u-video" controls muted playsinline></video>
-      </div>
-      <label for="u-title">Title</label>
-      <input type="text" id="u-title" maxlength="120">
-      <label for="u-desc">Description</label>
-      <textarea id="u-desc" maxlength="5000"></textarea>
-      <div class="row" style="margin-top:16px">
-        <button class="primary" id="u-publish" disabled>Publish</button>
-        <span class="sub" id="u-status"></span>
-      </div>
-    </div>
-  </section>
-
-  <!-- Settings -->
-  <section id="view-settings" class="hidden">
-    <div class="panel" style="max-width:720px;margin:0 auto">
-      <h2 style="margin-top:0">Settings</h2>
-      <label for="s-name">Display name</label>
-      <input type="text" id="s-name" maxlength="40">
-      <label for="s-relays">Catalog relays (Gun.js peers, one per line)</label>
-      <textarea id="s-relays"></textarea>
-      <p class="sub">Relays only sync the small public catalog (titles, magnet links, comments). Anyone can run one with <code>npx gun</code>. Video data never touches them.</p>
-      <label for="s-trackers">WebTorrent trackers (one per line)</label>
-      <textarea id="s-trackers"></textarea>
-      <p class="sub">Trackers help peers find each other (signaling only).</p>
-      <div class="row" style="margin-top:16px">
-        <button class="primary" id="s-save">Save &amp; reload</button>
-        <button id="s-reset">Reset defaults</button>
-      </div>
-      <h3>Add video by magnet link</h3>
-      <div class="row">
-        <input type="text" id="s-magnet" placeholder="magnet:?xt=urn:btih:…" style="flex:1">
-        <button id="s-open">Watch</button>
-      </div>
-    </div>
-  </section>
-</main>
-
+<main id="app"><div class="empty">Starting node…</div></main>
 <div id="toast"></div>
+<!--
+  ===================================================================== OPENTUBE CORE
+  The blockchain rules. This script touches no DOM or browser storage, so
+  server.mjs extracts this exact block from the HTML and runs it too. Browser
+  nodes and server nodes enforce identical rules from one source.
 
-<script src="https://cdn.jsdelivr.net/npm/gun@0.2020.1240/gun.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/webtorrent@1.9.7/webtorrent.min.js"></script>
-<script>
+  MAIN CHAIN    proof of work, kept by every node. Each block registers
+                channels and lists by embedding their full signed genesis blocks.
+  CHANNEL/LIST  one chain per channel or list, controlled by the owner's key.
+  CHAINS        Blocks form a hash-linked DAG (several parents allowed) so
+                approved commenters can append at the same time. Nothing is
+                ever deleted: "hide" is a signed record that every node honours.
+  ===================================================================== -->
+<script id="opentube-core">
 (() => {
-  'use strict';
+// Changing anything in MAIN_GENESIS creates a different network: its hash is the network ID.
+const MAIN_GENESIS = {
+  v: 1, chain: null, parents: [], height: 0, ts: 1794960000000, author: null, nonce: 0,
+  payload: {
+    type: 'genesis', kind: 'main',
+    name: 'OpenTube Main Chain',
+    difficulty: 18,          // leading zero bits required on main-chain blocks
+    commentDifficulty: 10,   // anti-spam work on blocks written by non-owners
+    maxEntries: 16,          // registrations per main block
+    trackers: [
+      'wss://tracker.openwebtorrent.com',
+      'wss://tracker.webtorrent.dev',
+      'wss://tracker.btorrent.xyz',
+      'wss://tracker.files.fm:7073/announce'
+    ]
+  }
+};
+const LIMITS = { blockBytes: 300000, name: 60, about: 2000, title: 140, text: 5000, comment: 1000, image: 60000, parents: 8, batchBytes: 4000000, orphans: 5000 };
 
-  // ---------- Config ----------
-  const NAMESPACE = 'opentube-decentralized-v1';
-  const DEFAULT_RELAYS = [
-    'https://gun-manhattan.herokuapp.com/gun',
-    'https://peer.wallie.io/gun',
-    'https://gundb-relay-mlccl.ondigitalocean.app/gun'
-  ];
-  const DEFAULT_TRACKERS = [
-    'wss://tracker.openwebtorrent.com',
-    'wss://tracker.webtorrent.dev',
-    'wss://tracker.btorrent.xyz',
-    'wss://tracker.files.fm:7073/announce'
-  ];
-  const store = {
-    get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
-    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+// ---- primitives
+const enc = new TextEncoder();
+const hex = (buf) => Array.from(new Uint8Array(buf), b => b.toString(16).padStart(2, '0')).join('');
+const sha256hex = async (s) => hex(await crypto.subtle.digest('SHA-256', enc.encode(s)));
+// Canonical JSON: sorted keys, so every node hashes identical bytes.
+const canon = (v) => v === null || typeof v !== 'object' ? JSON.stringify(v)
+  : Array.isArray(v) ? '[' + v.map(canon).join(',') + ']'
+  : '{' + Object.keys(v).filter(k => v[k] !== undefined).sort().map(k => JSON.stringify(k) + ':' + canon(v[k])).join(',') + '}';
+const zeroBits = (hexStr) => { let z = 0; for (const c of hexStr) { const n = parseInt(c, 16); if (n === 0) { z += 4; continue; } return z + Math.clz32(n) - 28; } return z; };
+const isStr = (v, max) => typeof v === 'string' && v.length <= max;
+const isImg = (v) => v === '' || (typeof v === 'string' && v.length <= LIMITS.image && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(v));
+const isHex = (v, len) => typeof v === 'string' && v.length === len && /^[0-9a-f]+$/.test(v);
+const isKey = (v) => typeof v === 'string' && /^[A-Za-z0-9_-]{43}$/.test(v);
+const b64u = {
+  enc: (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
+  dec: (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), c => c.charCodeAt(0))
+};
+const ED = { name: 'Ed25519' };
+const pubKeys = new Map();
+async function verify(pub, msg, sig) {
+  try {
+    let k = pubKeys.get(pub);
+    if (!k) { k = await crypto.subtle.importKey('raw', b64u.dec(pub), ED, false, ['verify']); pubKeys.set(pub, k); }
+    return await crypto.subtle.verify(ED, k, b64u.dec(sig), enc.encode(msg));
+  } catch { return false; }
+}
+async function newIdentity() {
+  const kp = await crypto.subtle.generateKey(ED, true, ['sign', 'verify']);
+  return { pub: b64u.enc(await crypto.subtle.exportKey('raw', kp.publicKey)), priv: b64u.enc(await crypto.subtle.exportKey('pkcs8', kp.privateKey)) };
+}
+async function signer(identity) {
+  const key = await crypto.subtle.importKey('pkcs8', b64u.dec(identity.priv), ED, false, ['sign']);
+  return { pub: identity.pub, sign: async (msg) => b64u.enc(await crypto.subtle.sign(ED, key, enc.encode(msg))) };
+}
+
+// ---- blocks: hash = sha256(canon(block minus hash/sig/nonce) + ':' + nonce); sig = Ed25519(author, hash)
+const preimage = (b) => { const { hash, sig, nonce, ...rest } = b; return canon(rest) + ':'; };
+const hashBlock = (b) => sha256hex(preimage(b) + b.nonce);
+
+class Chain {
+  constructor(id, genesis) {
+    this.id = id; this.genesis = genesis;
+    this.blocks = new Map([[id, genesis]]);
+    this.children = new Map();
+    this.heads = new Set([id]);
+    this.orphans = new Map();   // blocks waiting for their parents
+    this.version = 0;           // bumps on every change; used to cache derived state
+  }
+  get owner() { return this.genesis.author; }
+  has(hash) { return this.blocks.has(hash); }
+  ancestors(hashes, into = new Set()) {
+    const stack = [...hashes];
+    while (stack.length) { const x = stack.pop(); if (into.has(x) || !this.blocks.has(x)) continue; into.add(x); stack.push(...this.blocks.get(x).parents); }
+    return into;
+  }
+  add(b) {
+    this.blocks.set(b.hash, b);
+    for (const p of b.parents) { this.heads.delete(p); (this.children.get(p) || this.children.set(p, []).get(p)).push(b.hash); }
+    if (!this.children.has(b.hash)) this.heads.add(b.hash);
+    this.version++;
+  }
+  // Blocks a peer is missing: ancestors of `want` minus ancestors of the peer's `have`.
+  missingFor(want, have) {
+    const exclude = this.ancestors(have.filter(x => this.blocks.has(x)));
+    const out = [...this.ancestors(want.filter(x => this.blocks.has(x)))].filter(x => !exclude.has(x) && x !== this.id).map(x => this.blocks.get(x));
+    out.sort((a, b) => a.height - b.height || a.ts - b.ts);
+    const res = []; let bytes = 0;
+    for (const b of out) { bytes += canon(b).length; if (bytes > LIMITS.batchBytes) break; res.push(b); }
+    return res;
+  }
+}
+
+function validGenesis(g) {
+  if (!g || g.v !== 1 || g.chain !== null || !Array.isArray(g.parents) || g.parents.length || g.height !== 0 || !isKey(g.author)) return false;
+  const p = g.payload;
+  if (!p || p.type !== 'genesis' || !['channel', 'list'].includes(p.kind)) return false;
+  if (!isStr(p.name, LIMITS.name) || !p.name.trim() || !isStr(p.about, LIMITS.about)) return false;
+  if (p.kind === 'channel' && (!isImg(p.avatar) || !['anyone', 'approved', 'off'].includes(p.comments))) return false;
+  return true;
+}
+async function checkSigned(b) {
+  if (!b || typeof b !== 'object' || !isHex(b.hash, 64) || typeof b.sig !== 'string' || !Number.isSafeInteger(b.nonce) || !Number.isSafeInteger(b.ts) || !Number.isSafeInteger(b.height)) return false;
+  if (canon(b).length > LIMITS.blockBytes) return false;
+  if (b.ts > Date.now() + 10 * 60000) return false;
+  if (await hashBlock(b) !== b.hash) return false;
+  return verify(b.author, b.hash, b.sig);
+}
+function validPayload(chain, b, CFG) {
+  const p = b.payload; if (!p || typeof p !== 'object') return false;
+  const owner = b.author === chain.owner;
+  const kind = chain.genesis.payload.kind;
+  if (!owner) {
+    if (kind !== 'channel' || zeroBits(b.hash) < CFG.commentDifficulty) return false;
+    if (p.type === 'comment') return isHex(p.target, 64) && isStr(p.text, LIMITS.comment) && p.text.trim().length > 0 && isStr(p.name ?? '', LIMITS.name);
+    if (p.type === 'hide') return isHex(p.target, 64);
+    return false;
+  }
+  switch (p.type) {
+    case 'video': return kind === 'channel' && isStr(p.title, LIMITS.title) && isStr(p.desc, LIMITS.text) && isHex(p.infohash, 40) && isStr(p.file, 200) && Number.isSafeInteger(p.size) && isImg(p.thumb);
+    case 'post': return isStr(p.text, LIMITS.text) && p.text.trim().length > 0;
+    case 'comment': return isHex(p.target, 64) && isStr(p.text, LIMITS.comment) && p.text.trim().length > 0;
+    case 'hide': return isHex(p.target, 64);
+    case 'allow': case 'revoke': return isKey(p.key);
+    case 'profile': return (p.name === undefined || (isStr(p.name, LIMITS.name) && p.name.trim().length > 0)) && (p.about === undefined || isStr(p.about, LIMITS.about)) && (p.avatar === undefined || isImg(p.avatar)) && (p.comments === undefined || ['anyone', 'approved', 'off'].includes(p.comments));
+    case 'add': return kind === 'list' && isHex(p.target, 64) && isStr(p.note ?? '', LIMITS.about);
+    default: return false;
+  }
+}
+
+// What a channel/list looks like after applying every rule (permissions, hides, profile edits).
+function derive(c) {
+  if (c._derived && c._derived.version === c.version) return c._derived;
+  const owner = c.owner;
+  const blocks = [...c.blocks.values()].filter(b => b.hash !== c.id).sort((a, b) => a.height - b.height || a.ts - b.ts || (a.hash < b.hash ? -1 : 1));
+  const profile = { ...c.genesis.payload };
+  const allowed = new Set(), revokes = [];
+  for (const b of blocks) if (b.author === owner) {
+    const p = b.payload;
+    if (p.type === 'profile') for (const k of ['name', 'about', 'avatar', 'comments']) if (p[k] !== undefined) profile[k] = p[k];
+    if (p.type === 'allow') allowed.add(p.key);
+    if (p.type === 'revoke') { allowed.delete(p.key); revokes.push({ key: p.key, before: c.ancestors([b.hash]) }); }
+  }
+  // A revoke hides everything that user writes except what the owner had already seen when revoking.
+  const permitted = (b) => {
+    if (b.author === owner) return true;
+    if (profile.comments === 'off') return false;
+    if (revokes.some(r => r.key === b.author && !r.before.has(b.hash))) return false;
+    return profile.comments === 'anyone' || allowed.has(b.author);
   };
-  const settings = {
-    name: store.get('ot.name', 'anon-' + Math.random().toString(36).slice(2, 7)),
-    relays: store.get('ot.relays', DEFAULT_RELAYS),
-    trackers: store.get('ot.trackers', DEFAULT_TRACKERS)
-  };
-  store.set('ot.name', settings.name);
-
-  // ---------- Helpers ----------
-  const $ = (id) => document.getElementById(id);
-  const el = (tag, props = {}, ...kids) => {
-    const n = document.createElement(tag);
-    for (const [k, v] of Object.entries(props)) {
-      if (k === 'class') n.className = v;
-      else if (k === 'style') n.style.cssText = v;
-      else if (k.startsWith('on')) n.addEventListener(k.slice(2), v);
-      else n[k] = v;
-    }
-    for (const kid of kids) if (kid != null) n.append(kid);
-    return n;
-  };
-  const toast = (msg) => { const t = $('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), 2600); };
-  const fmtBytes = (b) => { if (!b) return '0 B'; const u = ['B','KB','MB','GB']; const i = Math.min(3, Math.floor(Math.log(b) / Math.log(1024))); return (b / 1024 ** i).toFixed(i ? 1 : 0) + ' ' + u[i]; };
-  const timeAgo = (ts) => {
-    const s = Math.max(1, (Date.now() - ts) / 1000);
-    for (const [n, l] of [[31536000,'year'],[2592000,'month'],[86400,'day'],[3600,'hour'],[60,'minute']]) if (s >= n) { const v = Math.floor(s / n); return `${v} ${l}${v > 1 ? 's' : ''} ago`; }
-    return 'just now';
-  };
-  const str = (v, max) => (typeof v === 'string' ? v : '').slice(0, max);
-  const isHash = (h) => typeof h === 'string' && /^[a-f0-9]{40}$/i.test(h);
-  const safeThumb = (t) => (typeof t === 'string' && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(t) && t.length < 200000) ? t : '';
-  const hashFromMagnet = (m) => { const x = /xt=urn:btih:([a-f0-9]{40})/i.exec(m || ''); return x ? x[1].toLowerCase() : null; };
-  const magnetFor = (hash, name) => 'magnet:?xt=urn:btih:' + hash + (name ? '&dn=' + encodeURIComponent(name) : '') + settings.trackers.map(t => '&tr=' + encodeURIComponent(t)).join('');
-
-  // ---------- Local persistence of your own videos (IndexedDB) ----------
-  // Lets you keep seeding your uploads after a page reload.
-  const idb = (() => {
-    let dbp;
-    const open = () => dbp || (dbp = new Promise((res, rej) => {
-      const r = indexedDB.open('opentube', 1);
-      r.onupgradeneeded = () => r.result.createObjectStore('files', { keyPath: 'hash' });
-      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
-    }));
-    const tx = async (mode, fn) => { const db = await open(); return new Promise((res, rej) => { const t = db.transaction('files', mode); const r = fn(t.objectStore('files')); t.oncomplete = () => res(r && r.result); t.onerror = () => rej(t.error); }); };
-    return {
-      put: (rec) => tx('readwrite', s => s.put(rec)),
-      all: () => tx('readonly', s => s.getAll()),
-      del: (hash) => tx('readwrite', s => s.delete(hash))
-    };
-  })();
-
-  // ---------- Decentralized catalog (Gun.js) ----------
-  const gun = Gun({ peers: settings.relays, localStorage: true });
-  const root = gun.get(NAMESPACE);
-  const videos = new Map(); // hash -> video meta
-
-  let relayUp = false;
-  gun.on('hi', () => { relayUp = true; setStatus(); });
-  gun.on('bye', () => { setStatus(); });
-  setTimeout(setStatus, 4000);
-
-  root.get('videos').map().on((data, key) => {
-    if (!data || !isHash(key)) return;
-    if (data.deleted) { videos.delete(key); scheduleRender(); return; }
-    const v = {
-      hash: key.toLowerCase(),
-      title: str(data.title, 120) || 'Untitled',
-      desc: str(data.desc, 5000),
-      author: str(data.author, 40) || 'anon',
-      name: str(data.name, 200),
-      size: Number(data.size) || 0,
-      ts: Number(data.ts) || 0,
-      thumb: safeThumb(data.thumb)
-    };
-    videos.set(v.hash, v);
-    scheduleRender();
+  const visible = blocks.filter(permitted);
+  const hidden = new Set();
+  for (const b of visible) if (b.payload.type === 'hide') {
+    const t = c.blocks.get(b.payload.target);
+    if (t && (b.author === owner || t.author === b.author)) hidden.add(t.hash);
+  }
+  const live = visible.filter(b => !hidden.has(b.hash));
+  return (c._derived = {
+    version: c.version, id: c.id, kind: c.genesis.payload.kind, owner, profile, allowed, revoked: new Set(revokes.map(r => r.key)), hidden,
+    videos: live.filter(b => b.payload.type === 'video' && b.author === owner).reverse(),
+    posts: live.filter(b => b.payload.type === 'post' && b.author === owner).reverse(),
+    adds: live.filter(b => b.payload.type === 'add' && b.author === owner).reverse(),
+    commentsFor: (target) => visible.filter(b => b.payload.type === 'comment' && b.payload.target === target),
+    canComment: (key) => key === owner || (profile.comments !== 'off' && !revokes.some(r => r.key === key) && (profile.comments === 'anyone' || allowed.has(key))),
+    blockCount: c.blocks.size
   });
+}
 
-  function publishMeta(v) {
-    root.get('videos').get(v.hash).put({
-      title: v.title, desc: v.desc, author: v.author, name: v.name, size: v.size, ts: v.ts, thumb: v.thumb || ''
-    });
-  }
+/* ---- the node engine. Host environments plug in:
+     send(msg, peer?)          deliver a protocol message (no peer = everyone)
+     signer {pub, sign}        this node's identity
+     mine(body, bits, onProg)  -> {promise<nonce>, cancel}
+     shouldMine(genesis)       which pending registrations this node spends work on
+     persist(chainId, block)   store a newly accepted block
+     onBlock(chain, block)     after a block is accepted
+     onChange()                something changed (UI refresh)
+     trackAll                  keep every registered chain (server nodes)
+   Protocol: heads {c,h} | rq {c,w,h} (empty w = "send me your heads") | bk {c,b} | mp {e} */
+async function createEngine(o) {
+  const send = (m, to) => { try { o.send?.(m, to); } catch (e) { console.warn('send', e); } };
+  const changed = () => o.onChange?.();
+  const MAIN_ID = await hashBlock(MAIN_GENESIS);
+  const CFG = MAIN_GENESIS.payload;
+  const main = new Chain(MAIN_ID, { ...MAIN_GENESIS, hash: MAIN_ID });
+  main.best = main.genesis;
+  const chains = new Map([[MAIN_ID, main]]);
+  const mempool = new Map();  // genesis hash -> genesis block awaiting registration
+  const E = { MAIN_ID, CFG, main, chains, mempool, directory: new Map(), miner: null, minedHashes: 0 };
 
-  // ---------- P2P video transport (WebTorrent) ----------
-  if (!WebTorrent.WEBRTC_SUPPORT) toast('Your browser lacks WebRTC — peer-to-peer streaming will not work.');
-  const client = new WebTorrent();
-  client.on('error', (e) => { console.error(e); toast('P2P error: ' + (e.message || e)); });
-  const mySeeds = new Set();
-
-  function setStatus() {
-    $('dot-db').classList.toggle('on', relayUp);
-    $('st-db').textContent = relayUp ? `Catalog: synced (${videos.size} videos)` : `Catalog: offline/local (${videos.size} videos)`;
-    $('dot-p2p').classList.add('on');
-    const peers = client.torrents.reduce((n, t) => n + t.numPeers, 0);
-    $('st-p2p').textContent = `P2P: ${client.torrents.length} torrents · ${peers} peers · ↑ ${fmtBytes(client.uploadSpeed)}/s ↓ ${fmtBytes(client.downloadSpeed)}/s`;
-    $('st-seed').textContent = mySeeds.size ? `Seeding ${mySeeds.size} of your videos` : '';
-  }
-  setInterval(setStatus, 1000);
-
-  function getTorrent(hash) { return client.torrents.find(t => t.infoHash === hash) || null; }
-
-  function seedFile(file) {
-    return new Promise((resolve, reject) => {
-      const existing = client.torrents.find(t => t.files[0] && t.files[0].name === file.name && t.length === file.size && t.done);
-      if (existing) return resolve(existing);
-      try {
-        client.seed(file, { announce: settings.trackers, name: file.name }, (t) => resolve(t));
-      } catch (e) { reject(e); }
-    });
-  }
-
-  async function reseedSaved() {
-    try {
-      const recs = await idb.all();
-      for (const r of recs) {
-        const file = new File([r.blob], r.name, { type: r.type || 'video/mp4' });
-        const t = await seedFile(file);
-        mySeeds.add(t.infoHash);
-        if (t.infoHash !== r.hash) console.warn('Hash mismatch while reseeding', r.hash, t.infoHash);
-        // Re-announce metadata in case the catalog lost it.
-        if (r.meta) publishMeta(r.meta);
-      }
-      if (recs.length) toast(`Re-seeding ${recs.length} saved video(s)`);
-    } catch (e) { console.warn('IndexedDB unavailable', e); }
-  }
-
-  // ---------- Rendering ----------
-  let renderQueued = false;
-  function scheduleRender() { if (renderQueued) return; renderQueued = true; requestAnimationFrame(() => { renderQueued = false; render(); }); }
-
-  function card(v, compact) {
-    const thumb = el('div', { class: 'thumb' });
-    if (v.thumb) thumb.style.backgroundImage = `url("${v.thumb}")`; else thumb.textContent = '▶';
-    const meta = el('div', { class: 'meta' },
-      el('h3', { textContent: v.title, title: v.title }),
-      el('div', { class: 'sub', textContent: `${v.author} · ${v.ts ? timeAgo(v.ts) : ''}${v.size ? ' · ' + fmtBytes(v.size) : ''}` })
-    );
-    if (mySeeds.has(v.hash)) meta.append(el('span', { class: 'badge seed', textContent: 'seeding' }));
-    const c = el('div', { class: 'card', onclick: () => go('watch', v.hash) }, thumb, meta);
-    if (compact) { c.style.display = 'grid'; c.style.gridTemplateColumns = '140px 1fr'; }
+  const headsOf = (c) => c === main ? [main.best.hash] : [...c.heads];
+  const genesisFor = (id) => chains.get(id)?.genesis || E.directory.get(id)?.genesis || mempool.get(id) || null;
+  const announce = (c, to) => send({ t: 'heads', c: c.id, h: headsOf(c) }, to);
+  const requestChain = (c, to) => send({ t: 'rq', c: c.id, w: [], h: headsOf(c) }, to);
+  function openChain(id) {
+    if (chains.has(id)) return chains.get(id);
+    const g = genesisFor(id); if (!g) return null;
+    const c = new Chain(id, g); chains.set(id, c);
     return c;
   }
 
-  function sortedVideos(filter) {
-    const q = ($('search').value || '').trim().toLowerCase();
-    return [...videos.values()]
-      .filter(v => !q || (v.title + ' ' + v.desc + ' ' + v.author).toLowerCase().includes(q))
-      .filter(filter || (() => true))
-      .sort((a, b) => b.ts - a.ts);
+  // ---- main chain: proof of work; the highest chain wins (ties: lowest tip hash)
+  async function validMainBlock(b) {
+    if (b.parents.length !== 1 || zeroBits(b.hash) < CFG.difficulty) return false;
+    const p = b.payload;
+    if (!p || p.type !== 'register' || !Array.isArray(p.entries) || !p.entries.length || p.entries.length > CFG.maxEntries) return false;
+    for (const g of p.entries) if (!validGenesis(g) || !(await checkSigned(g))) return false;
+    return true;
+  }
+  function rebuildDirectory() {
+    const path = [];
+    for (let b = main.best; b && b.hash !== MAIN_ID; b = main.blocks.get(b.parents[0])) path.push(b);
+    const d = new Map();
+    for (const b of path.reverse()) for (const g of b.payload.entries) if (!d.has(g.hash)) d.set(g.hash, { genesis: g, height: b.height, ts: b.ts });
+    E.directory = d;
+    // Registrations knocked out by a reorg go back to the mempool.
+    for (const blk of main.blocks.values()) for (const g of blk.payload?.entries || []) if (!d.has(g.hash)) mempool.set(g.hash, g);
+    for (const id of d.keys()) mempool.delete(id);
+    if (o.trackAll) for (const id of d.keys()) if (!chains.has(id)) requestChain(openChain(id));
+  }
+  function onMainBlock(b) {
+    const best = main.best;
+    if (b.height > best.height || (b.height === best.height && b.hash < best.hash)) {
+      main.best = b;
+      rebuildDirectory();
+      if (E.miner && E.miner.tip !== main.best.hash) { E.miner.job.cancel(); E.miner = null; }
+      maybeMine();
+    }
+  }
+  function maybeMine() {
+    if (E.miner || !o.mine) return;
+    const pending = [...mempool.values()].filter(g => !E.directory.has(g.hash));
+    const shouldMine = o.shouldMine || ((g) => g.author === o.signer.pub);
+    if (!pending.some(shouldMine)) return;
+    const entries = pending.sort((a, b) => shouldMine(b) - shouldMine(a)).slice(0, CFG.maxEntries);
+    const tip = main.best;
+    const body = { v: 1, chain: MAIN_ID, parents: [tip.hash], height: tip.height + 1, ts: Date.now(), author: o.signer.pub, payload: { type: 'register', entries }, nonce: 0 };
+    E.minedHashes = 0;
+    const job = o.mine(body, CFG.difficulty, (n) => { E.minedHashes = n; });
+    E.miner = { tip: tip.hash, job };
+    changed();
+    job.promise.then(async (nonce) => {
+      if (E.miner?.job !== job) return;
+      body.nonce = nonce; body.hash = await hashBlock(body); body.sig = await o.signer.sign(body.hash);
+      E.miner = null;
+      await insert(MAIN_ID, [body]);
+      if (!main.has(body.hash)) { console.warn('mined block was rejected; not retrying', body); return changed(); }
+      maybeMine();
+    }).catch((e) => { console.warn('mining', e); if (E.miner?.job === job) E.miner = null; });
   }
 
-  let view = 'browse', viewArg = null, mineOnly = false;
-  function render() {
-    setStatus();
-    if (view === 'browse') {
-      const list = sortedVideos(mineOnly ? (v => mySeeds.has(v.hash)) : null);
-      $('grid').replaceChildren(...list.map(v => card(v)));
-      $('grid-empty').classList.toggle('hidden', list.length > 0);
-    } else if (view === 'watch') {
-      const v = videos.get(viewArg);
-      if (v) {
-        $('w-title').textContent = v.title;
-        $('w-sub').textContent = `${v.author} · ${v.ts ? timeAgo(v.ts) : ''}${v.size ? ' · ' + fmtBytes(v.size) : ''}`;
-        $('w-desc').textContent = v.desc || 'No description.';
+  // ---- insertion, serialized so validation always sees a consistent store
+  let queue = Promise.resolve();
+  const insert = (chainId, blocks, from, persist = true) => (queue = queue.then(() => doInsert(chainId, blocks, from, persist)).catch(e => console.warn('insert', e)));
+  async function doInsert(chainId, blocks, from, persist) {
+    const chain = chains.get(chainId); if (!chain || !Array.isArray(blocks)) return;
+    let added = false;
+    const todo = blocks.filter(b => b && typeof b === 'object').sort((a, b) => (a.height ?? 0) - (b.height ?? 0));
+    const missing = new Set();
+    while (todo.length) {
+      const b = todo.shift();
+      if (chain.has(b.hash) || b.chain !== chainId || !Array.isArray(b.parents) || !b.parents.length || b.parents.length > LIMITS.parents || !b.parents.every(p => isHex(p, 64))) continue;
+      const absent = b.parents.filter(p => !chain.has(p));
+      if (absent.length) {
+        if (chain.orphans.size < LIMITS.orphans && isHex(b.hash, 64)) chain.orphans.set(b.hash, b);
+        absent.forEach(p => missing.add(p)); continue;
       }
-      $('related').replaceChildren(...sortedVideos(x => x.hash !== viewArg).slice(0, 12).map(x => card(x, true)));
+      if (b.height !== Math.max(...b.parents.map(p => chain.blocks.get(p).height)) + 1) continue;
+      if (!(await checkSigned(b))) continue;
+      if (chain === main ? !(await validMainBlock(b)) : !validPayload(chain, b, CFG)) continue;
+      chain.add(b); chain.orphans.delete(b.hash); added = true;
+      if (persist) o.persist?.(chainId, b);
+      for (const [oh, ob] of chain.orphans) if (ob.parents.includes(b.hash)) { chain.orphans.delete(oh); todo.push(ob); }
+      if (chain === main) onMainBlock(b);
+      o.onBlock?.(chain, b);
+    }
+    for (const m of missing) if (chain.has(m)) missing.delete(m);
+    if (missing.size) send({ t: 'rq', c: chainId, w: [...missing].slice(0, 64), h: headsOf(chain) }, from);
+    if (added) { announce(chain); changed(); }
+  }
+
+  async function addToMempool(g) {
+    if (!g || mempool.has(g.hash) || E.directory.has(g.hash) || !validGenesis(g) || !(await checkSigned(g))) return false;
+    mempool.set(g.hash, g); return true;
+  }
+
+  // ---- protocol
+  async function handle(m, from) {
+    if (!m || typeof m !== 'object' || typeof m.t !== 'string') return;
+    const chain = typeof m.c === 'string' ? chains.get(m.c) : null;
+    if (m.t === 'heads' && chain && Array.isArray(m.h)) {
+      const w = m.h.filter(x => isHex(x, 64) && !chain.has(x) && !chain.orphans.has(x)).slice(0, 64);
+      if (w.length) send({ t: 'rq', c: chain.id, w, h: headsOf(chain) }, from);
+    } else if (m.t === 'rq' && chain && Array.isArray(m.w) && Array.isArray(m.h)) {
+      if (!m.w.length) return announce(chain, from);
+      const blocks = chain.missingFor(m.w.slice(0, 64), m.h.slice(0, 64));
+      if (blocks.length) send({ t: 'bk', c: chain.id, b: blocks }, from);
+    } else if (m.t === 'bk' && chain && Array.isArray(m.b)) {
+      insert(chain.id, m.b.slice(0, 5000), from);
+    } else if (m.t === 'mp' && Array.isArray(m.e)) {
+      let any = false;
+      for (const g of m.e.slice(0, 64)) if (await addToMempool(g)) any = true;
+      if (any) { maybeMine(); changed(); }
     }
   }
-
-  // ---------- Routing ----------
-  function go(name, arg) {
-    const hash = name === 'browse' ? '' : name === 'watch' ? '#watch=' + arg : '#' + name;
-    if (location.hash !== hash) history.pushState(null, '', hash || location.pathname + location.search);
-    route();
+  function peerJoined(peer) {
+    for (const c of chains.values()) announce(c, peer);
+    if (mempool.size) send({ t: 'mp', e: [...mempool.values()] }, peer);
   }
-  let lastRoute = null;
-  function route() {
-    const h = location.hash.slice(1);
-    if (h === lastRoute && view === 'watch') return; // popstate + hashchange can both fire
-    lastRoute = h;
-    const params = new URLSearchParams(h);
-    let name = 'browse', arg = null;
-    if (params.has('watch')) { name = 'watch'; arg = params.get('watch'); }
-    else if (['upload', 'settings', 'mine'].includes(h)) name = h;
-    mineOnly = name === 'mine';
-    if (name === 'mine') name = 'browse';
-    for (const s of ['browse', 'watch', 'upload', 'settings']) $('view-' + s).classList.toggle('hidden', s !== name);
-    if (view === 'watch' && (name !== 'watch' || arg !== viewArg)) stopWatching();
-    view = name; viewArg = arg;
-    if (name === 'watch') startWatching(arg, params);
-    if (name === 'settings') fillSettings();
-    render();
-    window.scrollTo(0, 0);
-  }
-  window.addEventListener('popstate', route);
-  window.addEventListener('hashchange', route);
-
-  // ---------- Watch ----------
-  let watchTimer = null, watchCommentsRef = null, watchTorrent = null;
-  function stopWatching() {
-    clearInterval(watchTimer); watchTimer = null;
-    if (watchCommentsRef) { watchCommentsRef.off(); watchCommentsRef = null; }
-    const p = $('player'); p.pause(); p.removeAttribute('src'); p.load();
-    // Keep torrents we seed; drop torrents we were only watching to save memory.
-    if (watchTorrent && !mySeeds.has(watchTorrent.infoHash)) watchTorrent.destroy();
-    watchTorrent = null;
+  function gossip() {
+    for (const c of chains.values()) announce(c);
+    if (mempool.size) send({ t: 'mp', e: [...mempool.values()] });
   }
 
-  function startWatching(arg, params) {
-    let hash = isHash(arg) ? arg.toLowerCase() : hashFromMagnet(arg);
-    if (!hash) { $('w-title').textContent = 'Invalid video link'; return; }
-    viewArg = hash;
-    // A share link may carry metadata so it works even if the catalog hasn't synced.
-    if (!videos.has(hash) && params.get('t')) {
-      videos.set(hash, { hash, title: str(params.get('t'), 120), desc: '', author: str(params.get('a'), 40) || 'anon', name: '', size: 0, ts: 0, thumb: '' });
-    }
-    $('w-title').textContent = 'Loading…'; $('w-sub').textContent = ''; $('w-desc').textContent = '';
-    $('w-progress').style.width = '0';
-    $('w-download').disabled = true;
-    $('comments').replaceChildren();
-
-    const v = videos.get(hash);
-    const magnet = magnetFor(hash, v && v.name);
-    const onTorrent = (t) => {
-      watchTorrent = t;
-      const file = t.files.find(f => /\.(mp4|m4v|webm|mkv|mov|ogv)$/i.test(f.name)) || t.files.reduce((a, b) => a.length > b.length ? a : b);
-      const player = $('player');
-      try {
-        file.renderTo(player, { autoplay: true, controls: true }, (err) => {
-          if (err) fallbackBlob(file, player);
-        });
-      } catch { fallbackBlob(file, player); }
-      $('w-download').disabled = false;
-      $('w-download').onclick = () => file.getBlobURL((err, url) => {
-        if (err) return toast('Download not ready: ' + err.message);
-        el('a', { href: url, download: file.name }).click();
-      });
-    };
-    const existing = getTorrent(hash);
-    if (existing) {
-      if (existing.ready) onTorrent(existing); else existing.once('ready', () => onTorrent(existing));
-    } else {
-      const t = client.add(magnet, { announce: settings.trackers });
-      t.once('ready', () => onTorrent(t));
-      watchTorrent = t;
-    }
-
-    watchTimer = setInterval(() => {
-      const t = getTorrent(hash);
-      if (!t) return;
-      $('w-progress').style.width = (t.progress * 100).toFixed(1) + '%';
-      const seeding = mySeeds.has(hash);
-      $('w-badge').textContent = seeding ? 'You are seeding this' : t.done ? 'Downloaded · sharing with others' : 'Streaming from peers';
-      $('w-badge').className = 'badge' + (seeding || t.done ? ' seed' : '');
-      $('w-stats').replaceChildren(
-        el('span', { textContent: `${(t.progress * 100).toFixed(1)}%` }),
-        el('span', { textContent: `${t.numPeers} peer${t.numPeers === 1 ? '' : 's'}` }),
-        el('span', { textContent: `↓ ${fmtBytes(t.downloadSpeed)}/s` }),
-        el('span', { textContent: `↑ ${fmtBytes(t.uploadSpeed)}/s` }),
-        !t.ready ? el('span', { textContent: 'Finding peers… (someone who has this video must be online)' }) : null
-      );
-    }, 500);
-
-    // Comments
-    const seen = new Set();
-    watchCommentsRef = root.get('comments').get(hash);
-    watchCommentsRef.map().on((c, id) => {
-      if (!c || seen.has(id) || typeof c.text !== 'string') return;
-      seen.add(id);
-      const node = el('div', { class: 'comment' },
-        el('b', { textContent: str(c.author, 40) || 'anon' }),
-        el('span', { class: 'sub', textContent: ' · ' + (c.ts ? timeAgo(Number(c.ts)) : '') }),
-        el('p', { textContent: str(c.text, 1000) })
-      );
-      node.dataset.ts = Number(c.ts) || 0;
-      const list = $('comments');
-      const after = [...list.children].find(x => Number(x.dataset.ts) < node.dataset.ts);
-      list.insertBefore(node, after || null);
-    });
+  // ---- writing
+  async function makeBlock({ chain, parents, height, payload, pow = 0, onProgress }) {
+    const body = { v: 1, chain, parents, height, ts: Date.now(), author: o.signer.pub, payload, nonce: 0 };
+    if (pow) body.nonce = await o.mine(body, pow, onProgress).promise;
+    body.hash = await hashBlock(body);
+    body.sig = await o.signer.sign(body.hash);
+    return body;
+  }
+  async function append(chainId, payload, onProgress) {
+    const c = chains.get(chainId);
+    const parents = [...c.heads].slice(0, LIMITS.parents);
+    const height = Math.max(...parents.map(p => c.blocks.get(p).height)) + 1;
+    const pow = c.owner === o.signer.pub ? 0 : CFG.commentDifficulty;
+    const b = await makeBlock({ chain: chainId, parents, height, payload, pow, onProgress });
+    await insert(chainId, [b]);
+    return b;
+  }
+  async function createGenesis(payload) {
+    const g = await makeBlock({ chain: null, parents: [], height: 0, payload });
+    if (!validGenesis(g)) throw new Error('invalid channel data');
+    mempool.set(g.hash, g);
+    openChain(g.hash);
+    send({ t: 'mp', e: [g] });
+    maybeMine(); changed();
+    return g;
   }
 
-  function fallbackBlob(file, player) {
-    $('w-stats').append(el('span', { textContent: 'This format can\'t stream progressively — playing once fully downloaded…' }));
-    file.getBlobURL((err, url) => { if (!err) { player.src = url; player.play().catch(() => {}); } });
-  }
-
-  $('c-post').onclick = () => {
-    const text = $('c-text').value.trim();
-    if (!text || !watchCommentsRef) return;
-    watchCommentsRef.set({ text: text.slice(0, 1000), author: settings.name, ts: Date.now() });
-    $('c-text').value = '';
-  };
-  $('c-text').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('c-post').click(); });
-
-  $('w-share').onclick = async () => {
-    const v = videos.get(viewArg);
-    const url = location.origin + location.pathname + '#watch=' + viewArg + (v ? '&t=' + encodeURIComponent(v.title) + '&a=' + encodeURIComponent(v.author) : '');
-    try { await navigator.clipboard.writeText(url); toast('Share link copied'); }
-    catch { prompt('Copy this link:', url); }
-  };
-
-  // ---------- Upload ----------
-  let pendingFile = null, pendingThumb = '';
-  const drop = $('drop');
-  drop.onclick = () => $('file').click();
-  drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
-  drop.addEventListener('dragleave', () => drop.classList.remove('over'));
-  drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('over'); if (e.dataTransfer.files[0]) pickFile(e.dataTransfer.files[0]); });
-  $('file').onchange = (e) => { if (e.target.files[0]) pickFile(e.target.files[0]); };
-
-  function pickFile(file) {
-    if (!file.type.startsWith('video/') && !/\.(mp4|m4v|webm|mkv|mov|ogv)$/i.test(file.name)) return toast('Please choose a video file');
-    pendingFile = file; pendingThumb = '';
-    drop.textContent = `${file.name} (${fmtBytes(file.size)})`;
-    if (!$('u-title').value) $('u-title').value = file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ');
-    const v = $('u-video');
-    v.src = URL.createObjectURL(file);
-    $('u-preview').classList.remove('hidden');
-    v.onloadeddata = () => { v.currentTime = Math.min(1, (v.duration || 2) / 2); };
-    v.onseeked = () => { if (!pendingThumb) pendingThumb = makeThumb(v); };
-    $('u-publish').disabled = false;
-  }
-
-  function makeThumb(video) {
-    try {
-      const c = document.createElement('canvas');
-      c.width = 320; c.height = 180;
-      const ctx = c.getContext('2d');
-      ctx.fillStyle = '#000'; ctx.fillRect(0, 0, 320, 180);
-      const r = Math.min(320 / video.videoWidth, 180 / video.videoHeight);
-      const w = video.videoWidth * r, h = video.videoHeight * r;
-      ctx.drawImage(video, (320 - w) / 2, (180 - h) / 2, w, h);
-      return c.toDataURL('image/jpeg', 0.7);
-    } catch { return ''; }
-  }
-
-  $('u-publish').onclick = async () => {
-    if (!pendingFile) return;
-    const title = $('u-title').value.trim();
-    if (!title) return toast('Please add a title');
-    $('u-publish').disabled = true;
-    $('u-status').textContent = 'Hashing & seeding…';
-    try {
-      if (!pendingThumb) pendingThumb = makeThumb($('u-video'));
-      const t = await seedFile(pendingFile);
-      mySeeds.add(t.infoHash);
-      const meta = {
-        hash: t.infoHash, title, desc: $('u-desc').value.trim(), author: settings.name,
-        name: pendingFile.name, size: pendingFile.size, ts: Date.now(), thumb: pendingThumb
-      };
-      videos.set(meta.hash, meta);
-      publishMeta(meta);
-      idb.put({ hash: meta.hash, name: pendingFile.name, type: pendingFile.type, blob: pendingFile, meta })
-        .catch(e => console.warn('Could not persist file for re-seeding', e));
-      $('u-status').textContent = '';
-      toast('Published! Keep this tab open so others can stream it.');
-      resetUpload();
-      go('watch', meta.hash);
-    } catch (e) {
-      console.error(e);
-      $('u-status').textContent = 'Failed: ' + (e.message || e);
-      $('u-publish').disabled = false;
-    }
-  };
-
-  function resetUpload() {
-    pendingFile = null; pendingThumb = '';
-    $('u-title').value = ''; $('u-desc').value = '';
-    $('u-preview').classList.add('hidden'); $('u-video').removeAttribute('src');
-    drop.textContent = 'Drop a video file here or click to choose';
-    $('u-publish').disabled = true; $('file').value = '';
-  }
-
-  // ---------- Settings ----------
-  function fillSettings() {
-    $('s-name').value = settings.name;
-    $('s-relays').value = settings.relays.join('\n');
-    $('s-trackers').value = settings.trackers.join('\n');
-  }
-  const lines = (s) => s.split('\n').map(x => x.trim()).filter(Boolean);
-  $('s-save').onclick = () => {
-    store.set('ot.name', $('s-name').value.trim().slice(0, 40) || settings.name);
-    store.set('ot.relays', lines($('s-relays').value));
-    store.set('ot.trackers', lines($('s-trackers').value));
-    location.hash = ''; location.reload();
-  };
-  $('s-reset').onclick = () => { settings.relays = DEFAULT_RELAYS; settings.trackers = DEFAULT_TRACKERS; fillSettings(); };
-  $('s-open').onclick = () => {
-    const h = hashFromMagnet($('s-magnet').value);
-    if (!h) return toast('That is not a valid magnet link');
-    go('watch', h);
-  };
-
-  // ---------- Nav ----------
-  $('home').onclick = () => go('browse');
-  $('nav-upload').onclick = () => go('upload');
-  $('nav-mine').onclick = () => go('mine');
-  $('nav-settings').onclick = () => go('settings');
-  $('search').addEventListener('input', () => { if (view !== 'browse') go('browse'); scheduleRender(); });
-
-  window.addEventListener('beforeunload', (e) => {
-    if (mySeeds.size && !client.torrents.every(t => t.numPeers === 0)) { e.preventDefault(); e.returnValue = ''; }
+  return Object.assign(E, {
+    insert, handle, peerJoined, gossip, announce, requestChain, openChain, genesisFor, headsOf, append, createGenesis, addToMempool, maybeMine,
+    derive: (id) => chains.has(id) ? derive(chains.get(id)) : null,
+    send
   });
+}
 
-  reseedSaved();
-  route();
+globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine };
 })();
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/webtorrent@1.9.7/webtorrent.min.js"></script>
+<script type="module">
+// ===================================================================== BROWSER NODE
+const { LIMITS, isHex, isKey, b64u, preimage, newIdentity, signer: makeSigner, createEngine } = globalThis.OpenTubeCore;
+
+// ---------------------------------------------------------------- helpers
+const $ = (s, r = document) => r.querySelector(s);
+const h = (tag, props = {}, ...kids) => {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(props || {})) {
+    if (v == null || v === false) continue;
+    if (k === 'class') n.className = v;
+    else if (k === 'style') n.style.cssText = v;
+    else if (k.startsWith('on')) n.addEventListener(k.slice(2), v);
+    else if (k in n && typeof n[k] !== 'function') n[k] = v;
+    else n.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) if (kid != null && kid !== false) n.append(kid);
+  return n;
+};
+const toast = (m) => { const t = $('#toast'); t.textContent = m; t.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 3000); };
+const fmtBytes = (b) => { if (!b) return '0 B'; const u = ['B','KB','MB','GB','TB']; const i = Math.min(4, Math.floor(Math.log(b) / Math.log(1024))); return (b / 1024 ** i).toFixed(i ? 1 : 0) + ' ' + u[i]; };
+const ago = (ts) => { const s = Math.max(1, (Date.now() - ts) / 1000); for (const [n, l] of [[31536000,'y'],[2592000,'mo'],[86400,'d'],[3600,'h'],[60,'m']]) if (s >= n) return Math.floor(s / n) + l + ' ago'; return 'just now'; };
+const fp = (key) => key ? key.slice(0, 6) : '??????';
+const params = new URLSearchParams(location.search);
+let renderQueued = false, uiReady = false;
+function scheduleRender() { if (!uiReady || renderQueued) return; renderQueued = true; requestAnimationFrame(() => { renderQueued = false; render(); }); }
+
+// ---------------------------------------------------------------- storage (IndexedDB)
+const db = await new Promise((res, rej) => {
+  const r = indexedDB.open('opentube-chain', 1);
+  r.onupgradeneeded = () => {
+    const d = r.result;
+    d.createObjectStore('blocks', { keyPath: 'hash' }).createIndex('chain', 'chainId');
+    d.createObjectStore('kv');
+    d.createObjectStore('files', { keyPath: 'infohash' });
+  };
+  r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+});
+const idb = (store, mode, fn) => new Promise((res, rej) => { const t = db.transaction(store, mode); const r = fn(t.objectStore(store)); t.oncomplete = () => res(r?.result); t.onerror = () => rej(t.error); });
+const kv = { get: (k) => idb('kv', 'readonly', s => s.get(k)), set: (k, v) => idb('kv', 'readwrite', s => s.put(v, k)) };
+
+// ---------------------------------------------------------------- identity (Ed25519 via WebCrypto)
+let identity, me;
+try {
+  identity = await kv.get('identity');
+  if (!identity) { identity = await newIdentity(); await kv.set('identity', identity); }
+  me = await makeSigner(identity);
+} catch (e) {
+  $('#app').replaceChildren(h('div', { class: 'empty' }, 'This browser does not support Ed25519 signatures (needed for the blockchain). Please use a current Chrome, Edge, Firefox or Safari.'));
+  throw e;
+}
+const settings = Object.assign({ name: 'viewer-' + fp(me.pub), hostCapGB: 5 }, await kv.get('settings'));
+const saveSettings = () => kv.set('settings', settings);
+const subs = Object.assign({}, await kv.get('subs'));            // chainId -> 'sub' | 'join'
+const saveSubs = () => kv.set('subs', subs);
+
+// ---------------------------------------------------------------- proof of work in a Web Worker
+const workerUrl = URL.createObjectURL(new Blob([`
+  const enc = new TextEncoder();
+  const lz = (d) => { let z = 0; for (const b of d) { if (b === 0) { z += 8; continue; } return z + Math.clz32(b) - 24; } return z; };
+  self.onmessage = async (e) => {
+    const { prefix, bits } = e.data; let n = Math.floor(Math.random() * 1e9), count = 0;
+    for (;;) {
+      for (let i = 0; i < 1000; i++, n++) {
+        const d = new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(prefix + n)));
+        if (lz(d) >= bits) { self.postMessage({ nonce: n, count: count + i + 1 }); return; }
+      }
+      count += 1000; self.postMessage({ count });
+    }
+  };`], { type: 'text/javascript' }));
+function mine(body, bits, onProgress) {
+  const w = new Worker(workerUrl);
+  const promise = new Promise((res, rej) => {
+    w.onmessage = (e) => { if (e.data.nonce != null) { w.terminate(); res(e.data.nonce); } else onProgress?.(e.data.count); };
+    w.onerror = (e) => { w.terminate(); rej(e); };
+  });
+  w.postMessage({ prefix: preimage(body), bits });
+  return { promise, cancel: () => w.terminate() };
+}
+
+// ---------------------------------------------------------------- networking
+// 1. The node on the host that served this page (wss://<host>/ot), or ?node=<url>.
+// 2. Otherwise, direct browser-to-browser WebRTC via Trystero (public trackers for discovery).
+// ?net=local makes tabs of one browser talk via BroadcastChannel (development).
+const net = {
+  mode: 'starting', peers: new Set(), send: () => {},
+  status() { return this.mode === 'home' ? 'home node' : this.mode === 'p2p' ? `P2P · ${this.peers.size} peer${this.peers.size === 1 ? '' : 's'}` : this.mode === 'local' ? `local · ${this.peers.size} tabs` : 'connecting…'; },
+  online() { return this.mode === 'home' || this.peers.size > 0; }
+};
+let engine;  // assigned below; the transports only deliver into it once it exists
+const deliver = (m, from) => engine?.handle(m, from);
+const joined = (pid) => { net.peers.add(pid); engine?.peerJoined(pid); scheduleRender(); };
+const left = (pid) => { net.peers.delete(pid); scheduleRender(); };
+
+function homeNodeUrl() {
+  if (params.get('node')) return params.get('node');
+  if (!/^https?:$/.test(location.protocol)) return null;
+  return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ot';
+}
+function connectHome(url) {
+  return new Promise((resolve) => {
+    let ws, settled = false, opened = false;
+    try { ws = new WebSocket(url); } catch { return resolve(false); }
+    const fail = () => { if (!settled) { settled = true; resolve(false); } };
+    const timer = setTimeout(() => { fail(); ws.close(); }, 4000);
+    ws.onopen = () => {
+      clearTimeout(timer); settled = true; opened = true;
+      net.mode = 'home';
+      net.send = (m) => ws.readyState === 1 && ws.send(JSON.stringify(m));  // the home node relays to everyone
+      joined('home');
+      resolve(true);
+    };
+    ws.onmessage = (e) => { try { deliver(JSON.parse(e.data), 'home'); } catch {} };
+    ws.onerror = fail;
+    ws.onclose = () => {
+      clearTimeout(timer);
+      if (!opened) return fail();
+      left('home');
+      // Try to get the home node back; fall back to P2P if it stays away.
+      net.mode = 'starting';
+      setTimeout(async () => { if (!(await connectHome(url))) startP2P(); }, 2000);
+    };
+  });
+}
+function startLocal() {
+  net.mode = 'local';
+  const id = Math.random().toString(36).slice(2), bc = new BroadcastChannel('opentube-local');
+  bc.onmessage = (e) => {
+    const { from, to, data, hello } = e.data;
+    if (from === id || (to && to !== id)) return;
+    if (!net.peers.has(from)) { bc.postMessage({ from: id, to: from, hello: 1 }); joined(from); }
+    if (!hello) deliver(data, from);
+  };
+  net.send = (data, to) => bc.postMessage({ from: id, to: to || null, data });
+  bc.postMessage({ from: id, hello: 1 });
+}
+let p2pStarted = false;
+async function startP2P() {
+  if (p2pStarted) { net.mode = 'p2p'; return; }
+  p2pStarted = true; net.mode = 'p2p';
+  const { joinRoom } = await import('https://cdn.jsdelivr.net/npm/@trystero-p2p/torrent@0.26.0/+esm');
+  const room = joinRoom({ appId: 'opentube-' + engine.MAIN_ID.slice(0, 16), relayConfig: { urls: TRACKERS }, maxReceiveBytes: 16 * 1024 ** 2 }, 'opentube/' + engine.MAIN_ID.slice(0, 32));
+  const action = room.makeAction('ot', { onMessage: (data, ctx) => deliver(data, ctx.peerId) });
+  room.onPeerJoin = joined;
+  room.onPeerLeave = left;
+  net.send = (data, to) => action.send(data, to ? { target: to } : undefined).catch(() => {});
+}
+
+// ---------------------------------------------------------------- engine
+const fetching = new Set();
+engine = await createEngine({
+  signer: me,
+  mine,
+  send: (m, to) => net.send(m, to),
+  persist: (chainId, b) => idb('blocks', 'readwrite', s => s.put({ hash: b.hash, chainId, block: b })).catch(() => {}),
+  onBlock: (chain, b) => { if (subs[chain.id] === 'join' && b.payload.type === 'video' && b.author === chain.owner) hostVideo(chain.id, b.payload); },
+  onChange: () => scheduleRender()
+});
+const E = engine;
+const { main, chains, mempool, CFG, MAIN_ID, openChain, genesisFor, headsOf, append } = E;
+const derive = (id) => E.derive(id);
+const TRACKERS = params.get('trackers') ? params.get('trackers').split(',') : CFG.trackers;
+
+// ---------------------------------------------------------------- video transport (WebTorrent)
+const wt = new WebTorrent();
+wt.on('error', (e) => console.warn('webtorrent', e));
+const magnet = (infohash, name) => 'magnet:?xt=urn:btih:' + infohash + (name ? '&dn=' + encodeURIComponent(name) : '') + TRACKERS.map(t => '&tr=' + encodeURIComponent(t)).join('');
+const hosting = new Map();  // infohash -> { chain, size }
+const getTorrent = (ih) => wt.torrents.find(t => t.infoHash === ih) || null;
+
+function seedBlob(blob, name) {
+  return new Promise((res) => {
+    const file = blob instanceof File ? blob : new File([blob], name, { type: blob.type });
+    const existing = wt.torrents.find(t => t.name === name && t.length === file.size && t.done);
+    if (existing) return res(existing);
+    wt.seed(file, { announce: TRACKERS, name }, res);
+  });
+}
+async function storeFile(infohash, chain, name, type, blob) {
+  await idb('files', 'readwrite', s => s.put({ infohash, chain, name, type, size: blob.size, blob, ts: Date.now() }));
+  hosting.set(infohash, { chain, size: blob.size });
+  await enforceCap(chain);
+}
+async function enforceCap(chain) {
+  if (chains.get(chain)?.owner === me.pub) return;  // never evict your own uploads
+  const files = (await idb('files', 'readonly', s => s.getAll())).filter(f => f.chain === chain).sort((a, b) => b.ts - a.ts);
+  let total = 0;
+  for (const f of files) {
+    total += f.size;
+    if (total > settings.hostCapGB * 1024 ** 3) {
+      await idb('files', 'readwrite', s => s.delete(f.infohash));
+      hosting.delete(f.infohash); getTorrent(f.infohash)?.destroy();
+    }
+  }
+}
+async function reseedAll() {
+  const files = await idb('files', 'readonly', s => s.getAll());
+  for (const f of files) { hosting.set(f.infohash, { chain: f.chain, size: f.size }); seedBlob(new File([f.blob], f.name, { type: f.type }), f.name); }
+}
+// Join = host: download every video a joined channel posts, then seed it.
+function hostVideo(chainId, v) {
+  if (hosting.has(v.infohash) || fetching.has(v.infohash)) return;
+  fetching.add(v.infohash);
+  const go = (t) => {
+    const done = () => t.files[0].getBlob((err, blob) => {
+      fetching.delete(v.infohash);
+      if (!err) storeFile(v.infohash, chainId, v.file, blob.type || 'video/mp4', blob).then(scheduleRender);
+    });
+    t.done ? done() : t.once('done', done);
+  };
+  const t = getTorrent(v.infohash) || wt.add(magnet(v.infohash, v.file), { announce: TRACKERS });
+  t.ready ? go(t) : t.once('ready', () => go(t));
+}
+function hostJoined(chainId) { const d = derive(chainId); if (d) for (const v of d.videos) hostVideo(chainId, v.payload); }
+
+// ---------------------------------------------------------------- startup: load stored blocks, then connect
+{
+  const rows = await idb('blocks', 'readonly', s => s.getAll());
+  const byChain = new Map();
+  for (const r of rows) (byChain.get(r.chainId) || byChain.set(r.chainId, []).get(r.chainId)).push(r.block);
+  // Main chain first: the other chains' genesis blocks come from it.
+  await E.insert(MAIN_ID, byChain.get(MAIN_ID) || [], null, false);
+  for (const g of (await kv.get('pending')) || []) await E.addToMempool(g);
+  for (const [id, blocks] of byChain) if (id !== MAIN_ID && openChain(id)) await E.insert(id, blocks, null, false);
+  for (const id of Object.keys(subs)) openChain(id);
+}
+setInterval(() => kv.set('pending', [...mempool.values()].filter(g => g.author === me.pub)), 5000);
+setInterval(() => E.gossip(), 15000);
+reseedAll();
+E.maybeMine();
+for (const [id, mode] of Object.entries(subs)) if (mode === 'join') hostJoined(id);
+// ---------------------------------------------------------------- UI
+function updateStatus() {
+  $('#dot-net').className = 'dot' + (net.online() ? ' on' : '');
+  $('#st-net').textContent = net.status();
+  $('#dot-chain').className = 'dot' + (E.miner ? ' busy' : ' on');
+  $('#st-chain').textContent = `main #${main.best.height} · ${E.directory.size} registered` + (E.miner ? ` · mining (${E.minedHashes.toLocaleString()} hashes)` : '') + (mempool.size ? ` · ${mempool.size} pending` : '');
+  $('#st-p2p').textContent = `hosting ${hosting.size} · ↑${fmtBytes(wt.uploadSpeed)}/s ↓${fmtBytes(wt.downloadSpeed)}/s`;
+}
+setInterval(updateStatus, 1000);
+
+const avatar = (src, name, cls = '') => { const a = h('div', { class: 'avatar ' + cls }); if (src) a.style.backgroundImage = `url("${src}")`; else a.textContent = (name || '?')[0].toUpperCase(); return a; };
+function videoCard(chainId, b) {
+  const v = b.payload, d = derive(chainId);
+  const th = h('div', { class: 'thumb' }); if (v.thumb) th.style.backgroundImage = `url("${v.thumb}")`; else th.textContent = '▶';
+  return h('a', { class: 'card', href: `#/v/${chainId}/${b.hash}` }, th,
+    h('div', { class: 'meta' }, h('h3', { title: v.title }, v.title),
+      h('div', { class: 'sub' }, `${d?.profile.name ?? ''} · ${ago(b.ts)} · ${fmtBytes(v.size)}`),
+      hosting.has(v.infohash) ? h('span', { class: 'badge ok' }, 'hosting') : null));
+}
+function chanRow(id) {
+  const g = genesisFor(id); if (!g) return null;
+  const d = chains.has(id) ? derive(id) : null; const p = d?.profile || g.payload;
+  const reg = E.directory.get(id);
+  return h('a', { class: 'chan-row', href: `#/c/${id}` }, avatar(p.avatar, p.name, 'sm'),
+    h('div', { style: 'min-width:0;flex:1' }, h('div', {}, h('b', {}, p.name), ' ', h('span', { class: 'fp' }, '·' + fp(g.author))),
+      h('div', { class: 'sub', style: 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis' }, p.about || (p.kind === 'list' ? 'List' : 'Channel'))),
+    h('span', { class: 'badge' + (reg ? '' : ' warn') }, p.kind === 'list' ? 'list' : 'channel', reg ? '' : ' · pending'),
+    subs[id] ? h('span', { class: 'badge ok' }, subs[id] === 'join' ? 'joined' : 'subscribed') : null);
+}
+
+function setSub(id, mode) {
+  if (mode) subs[id] = mode; else delete subs[id];
+  saveSubs();
+  const c = openChain(id);
+  if (c) E.requestChain(c);
+  if (mode === 'join') hostJoined(id);
+  scheduleRender();
+}
+
+// ---- routes
+let route = { name: 'home' }, routeKey = '';
+function parseRoute() {
+  const p = location.hash.replace(/^#\/?/, '').split('/');
+  if (p[0] === 'explore') return { name: 'explore' };
+  if (p[0] === 'me') return { name: 'me' };
+  if (p[0] === 'c' && isHex(p[1], 64)) return { name: 'chain', id: p[1], tab: p[2] || 'videos' };
+  if (p[0] === 'v' && isHex(p[1], 64) && isHex(p[2], 64)) return { name: 'watch', id: p[1], video: p[2] };
+  return { name: 'home' };
+}
+window.addEventListener('hashchange', () => { route = parseRoute(); render(true); window.scrollTo(0, 0); });
+route = parseRoute();
+
+function render(force) {
+  updateStatus();
+  document.querySelectorAll('[data-nav]').forEach(a => a.classList.toggle('active', a.dataset.nav === route.name));
+  const key = JSON.stringify(route);
+  // Preserve focus/inputs on views with forms: only full re-render when route changes, otherwise refresh live parts.
+  if (!force && key === routeKey && views[route.name].refresh) return views[route.name].refresh();
+  if (!force && key === routeKey && document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
+  if (routeKey !== key) views.watch.leave?.();
+  routeKey = key;
+  $('#app').replaceChildren(views[route.name].render());
+}
+
+const views = {};
+
+// ---- feed
+views.home = { render() {
+  const ids = Object.keys(subs).filter(id => chains.has(id));
+  const items = ids.flatMap(id => derive(id)?.kind === 'channel' ? derive(id).videos.map(b => [id, b]) : []).sort((a, b) => b[1].ts - a[1].ts);
+  return h('div', {},
+    h('h2', { style: 'margin-top:0' }, 'Your feed'),
+    items.length ? h('div', { class: 'grid' }, items.slice(0, 200).map(([id, b]) => videoCard(id, b)))
+      : h('div', { class: 'empty' }, h('p', {}, 'No videos from your subscriptions yet.'), h('p', {}, h('a', { href: '#/explore' }, 'Explore channels'), ' or ', h('a', { href: '#/me' }, 'create your own channel'), '.')));
+} };
+
+// ---- explore (directory from main chain + pending mempool)
+views.explore = { render() {
+  const q = h('input', { type: 'search', placeholder: 'Search channels and lists…' });
+  const list = h('div');
+  const fill = () => {
+    const s = q.value.trim().toLowerCase();
+    const ids = [...new Set([...E.directory.keys(), ...mempool.keys()])]
+      .filter(id => { const g = genesisFor(id); return !s || (g.payload.name + ' ' + g.payload.about + ' ' + g.author).toLowerCase().includes(s); })
+      .sort((a, b) => (E.directory.get(b)?.height ?? 1e12) - (E.directory.get(a)?.height ?? 1e12));
+    list.replaceChildren(...(ids.length ? ids.map(chanRow) : [h('div', { class: 'empty' }, 'Nothing registered on the main chain yet. Be first: create a channel under “My node”.')]));
+  };
+  q.oninput = fill; fill();
+  views.explore.refresh = () => { if (document.activeElement !== q) fill(); };
+  return h('div', {}, h('h2', { style: 'margin-top:0' }, 'Explore'),
+    h('p', { class: 'sub' }, 'Every channel and list registered on the main chain. Registering costs a short proof-of-work puzzle that your browser solves.'),
+    q, h('div', { class: 'panel', style: 'margin-top:12px;padding:8px' }, list));
+} };
+
+// ---- channel / list page
+views.chain = { render() {
+  const id = route.id;
+  const c = openChain(id);
+  if (!c) return h('div', { class: 'empty' }, 'Unknown chain. It may not have synced from the main chain yet.');
+  if (!views.chain.requested?.has(id)) { (views.chain.requested ||= new Set()).add(id); E.requestChain(c); }
+  const d = derive(id), p = d.profile, mine = d.owner === me.pub;
+  const reg = E.directory.get(id);
+  const subBtn = h('button', { class: subs[id] === 'sub' ? 'on' : '', onclick: () => setSub(id, subs[id] === 'sub' ? null : 'sub') }, subs[id] === 'sub' ? 'Subscribed ✓' : 'Subscribe');
+  const joinBtn = d.kind === 'channel' ? h('button', { class: subs[id] === 'join' ? 'on' : 'primary', title: 'Joining downloads every video this channel posts and shares it with other viewers.', onclick: () => setSub(id, subs[id] === 'join' ? 'sub' : 'join') }, subs[id] === 'join' ? 'Joined · hosting ✓' : 'Join (host videos)') : null;
+  const tabs = d.kind === 'channel' ? ['videos', 'posts', 'about'].concat(mine ? ['manage'] : []) : ['channels', 'about'].concat(mine ? ['manage'] : []);
+  const tab = tabs.includes(route.tab) ? route.tab : tabs[0];
+  return h('div', {},
+    h('div', { class: 'row' }, avatar(p.avatar, p.name),
+      h('div', { style: 'flex:1;min-width:200px' }, h('h1', { style: 'margin:0' }, p.name),
+        h('div', { class: 'sub' }, h('span', { class: 'fp' }, 'owner ' + fp(d.owner)), ` · ${d.blockCount} blocks · `, reg ? `registered in main block #${reg.height}` : h('span', { class: 'badge warn' }, 'registration pending'))),
+      subBtn, joinBtn),
+    h('div', { class: 'tabs' }, tabs.map(t => h('a', { href: `#/c/${id}/${t}`, class: t === tab ? 'active' : '' }, t[0].toUpperCase() + t.slice(1)))),
+    chainTab[tab](id, d));
+} };
+const chainTab = {
+  videos(id, d) {
+    return h('div', {}, d.owner === me.pub ? uploadForm(id) : null,
+      d.videos.length ? h('div', { class: 'grid' }, d.videos.map(b => videoCard(id, b))) : h('div', { class: 'empty' }, 'No videos yet.'));
+  },
+  posts(id, d) {
+    const ta = h('textarea', { placeholder: 'Write a post for your channel…', maxLength: LIMITS.text });
+    return h('div', {},
+      d.owner === me.pub ? h('div', { class: 'panel' }, ta, h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { class: 'primary', onclick: async () => { if (!ta.value.trim()) return; await append(id, { type: 'post', text: ta.value.trim() }); ta.value = ''; } }, 'Post'))) : null,
+      h('div', { class: 'panel' }, d.posts.length ? d.posts.map(b => h('div', { class: 'item' }, h('div', { class: 'sub' }, ago(b.ts)), h('p', {}, b.payload.text),
+        d.owner === me.pub ? h('button', { class: 'small', onclick: () => append(id, { type: 'hide', target: b.hash }) }, 'Hide') : null)) : h('div', { class: 'sub' }, 'No posts.')));
+  },
+  channels(id, d) {
+    const sel = h('select', {}, h('option', { value: '' }, 'Choose a registered channel…'), [...E.directory.values()].filter(e => e.genesis.payload.kind === 'channel').map(e => h('option', { value: e.genesis.hash }, `${e.genesis.payload.name} ·${fp(e.genesis.author)}`)));
+    const note = h('input', { type: 'text', placeholder: 'Why you recommend it (optional)', maxLength: 200 });
+    return h('div', {},
+      d.owner === me.pub ? h('div', { class: 'panel' }, h('label', {}, 'Add a channel to this list'), sel, h('div', { style: 'margin-top:8px' }, note),
+        h('button', { class: 'primary', style: 'margin-top:8px', onclick: async () => { if (!sel.value) return; await append(id, { type: 'add', target: sel.value, note: note.value.trim() }); } }, 'Add')) : null,
+      h('div', { class: 'panel', style: 'padding:8px' }, d.adds.length ? d.adds.map(b => h('div', { class: 'row' },
+        h('div', { style: 'flex:1' }, chanRow(b.payload.target) || h('span', { class: 'sub' }, 'Unknown channel ' + b.payload.target.slice(0, 10))),
+        b.payload.note ? h('span', { class: 'sub' }, b.payload.note) : null,
+        d.owner === me.pub ? h('button', { class: 'small', onclick: () => append(id, { type: 'hide', target: b.hash }) }, 'Remove') : null)) : h('div', { class: 'sub', style: 'padding:10px' }, 'This list is empty.')));
+  },
+  about(id, d) {
+    return h('div', { class: 'panel' }, h('p', { class: 'pre' }, d.profile.about || 'No description.'),
+      h('div', { class: 'kv', style: 'margin-top:16px' },
+        h('div', {}, 'Chain ID'), h('div', { class: 'mono' }, id),
+        h('div', {}, 'Owner key'), h('div', { class: 'mono' }, d.owner),
+        h('div', {}, 'Comments'), h('div', {}, d.kind === 'channel' ? { anyone: 'Anyone', approved: 'Approved users only', off: 'Off' }[d.profile.comments] : '—'),
+        h('div', {}, 'Blocks'), h('div', {}, String(d.blockCount)),
+        h('div', {}, 'Heads'), h('div', { class: 'mono' }, [...chains.get(id).heads].map(x => x.slice(0, 12)).join(', '))));
+  },
+  manage(id, d) {
+    const name = h('input', { type: 'text', value: d.profile.name, maxLength: LIMITS.name });
+    const about = h('textarea', { value: d.profile.about, maxLength: LIMITS.about });
+    const policy = h('select', {}, [['anyone', 'Anyone can comment'], ['approved', 'Only approved users'], ['off', 'Comments off']].map(([v, l]) => h('option', { value: v, selected: d.profile.comments === v }, l)));
+    const key = h('input', { type: 'text', placeholder: 'User public key (43 characters)' });
+    const changes = async () => {
+      const p = { type: 'profile' };
+      if (name.value.trim() && name.value.trim() !== d.profile.name) p.name = name.value.trim();
+      if (about.value !== d.profile.about) p.about = about.value;
+      if (d.kind === 'channel' && policy.value !== d.profile.comments) p.comments = policy.value;
+      if (Object.keys(p).length === 1) return toast('Nothing changed');
+      await append(id, p); toast('Profile update appended to your chain');
+    };
+    return h('div', { class: 'split' },
+      h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Profile'),
+        h('label', {}, 'Name'), name, h('label', {}, 'About'), about,
+        d.kind === 'channel' ? [h('label', {}, 'Comment policy'), policy] : null,
+        h('p', { class: 'sub' }, 'Edits are appended as a new block. The genesis block on the main chain never changes.'),
+        h('button', { class: 'primary', onclick: changes }, 'Save')),
+      d.kind === 'channel' ? h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Commenters'),
+        h('p', { class: 'sub' }, 'Approve a user to comment when the policy is “approved”. Revoking hides everything that user writes afterwards, in any mode. Nothing is deleted from the chain.'),
+        key, h('div', { class: 'row', style: 'margin-top:8px' },
+          h('button', { onclick: async () => { if (!isKey(key.value.trim())) return toast('Not a valid public key'); await append(id, { type: 'allow', key: key.value.trim() }); key.value = ''; } }, 'Approve'),
+          h('button', { onclick: async () => { if (!isKey(key.value.trim())) return toast('Not a valid public key'); await append(id, { type: 'revoke', key: key.value.trim() }); key.value = ''; } }, 'Revoke')),
+        h('h4', {}, 'Approved'), d.allowed.size ? [...d.allowed].map(k => h('div', { class: 'mono' }, k)) : h('div', { class: 'sub' }, 'None'),
+        h('h4', {}, 'Revoked'), d.revoked.size ? [...d.revoked].map(k => h('div', { class: 'mono' }, k)) : h('div', { class: 'sub' }, 'None')) : null);
+  }
+};
+
+function uploadForm(chainId) {
+  let file = null, thumb = '';
+  const input = h('input', { type: 'file', accept: 'video/*', class: 'hidden' });
+  const drop = h('div', { class: 'drop' }, 'Drop a video here or click to choose · MP4 (H.264/AAC) or WebM streams best');
+  const prev = h('video', { muted: true, playsInline: true, class: 'hidden', style: 'margin-top:10px;max-width:360px' });
+  const title = h('input', { type: 'text', placeholder: 'Title', maxLength: LIMITS.title });
+  const desc = h('textarea', { placeholder: 'Description', maxLength: LIMITS.text });
+  const status = h('span', { class: 'sub' });
+  const btn = h('button', { class: 'primary', disabled: true }, 'Publish to channel');
+  const pick = (f) => {
+    if (!f) return;
+    file = f; thumb = '';
+    drop.textContent = `${f.name} (${fmtBytes(f.size)})`;
+    if (!title.value) title.value = f.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').slice(0, LIMITS.title);
+    prev.src = URL.createObjectURL(f); prev.classList.remove('hidden');
+    prev.onloadeddata = () => { prev.currentTime = Math.min(1, (prev.duration || 2) / 2); };
+    prev.onseeked = () => { thumb = makeThumb(prev); };
+    btn.disabled = false;
+  };
+  drop.onclick = () => input.click();
+  input.onchange = () => pick(input.files[0]);
+  drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('over'); };
+  drop.ondragleave = () => drop.classList.remove('over');
+  drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); pick(e.dataTransfer.files[0]); };
+  btn.onclick = async () => {
+    if (!file || !title.value.trim()) return toast('Choose a file and add a title');
+    btn.disabled = true; status.textContent = 'Hashing and seeding…';
+    try {
+      const t = await seedBlob(file, file.name);
+      await storeFile(t.infoHash, chainId, file.name, file.type, file);
+      const b = await append(chainId, { type: 'video', title: title.value.trim(), desc: desc.value.trim(), infohash: t.infoHash, file: file.name.slice(0, 200), size: file.size, mime: file.type.slice(0, 60), thumb: thumb || makeThumb(prev) });
+      toast('Published. Members of your channel will start hosting it.');
+      location.hash = `#/v/${chainId}/${b.hash}`;
+    } catch (e) { console.error(e); status.textContent = 'Failed: ' + (e.message || e); btn.disabled = false; }
+  };
+  return h('details', { class: 'panel' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Upload a video'),
+    h('div', { style: 'margin-top:12px' }, drop, input, prev, h('label', {}, 'Title'), title, h('label', {}, 'Description'), desc,
+      h('div', { class: 'row', style: 'margin-top:12px' }, btn, status)));
+}
+function makeThumb(video, W = 320, H = 180) {
+  try {
+    if (!video.videoWidth) return '';
+    const c = h('canvas', { width: W, height: H }); const ctx = c.getContext('2d');
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+    const r = Math.min(W / video.videoWidth, H / video.videoHeight), w = video.videoWidth * r, hh = video.videoHeight * r;
+    ctx.drawImage(video, (W - w) / 2, (H - hh) / 2, w, hh);
+    for (const q of [0.7, 0.5, 0.3]) { const u = c.toDataURL('image/jpeg', q); if (u.length <= LIMITS.image) return u; }
+  } catch {}
+  return '';
+}
+function imageFileToDataUrl(file, size = 128) {
+  return new Promise((res) => {
+    const img = new Image();
+    img.onload = () => { const c = h('canvas', { width: size, height: size }); const s = Math.min(img.width, img.height);
+      c.getContext('2d').drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, size, size); res(c.toDataURL('image/jpeg', 0.8)); };
+    img.onerror = () => res('');
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+// ---- watch
+let watchState = null;
+views.watch = {
+  leave() {
+    if (!watchState) return;
+    clearInterval(watchState.timer);
+    const t = getTorrent(watchState.infohash);
+    if (t && !hosting.has(watchState.infohash) && !fetching.has(watchState.infohash)) t.destroy();
+    watchState = null;
+  },
+  render() {
+    const { id, video } = route;
+    const c = openChain(id);
+    if (!c) return h('div', { class: 'empty' }, 'Unknown channel.');
+    if (!c.has(video)) { E.send({ t: 'rq', c: id, w: [video], h: headsOf(c) }); views.watch.refresh = () => { if (c.has(video)) render(true); }; return h('div', { class: 'empty' }, 'Fetching this video’s block from peers…'); }
+    const b = c.blocks.get(video), v = b.payload, d = derive(id);
+    const player = h('video', { controls: true, playsInline: true, autoplay: true });
+    const bar = h('div'); const stats = h('div', { class: 'stats' });
+    const comments = h('div');
+    const box = h('input', { type: 'text', placeholder: 'Add a comment…', maxLength: LIMITS.comment, style: 'flex:1' });
+    const postBtn = h('button', {}, 'Comment');
+    const postStatus = h('span', { class: 'sub' });
+    postBtn.onclick = async () => {
+      const text = box.value.trim(); if (!text) return;
+      if (!derive(id).canComment(me.pub)) return toast('This channel does not allow your key to comment');
+      postBtn.disabled = true; postStatus.textContent = me.pub === d.owner ? '' : 'Doing anti-spam work…';
+      try { await append(id, { type: 'comment', target: video, text, name: settings.name.slice(0, LIMITS.name) }); box.value = ''; }
+      finally { postBtn.disabled = false; postStatus.textContent = ''; }
+    };
+    box.onkeydown = (e) => { if (e.key === 'Enter') postBtn.click(); };
+
+    const t = getTorrent(v.infohash) || wt.add(magnet(v.infohash, v.file), { announce: TRACKERS });
+    watchState = { infohash: v.infohash };
+    const play = () => {
+      const f = t.files.find(x => /\.(mp4|m4v|webm|mkv|mov|ogv)$/i.test(x.name)) || t.files[0];
+      try { f.renderTo(player, { autoplay: true, controls: true }, (err) => { if (err) f.getBlobURL((e2, url) => { if (!e2) player.src = url; }); }); }
+      catch { f.getBlobURL((e2, url) => { if (!e2) player.src = url; }); }
+    };
+    t.ready ? play() : t.once('ready', play);
+    const refreshComments = () => {
+      const dd = derive(id);
+      const list = dd.commentsFor(video).sort((a, z) => z.ts - a.ts);
+      comments.replaceChildren(...(list.length ? list.map(cb => {
+        const hidden = dd.hidden.has(cb.hash);
+        if (hidden && cb.author !== me.pub && dd.owner !== me.pub) return null;
+        const canHide = !hidden && (dd.owner === me.pub || cb.author === me.pub);
+        return h('div', { class: 'item' + (hidden ? ' hidden-item' : '') },
+          h('b', {}, cb.author === dd.owner ? dd.profile.name : (cb.payload.name || 'anon')), ' ', h('span', { class: 'fp' }, '·' + fp(cb.author)),
+          cb.author === dd.owner ? h('span', { class: 'badge ok', style: 'margin-left:6px' }, 'owner') : null,
+          h('span', { class: 'sub' }, ' · ' + ago(cb.ts)), hidden ? h('span', { class: 'badge', style: 'margin-left:6px' }, 'hidden') : null,
+          h('p', {}, cb.payload.text),
+          canHide ? h('button', { class: 'small', onclick: () => append(id, { type: 'hide', target: cb.hash }) }, 'Hide') : null);
+      }) : [h('div', { class: 'sub' }, 'No comments yet.')]));
+      const can = dd.canComment(me.pub);
+      box.disabled = postBtn.disabled = !can;
+      box.placeholder = can ? 'Add a comment…' : dd.profile.comments === 'off' ? 'Comments are off' : 'Only approved users can comment';
+    };
+    watchState.timer = setInterval(() => {
+      bar.style.width = (t.progress * 100).toFixed(1) + '%';
+      stats.replaceChildren(...[
+        h('span', {}, `${(t.progress * 100).toFixed(1)}%`), h('span', {}, `${t.numPeers} peer${t.numPeers === 1 ? '' : 's'}`),
+        h('span', {}, `↓ ${fmtBytes(t.downloadSpeed)}/s`), h('span', {}, `↑ ${fmtBytes(t.uploadSpeed)}/s`),
+        hosting.has(v.infohash) ? h('span', { class: 'badge ok' }, 'you host this') : null,
+        !t.ready ? h('span', {}, 'Looking for a peer that has this video…') : null].filter(Boolean));
+    }, 500);
+    views.watch.refresh = refreshComments;
+    refreshComments();
+    const others = d.videos.filter(x => x.hash !== video).slice(0, 12);
+    return h('div', { class: 'watch' },
+      h('div', {}, player, h('div', { class: 'bar' }, bar), stats,
+        h('h2', { style: 'margin:8px 0 4px' }, v.title),
+        h('div', { class: 'row' }, h('a', { href: `#/c/${id}`, class: 'row', style: 'color:var(--text)' }, avatar(d.profile.avatar, d.profile.name, 'sm'), h('b', {}, d.profile.name)),
+          h('span', { class: 'sub' }, ago(b.ts) + ' · ' + fmtBytes(v.size)),
+          h('button', { class: 'small', onclick: () => { const url = location.href; navigator.clipboard?.writeText(url).then(() => toast('Link copied'), () => prompt('Copy link', url)); } }, 'Copy link'),
+          d.owner === me.pub ? h('button', { class: 'small', onclick: async () => { await append(id, { type: 'hide', target: video }); location.hash = `#/c/${id}`; } }, 'Hide video') : null),
+        h('div', { class: 'panel', style: 'margin-top:12px' }, h('p', { class: 'pre', style: 'margin:0' }, v.desc || 'No description.')),
+        h('h3', {}, 'Comments'), h('div', { class: 'row' }, box, postBtn, postStatus), comments),
+      h('aside', {}, h('h3', { style: 'margin-top:0' }, 'More from this channel'), h('div', { style: 'display:grid;gap:12px' }, others.map(x => videoCard(id, x)))));
+  }
+};
+
+// ---- my node
+views.me = { render() {
+  const owned = [...new Set([...E.directory.keys(), ...mempool.keys()])].filter(id => genesisFor(id).author === me.pub);
+  const kind = h('select', {}, h('option', { value: 'channel' }, 'Channel'), h('option', { value: 'list' }, 'List (curated channels)'));
+  const name = h('input', { type: 'text', maxLength: LIMITS.name, placeholder: 'Name' });
+  const about = h('textarea', { maxLength: LIMITS.about, placeholder: 'What is it about?' });
+  const policy = h('select', {}, [['anyone', 'Anyone can comment'], ['approved', 'Only approved users'], ['off', 'Comments off']].map(([v, l]) => h('option', { value: v }, l)));
+  const avatarIn = h('input', { type: 'file', accept: 'image/*' });
+  const chanOnly = h('div', {}, h('label', {}, 'Avatar'), avatarIn, h('label', {}, 'Comments'), policy);
+  kind.onchange = () => chanOnly.classList.toggle('hidden', kind.value !== 'channel');
+  const create = h('button', { class: 'primary' }, 'Create & register');
+  create.onclick = async () => {
+    if (!name.value.trim()) return toast('Give it a name');
+    create.disabled = true;
+    const payload = { type: 'genesis', kind: kind.value, name: name.value.trim(), about: about.value.trim() };
+    if (kind.value === 'channel') { payload.avatar = avatarIn.files[0] ? await imageFileToDataUrl(avatarIn.files[0]) : ''; payload.comments = policy.value; }
+    let g;
+    try { g = await E.createGenesis(payload); } catch (e) { create.disabled = false; return toast(e.message); }
+    kv.set('pending', [...mempool.values()].filter(x => x.author === me.pub));
+    toast('Created. Your browser is now mining the main-chain block that registers it.');
+    location.hash = `#/c/${g.hash}`;
+  };
+  const nameIn = h('input', { type: 'text', value: settings.name, maxLength: LIMITS.name });
+  const cap = h('input', { type: 'number', min: 1, max: 1000, value: settings.hostCapGB });
+  const importIn = h('input', { type: 'file', accept: 'application/json', class: 'hidden' });
+  importIn.onchange = async () => {
+    try {
+      const k = JSON.parse(await importIn.files[0].text());
+      if (!isKey(k.pub) || typeof k.priv !== 'string') throw new Error('bad file');
+      await crypto.subtle.importKey('pkcs8', b64u.dec(k.priv), ED, false, ['sign']);
+      if (!confirm('Replace this browser’s identity with the imported key? Channels owned by the current key will no longer be editable here unless you export it first.')) return;
+      await kv.set('identity', { pub: k.pub, priv: k.priv }); location.reload();
+    } catch { toast('That is not a valid OpenTube key file'); }
+  };
+  return h('div', {},
+    h('h2', { style: 'margin-top:0' }, 'My node'),
+    h('div', { class: 'split' },
+      h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Identity'),
+        h('p', { class: 'sub' }, 'Your public key is your address on the network. It signs everything you publish. It lives only in this browser, so back it up.'),
+        h('div', { class: 'mono', style: 'padding:8px;background:var(--panel-2);border-radius:6px' }, me.pub),
+        h('div', { class: 'row', style: 'margin-top:10px' },
+          h('button', { onclick: () => navigator.clipboard?.writeText(me.pub).then(() => toast('Key copied')) }, 'Copy public key'),
+          h('button', { onclick: () => { const a = h('a', { href: URL.createObjectURL(new Blob([JSON.stringify({ pub: me.pub, priv: me.privB64 })], { type: 'application/json' })), download: `opentube-key-${fp(me.pub)}.json` }); a.click(); } }, 'Back up key'),
+          h('button', { onclick: () => importIn.click() }, 'Restore key'), importIn),
+        h('label', {}, 'Display name for comments'), nameIn,
+        h('label', {}, 'Storage limit per joined channel (GB)'), cap,
+        h('button', { style: 'margin-top:10px', onclick: () => { settings.name = nameIn.value.trim().slice(0, LIMITS.name) || settings.name; settings.hostCapGB = Math.max(1, Number(cap.value) || 5); saveSettings(); toast('Saved'); } }, 'Save')),
+      h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Create a channel or list'),
+        h('p', { class: 'sub' }, `This creates a new chain whose genesis block is signed by your key. The whole genesis block is embedded in a main-chain block, which your browser mines (proof of work, ${CFG.difficulty} bits). That usually takes seconds to a minute.`),
+        h('label', {}, 'Type'), kind, h('label', {}, 'Name'), name, h('label', {}, 'About'), about, chanOnly,
+        h('div', { style: 'margin-top:12px' }, create))),
+    h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Your chains'), owned.length ? owned.map(chanRow) : h('div', { class: 'sub' }, 'None yet.')),
+    h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Subscriptions'), Object.keys(subs).length ? Object.keys(subs).map(chanRow) : h('div', { class: 'sub' }, 'None yet.')),
+    h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Node'),
+      h('div', { class: 'kv' },
+        h('div', {}, 'Network ID'), h('div', { class: 'mono' }, MAIN_ID),
+        h('div', {}, 'Main chain'), h('div', {}, `height ${main.best.height}, ${main.blocks.size} blocks stored, tip ${main.best.hash.slice(0, 16)}…`),
+        h('div', {}, 'Difficulty'), h('div', {}, `${CFG.difficulty} bits (main) · ${CFG.commentDifficulty} bits (other people's blocks)`),
+        h('div', {}, 'Chains loaded'), h('div', {}, String(chains.size)),
+        h('div', {}, 'Peers'), h('div', {}, net.status()),
+        h('div', {}, 'Videos hosted'), h('div', {}, `${hosting.size} (${fmtBytes([...hosting.values()].reduce((s, x) => s + x.size, 0))})`),
+        h('div', {}, 'Trackers'), h('div', { class: 'mono' }, TRACKERS.join(' ')))));
+} };
+
+uiReady = true;
+render(true);
+window.addEventListener('beforeunload', (e) => { if (E.miner || hosting.size) { e.preventDefault(); e.returnValue = ''; } });
+// Exposed for debugging in the console.
+window.opentube = { me, engine: E, net, wt };
+
+// ---------------------------------------------------------------- connect
+if (params.get('net') === 'local') startLocal();
+else {
+  const url = params.get('net') === 'p2p' ? null : homeNodeUrl();
+  if (!(url && await connectHome(url))) startP2P();
+}
 </script>
 </body>
 </html>
