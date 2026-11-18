@@ -75,6 +75,18 @@
   #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--panel-2); border: 1px solid var(--border); padding: 10px 18px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: calc(100% - 32px); z-index: 20; }
   #toast.show { opacity: 1; }
   .hidden { display: none !important; }
+  .ccard { padding: 16px; text-align: center; }
+  .ccard .avatar { margin: 0 auto 10px; width: 72px; height: 72px; font-size: 28px; }
+  .ccard p { margin: 6px 0 0; font-size: 13px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+  .toolbar input[type=search] { flex: 1 1 260px; width: auto; }
+  .toolbar select { width: auto; }
+  .votes { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
+  .votes button { border: 0; border-radius: 0; background: var(--panel-2); padding: 6px 14px; }
+  .votes button + button { border-left: 1px solid var(--border); }
+  .votes button.mine { color: var(--accent-2); font-weight: 700; }
+  .rank-n { position: absolute; top: 8px; left: 8px; background: rgba(0,0,0,.7); color: #fff; font-weight: 700; font-size: 12px; padding: 2px 8px; border-radius: 6px; }
+  .thumb { position: relative; }
   .split { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
   @media (max-width: 800px) { .split { grid-template-columns: 1fr; } }
 </style>
@@ -207,6 +219,7 @@ function validGenesis(g) {
   if (!p || p.type !== 'genesis' || !['channel', 'list'].includes(p.kind)) return false;
   if (!isStr(p.name, LIMITS.name) || !p.name.trim() || !isStr(p.about, LIMITS.about)) return false;
   if (p.kind === 'channel' && (!isImg(p.avatar) || !['anyone', 'approved', 'off'].includes(p.comments))) return false;
+  if (p.kind === 'list' && p.ranking !== undefined && p.ranking !== true) return false;
   return true;
 }
 async function checkSigned(b) {
@@ -224,6 +237,7 @@ function validPayload(chain, b, CFG) {
     if (kind !== 'channel' || zeroBits(b.hash) < CFG.commentDifficulty) return false;
     if (p.type === 'comment') return isHex(p.target, 64) && isStr(p.text, LIMITS.comment) && p.text.trim().length > 0 && isStr(p.name ?? '', LIMITS.name) && permittedAt(chain, b);
     if (p.type === 'hide') return isHex(p.target, 64) && permittedAt(chain, b);
+    if (p.type === 'vote') return isHex(p.target, 64) && [1, 0, -1].includes(p.v) && permittedAt(chain, b);
     return false;
   }
   switch (p.type) {
@@ -235,8 +249,108 @@ function validPayload(chain, b, CFG) {
     case 'allow': case 'revoke': return isKey(p.key);
     case 'profile': return (p.name === undefined || (isStr(p.name, LIMITS.name) && p.name.trim().length > 0)) && (p.about === undefined || isStr(p.about, LIMITS.about)) && (p.avatar === undefined || isImg(p.avatar)) && (p.comments === undefined || ['anyone', 'approved', 'off'].includes(p.comments));
     case 'add': return kind === 'list' && isHex(p.target, 64) && isStr(p.note ?? '', LIMITS.about);
+    case 'vote': return kind === 'channel' && isHex(p.target, 64) && [1, 0, -1].includes(p.v);
     default: return false;
   }
+}
+
+// One vote per key per video: the latest one (by height, then time) counts.
+function tallyVotes(blocks) {
+  const latest = new Map();  // video -> Map(author -> block)
+  for (const b of blocks) if (b.payload.type === 'vote') {
+    const m = latest.get(b.payload.target) || latest.set(b.payload.target, new Map()).get(b.payload.target);
+    const prev = m.get(b.author);
+    if (!prev || b.height > prev.height || (b.height === prev.height && b.ts > prev.ts)) m.set(b.author, b);
+  }
+  const out = new Map();
+  for (const [video, m] of latest) {
+    let up = 0, down = 0; const by = new Map();
+    for (const [author, b] of m) { if (b.payload.v > 0) up++; else if (b.payload.v < 0) down++; by.set(author, b.payload.v); }
+    out.set(video, { up, down, by });
+  }
+  return out;
+}
+
+// ---- rankings
+// A ranking is computed by a ranking list's owner and published as a signed snapshot. Only the latest
+// snapshot per list is kept and gossiped, so rankings never bloat chain history, and anyone can
+// verify the list's key signed it.
+const RANK = { items: 200, title: 140 };
+function validRanking(r, listGenesis) {
+  if (!r || typeof r !== 'object' || r.v !== 1 || !isHex(r.list, 64) || !Number.isSafeInteger(r.at) || r.at > Date.now() + 10 * 60000) return false;
+  if (!listGenesis || listGenesis.payload.kind !== 'list' || listGenesis.payload.ranking !== true || r.author !== listGenesis.author) return false;
+  if (!isStr(r.algo, 40) || !Array.isArray(r.items) || r.items.length > RANK.items || canon(r).length > 200000) return false;
+  return r.items.every(i => i && isHex(i.c, 64) && isHex(i.v, 64) && isStr(i.t, RANK.title) && isStr(i.n, LIMITS.name)
+    && Number.isFinite(i.s) && Number.isSafeInteger(i.up) && Number.isSafeInteger(i.down) && Number.isSafeInteger(i.ts));
+}
+const rankingPreimage = (r) => { const { sig, ...rest } = r; return 'opentube-ranking:' + canon(rest); };
+// "hot-v1": net votes with time decay (Hacker News style), so new videos get a chance.
+function rankVideos(chainList, now = Date.now()) {
+  const all = [];
+  for (const c of chainList) {
+    if (c.genesis.payload.kind !== 'channel') continue;
+    const d = derive(c);
+    for (const v of d.videos) {
+      const t = d.votes.get(v.hash) || { up: 0, down: 0 };
+      const ageH = Math.max(0, now - v.ts) / 3600000;
+      all.push({ c: c.id, v: v.hash, t: v.payload.title, n: d.profile.name, up: t.up, down: t.down, ts: v.ts,
+        s: Math.round(((t.up - t.down + 1) / Math.pow(ageH + 2, 1.5)) * 1e6) / 1e6 });
+    }
+  }
+  const hot = [...all].sort((a, b) => b.s - a.s).slice(0, 150);
+  const fresh = [...all].sort((a, b) => b.ts - a.ts).slice(0, 50);
+  const seen = new Set(), items = [];
+  for (const i of [...hot, ...fresh]) if (!seen.has(i.v)) { seen.add(i.v); items.push(i); }
+  return items.slice(0, RANK.items);
+}
+
+// ---- a WebTorrent-compatible tracker, so a home node can introduce video peers itself.
+// Speaks the WebSocket tracker protocol: announce with WebRTC offers, relay answers, scrape.
+function createTracker() {
+  const swarms = new Map();   // info_hash -> Map(peer_id -> socket id)
+  const sockets = new Map();  // socket id -> { send, joined: Map(info_hash -> peer_id) }
+  const out = (sid, obj) => { try { sockets.get(sid)?.send(JSON.stringify(obj)); } catch {} };
+  function leave(sid, ih) {
+    const s = sockets.get(sid), pid = s?.joined.get(ih);
+    if (pid === undefined) return;
+    const sw = swarms.get(ih); if (sw?.get(pid) === sid) sw.delete(pid);
+    if (sw && !sw.size) swarms.delete(ih);
+    s.joined.delete(ih);
+  }
+  return {
+    attach(sid, send) { sockets.set(sid, { send, joined: new Map() }); },
+    detach(sid) { const s = sockets.get(sid); if (!s) return; for (const ih of [...s.joined.keys()]) leave(sid, ih); sockets.delete(sid); },
+    stats() { return { swarms: swarms.size, peers: sockets.size }; },
+    message(sid, m) {
+      const s = sockets.get(sid);
+      if (!s || !m || typeof m !== 'object') return;
+      if (m.action === 'scrape') {
+        const files = {};
+        for (const ih of [].concat(m.info_hash || []).slice(0, 50)) if (typeof ih === 'string') files[ih] = { complete: swarms.get(ih)?.size || 0, incomplete: 0, downloaded: 0 };
+        return out(sid, { action: 'scrape', files });
+      }
+      if (m.action !== 'announce' || typeof m.info_hash !== 'string' || typeof m.peer_id !== 'string' || m.info_hash.length > 40 || m.peer_id.length > 40) return;
+      const ih = m.info_hash, pid = m.peer_id;
+      if (m.answer) {
+        const to = swarms.get(ih)?.get(m.to_peer_id);
+        if (to) out(to, { action: 'announce', answer: m.answer, offer_id: m.offer_id, peer_id: pid, info_hash: ih });
+        return;
+      }
+      if (m.event === 'stopped') { leave(sid, ih); return out(sid, { action: 'announce', interval: 120, info_hash: ih, complete: 0, incomplete: 0 }); }
+      if (!s.joined.has(ih) && s.joined.size >= 500) return;
+      const sw = swarms.get(ih) || swarms.set(ih, new Map()).get(ih);
+      sw.set(pid, sid); s.joined.set(ih, pid);
+      out(sid, { action: 'announce', interval: 120, info_hash: ih, complete: sw.size, incomplete: 0 });
+      if (Array.isArray(m.offers) && m.offers.length) {
+        const others = [...sw].filter(([p, id]) => p !== pid && sockets.has(id));
+        for (let i = others.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [others[i], others[j]] = [others[j], others[i]]; }
+        others.slice(0, Math.min(m.offers.length, 20)).forEach(([, id], i) => {
+          const o = m.offers[i];
+          if (o && o.offer) out(id, { action: 'announce', offer: o.offer, offer_id: o.offer_id, peer_id: pid, info_hash: ih });
+        });
+      }
+    }
+  };
 }
 
 // Network-level enforcement: every node checks a non-owner block against the owner's
@@ -261,7 +375,8 @@ function permittedAt(chain, b) {
   if (revoked.has(b.author) || !history.has(b.payload.target)) return false;
   const target = chain.blocks.get(b.payload.target);
   if (b.payload.type === 'hide') return target.author === b.author;              // only your own comments
-  if (target.author !== owner || target.payload.type !== 'video') return false;  // comments attach to the channel's videos
+  if (target.author !== owner || target.payload.type !== 'video') return false;  // comments and votes attach to the channel's videos
+  if (b.payload.type === 'vote') return true;                                   // anyone not revoked may vote
   const pol = videoPolicy.get(target.hash) ?? def;
   return pol === 'anyone' || (pol === 'approved' && allowed.has(b.author));
 }
@@ -291,7 +406,7 @@ function derive(c) {
   const permitted = (b) => {
     if (b.author === owner) return true;
     if (revokes.some(r => r.key === b.author && !r.before.has(b.hash))) return false;
-    if (b.payload.type === 'hide') return true;  // people may hide their own comments
+    if (b.payload.type === 'hide' || b.payload.type === 'vote') return true;  // own-comment hides and votes need no comment permission
     return allows(b.author, b.payload.target);
   };
   const visible = blocks.filter(permitted);
@@ -307,6 +422,7 @@ function derive(c) {
     posts: live.filter(b => b.payload.type === 'post' && b.author === owner).reverse(),
     adds: live.filter(b => b.payload.type === 'add' && b.author === owner).reverse(),
     commentsFor: (target) => visible.filter(b => b.payload.type === 'comment' && b.payload.target === target),
+    votes: tallyVotes(visible),
     policyFor, videoPolicy,
     canComment: (key, target) => key === owner || (!revokes.some(r => r.key === key) && allows(key, target)),
     blockCount: c.blocks.size
@@ -333,7 +449,7 @@ async function createEngine(o) {
   main.best = main.genesis;
   const chains = new Map([[MAIN_ID, main]]);
   const mempool = new Map();  // genesis hash -> genesis block awaiting registration
-  const E = { MAIN_ID, CFG, main, chains, mempool, directory: new Map(), miner: null, minedHashes: 0 };
+  const E = { MAIN_ID, CFG, main, chains, mempool, directory: new Map(), miner: null, minedHashes: 0, rankings: new Map() };
 
   const headsOf = (c) => c === main ? [main.best.hash] : [...c.heads];
   const genesisFor = (id) => chains.get(id)?.genesis || E.directory.get(id)?.genesis || mempool.get(id) || null;
@@ -444,13 +560,34 @@ async function createEngine(o) {
       if (blocks.length) send({ t: 'bk', c: chain.id, b: blocks }, from);
     } else if (m.t === 'bk' && chain && Array.isArray(m.b)) {
       await insert(chain.id, m.b.slice(0, 5000), from);
+    } else if (m.t === 'rank' && m.r && typeof m.r === 'object') {
+      await acceptRanking(m.r, true);
     } else if (m.t === 'mp' && Array.isArray(m.e)) {
       let any = false;
       for (const g of m.e.slice(0, 64)) if (await addToMempool(g)) any = true;
       if (any) { maybeMine(); changed(); }
     }
   }
+  async function acceptRanking(r, relay) {
+    const cur = E.rankings.get(r?.list);
+    if (cur && cur.at >= r.at) return false;
+    if (!validRanking(r, genesisFor(r.list)) || !(await verify(r.author, rankingPreimage(r), r.sig))) return false;
+    E.rankings.set(r.list, r);
+    o.onRanking?.(r);
+    if (relay) send({ t: 'rank', r });
+    changed();
+    return true;
+  }
+  async function publishRanking(listId, items, algo = 'hot-v1') {
+    const g = genesisFor(listId); const signer = g && o.keyFor?.(g.author);
+    if (!signer) throw new Error('this node does not hold that list key');
+    const r = { v: 1, list: listId, at: Date.now(), algo, author: signer.pub, items };
+    r.sig = await signer.sign(rankingPreimage(r));
+    await acceptRanking(r, true);
+    return r;
+  }
   function peerJoined(peer) {
+    for (const r of E.rankings.values()) send({ t: 'rank', r }, peer);
     for (const c of chains.values()) announce(c, peer);
     if (mempool.size) send({ t: 'mp', e: [...mempool.values()] }, peer);
   }
@@ -489,13 +626,14 @@ async function createEngine(o) {
   }
 
   return Object.assign(E, {
+    acceptRanking, publishRanking, rank: () => rankVideos([...chains.values()].filter(c => c !== main)),
     insert, handle, peerJoined, gossip, announce, requestChain, openChain, genesisFor, headsOf, append, createGenesis, addToMempool, maybeMine,
     derive: (id) => chains.has(id) ? derive(chains.get(id)) : null,
     send
   });
 }
 
-globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine };
+globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos };
 })();
 </script>
 
@@ -688,6 +826,7 @@ function connectHome(url) {
     ws.onopen = () => {
       clearTimeout(timer); settled = true; opened = true;
       net.mode = 'home';
+      fetch(url.replace(/^ws/, 'http').replace(/\/ot$/, '/status')).then(r => r.json()).then(j => { homeRanker = j.ranker || null; scheduleRender(); }).catch(() => {});
       net.send = (m) => ws.readyState === 1 && ws.send(JSON.stringify(m));  // the home node relays to everyone
       joined('home');
       resolve(true);
@@ -729,6 +868,7 @@ async function startP2P() {
 }
 
 // ---------------------------------------------------------------- engine
+function saveRankings() { kv.set('rankings', [...engine.rankings.values()]); }
 const fetching = new Set();
 engine = await createEngine({
   signer: me,
@@ -737,12 +877,16 @@ engine = await createEngine({
   send: (m, to) => net.send(m, to),
   persist: (chainId, b) => idb('blocks', 'readwrite', s => s.put({ hash: b.hash, chainId, block: b })).catch(() => {}),
   onBlock: (chain, b) => { if (subs[chain.id] === 'join' && b.payload.type === 'video' && b.author === chain.owner) hostVideo(chain.id, b.payload); },
-  onChange: () => scheduleRender()
+  onChange: () => scheduleRender(),
+  onRanking: () => { clearTimeout(saveRankings.t); saveRankings.t = setTimeout(saveRankings, 2000); }
 });
 const E = engine;
 const { main, chains, mempool, CFG, MAIN_ID, openChain, genesisFor, headsOf, append } = E;
 const derive = (id) => E.derive(id);
-const TRACKERS = params.get('trackers') ? params.get('trackers').split(',') : CFG.trackers;
+// Video peers are introduced by the home node's own tracker first; public trackers are a fallback.
+const homeTracker = params.get('net') ? null : homeNodeUrl()?.replace(/\/ot$/, '/tracker');
+const TRACKERS = params.get('trackers') ? params.get('trackers').split(',') : [homeTracker, ...CFG.trackers].filter(Boolean);
+let homeRanker = null;  // the ranking list run by the node that served this page
 
 // ---------------------------------------------------------------- video transport (WebTorrent)
 const wt = new WebTorrent();
@@ -806,6 +950,7 @@ function hostJoined(chainId) { const d = derive(chainId); if (d) for (const v of
   for (const g of (await kv.get('pending')) || []) await E.addToMempool(g);
   for (const [id, blocks] of byChain) if (id !== MAIN_ID && openChain(id)) await E.insert(id, blocks, null, false);
   for (const id of Object.keys(subs)) openChain(id);
+  for (const r of (await kv.get('rankings')) || []) await E.acceptRanking(r, false);
 }
 setInterval(() => kv.set('pending', [...mempool.values()].filter(g => isMine(g.author))), 5000);
 setInterval(() => E.gossip(), 15000);
@@ -828,8 +973,35 @@ function videoCard(chainId, b) {
   const th = h('div', { class: 'thumb' }); if (v.thumb) th.style.backgroundImage = `url("${v.thumb}")`; else th.textContent = '▶';
   return h('a', { class: 'card', href: `#/v/${chainId}/${b.hash}` }, th,
     h('div', { class: 'meta' }, h('h3', { title: v.title }, v.title),
-      h('div', { class: 'sub' }, `${d?.profile.name ?? ''} · ${ago(b.ts)} · ${fmtBytes(v.size)}`),
+      h('div', { class: 'sub' }, `${d?.profile.name ?? ''} · ${ago(b.ts)} · 👍 ${d?.votes.get(b.hash)?.up || 0}`),
       hosting.has(v.infohash) ? h('span', { class: 'badge ok' }, 'hosting') : null));
+}
+// A card from a ranking entry. Uses the real block (thumbnail, live votes) once that channel is loaded.
+function rankCard(i, n) {
+  const c = chains.get(i.c);
+  if (!c && genesisFor(i.c)) { openChain(i.c); E.requestChain(chains.get(i.c)); }
+  const b = chains.get(i.c)?.blocks.get(i.v);
+  const card = b ? videoCard(i.c, b) : h('a', { class: 'card', href: `#/v/${i.c}/${i.v}` }, h('div', { class: 'thumb' }, '▶'),
+    h('div', { class: 'meta' }, h('h3', { title: i.t }, i.t), h('div', { class: 'sub' }, `${i.n} · ${ago(i.ts)} · 👍 ${i.up}`)));
+  if (n) card.querySelector('.thumb').append(h('span', { class: 'rank-n' }, '#' + n));
+  return card;
+}
+function channelCard(id) {
+  const g = genesisFor(id); if (!g) return null;
+  const p = (chains.has(id) ? derive(id)?.profile : null) || g.payload;
+  const isRanker = p.kind === 'list' && g.payload.ranking;
+  return h('a', { class: 'card ccard', href: `#/c/${id}` }, avatar(p.avatar, p.name),
+    h('h3', { style: 'margin:0' }, p.name), h('div', { class: 'fp' }, '·' + fp(g.author)),
+    h('p', {}, p.about || (p.kind === 'list' ? (isRanker ? 'Ranking list' : 'Curated list') : 'Channel')),
+    h('div', { class: 'row', style: 'justify-content:center;margin-top:8px' },
+      E.directory.has(id) ? null : h('span', { class: 'badge warn' }, 'pending'),
+      isRanker ? h('span', { class: 'badge' }, 'ranking') : null,
+      subs[id] ? h('span', { class: 'badge ok' }, subs[id] === 'join' ? 'joined' : 'subscribed') : null));
+}
+// Which ranking to show: the viewer's choice, else this site's node, else any we know, else compute locally.
+function currentRanking() {
+  const pick = [settings.ranker, homeRanker, ...E.rankings.keys()].find(id => id && E.rankings.has(id));
+  return pick ? E.rankings.get(pick) : { local: true, items: E.rank(), at: Date.now() };
 }
 function chanRow(id) {
   const g = genesisFor(id); if (!g) return null;
@@ -855,7 +1027,7 @@ function setSub(id, mode) {
 let route = { name: 'home' }, routeKey = '';
 function parseRoute() {
   const p = location.hash.replace(/^#\/?/, '').split('/');
-  if (p[0] === 'explore') return { name: 'explore' };
+  if (p[0] === 'explore') return { name: 'explore', tab: p[1] || 'trending' };
   if (p[0] === 'me') return { name: 'me' };
   if (p[0] === 'c' && isHex(p[1], 64)) return { name: 'chain', id: p[1], tab: p[2] || 'videos' };
   if (p[0] === 'v' && isHex(p[1], 64) && isHex(p[2], 64)) return { name: 'watch', id: p[1], video: p[2] };
@@ -894,20 +1066,42 @@ views.home = { render() {
 
 // ---- explore (directory from main chain + pending mempool)
 views.explore = { render() {
-  const q = h('input', { type: 'search', placeholder: 'Search channels and lists…' });
-  const list = h('div');
-  const fill = () => {
-    const s = q.value.trim().toLowerCase();
-    const ids = [...new Set([...E.directory.keys(), ...mempool.keys()])]
-      .filter(id => { const g = genesisFor(id); return !s || (g.payload.name + ' ' + g.payload.about + ' ' + g.author).toLowerCase().includes(s); })
-      .sort((a, b) => (E.directory.get(b)?.height ?? 1e12) - (E.directory.get(a)?.height ?? 1e12));
-    list.replaceChildren(...(ids.length ? ids.map(chanRow) : [h('div', { class: 'empty' }, 'Nothing registered on the main chain yet. Be first: create a channel under “My node”.')]));
-  };
-  q.oninput = fill; fill();
-  views.explore.refresh = () => { if (document.activeElement !== q) fill(); };
-  return h('div', {}, h('h2', { style: 'margin-top:0' }, 'Explore'),
-    h('p', { class: 'sub' }, 'Every channel and list registered on the main chain. Registering costs a short proof-of-work puzzle that your browser solves.'),
-    q, h('div', { class: 'panel', style: 'margin-top:12px;padding:8px' }, list));
+  const tab = ['trending', 'new', 'channels', 'lists'].includes(route.tab) ? route.tab : 'trending';
+  const q = keep('q', () => h('input', { type: 'search', placeholder: 'Search videos, channels and lists…', oninput: () => views.explore.fill?.() }));
+  const pickRanker = keep('ranker', () => h('select', { title: 'Who ranks the videos you see', onchange: (e) => { settings.ranker = e.target.value || null; saveSettings(); views.explore.fill?.(); } }));
+  const body = h('div');
+  const match = (text) => { const t = q.value.trim().toLowerCase(); return !t || text.toLowerCase().includes(t); };
+  function fill() {
+    const r = currentRanking();
+    const known = [...E.rankings.values()].filter(x => genesisFor(x.list));
+    pickRanker.replaceChildren(...(known.length ? known.map(x => h('option', { value: x.list, selected: x.list === r.list },
+      `Ranked by: ${genesisFor(x.list).payload.name} ·${fp(x.author)}`)) : [h('option', { value: '' }, 'Ranked by: this browser (no ranking list found)')]));
+    pickRanker.classList.toggle('hidden', tab === 'channels' || tab === 'lists');
+    if (tab === 'trending' || tab === 'new') {
+      let items = r.items.filter(i => match(i.t + ' ' + i.n));
+      if (tab === 'new') items = [...items].sort((a, b) => b.ts - a.ts);
+      body.replaceChildren(
+        h('p', { class: 'sub', style: 'margin-top:0' }, r.local ? 'No ranking list has published yet, so this browser ranked the channels it has loaded.' : `Ranking published ${ago(r.at)} and signed by the list's key.`),
+        items.length ? h('div', { class: 'grid' }, items.slice(0, 60).map((i, n) => rankCard(i, tab === 'trending' ? n + 1 : 0)))
+          : h('div', { class: 'empty' }, q.value ? 'No videos match.' : 'No videos yet.'));
+    } else {
+      const kind = tab === 'channels' ? 'channel' : 'list';
+      const score = new Map(); for (const i of r.items) score.set(i.c, (score.get(i.c) || 0) + i.s);
+      const ids = [...new Set([...E.directory.keys(), ...mempool.keys()])].filter(id => {
+        const g = genesisFor(id); return g.payload.kind === kind && match(g.payload.name + ' ' + g.payload.about + ' ' + g.author);
+      }).sort((a, b) => (score.get(b) || 0) - (score.get(a) || 0) || (E.directory.get(b)?.height ?? 1e12) - (E.directory.get(a)?.height ?? 1e12));
+      body.replaceChildren(ids.length ? h('div', { class: 'grid' }, ids.map(channelCard))
+        : h('div', { class: 'empty' }, q.value ? 'Nothing matches.' : `No ${kind}s registered yet. Create one under “My node”.`));
+    }
+  }
+  views.explore.fill = fill;
+  views.explore.refresh = () => { if (document.activeElement !== q && document.activeElement !== pickRanker) fill(); };
+  fill();
+  return h('div', {},
+    h('div', { class: 'toolbar' }, q, pickRanker),
+    h('div', { class: 'tabs', style: 'margin-top:0' }, [['trending', 'Trending'], ['new', 'New'], ['channels', 'Channels'], ['lists', 'Lists']].map(([t, l]) =>
+      h('a', { href: `#/explore/${t}`, class: t === tab ? 'active' : '' }, l))),
+    body);
 } };
 
 // ---- channel / list page
@@ -920,7 +1114,8 @@ views.chain = { render() {
   const reg = E.directory.get(id);
   const subBtn = h('button', { class: subs[id] === 'sub' ? 'on' : '', onclick: () => setSub(id, subs[id] === 'sub' ? null : 'sub') }, subs[id] === 'sub' ? 'Subscribed ✓' : 'Subscribe');
   const joinBtn = d.kind === 'channel' ? h('button', { class: subs[id] === 'join' ? 'on' : 'primary', title: 'Joining downloads every video this channel posts and shares it with other viewers.', onclick: () => setSub(id, subs[id] === 'join' ? 'sub' : 'join') }, subs[id] === 'join' ? 'Joined · hosting ✓' : 'Join (host videos)') : null;
-  const tabs = d.kind === 'channel' ? ['videos', 'posts', 'about'].concat(mine ? ['manage'] : []) : ['channels', 'about'].concat(mine ? ['manage'] : []);
+  const tabs = d.kind === 'channel' ? ['videos', 'posts', 'about'].concat(mine ? ['manage'] : [])
+    : (c.genesis.payload.ranking ? ['ranking', 'about'] : ['channels', 'about']).concat(mine ? ['manage'] : []);
   const tab = tabs.includes(route.tab) ? route.tab : tabs[0];
   return h('div', {},
     h('div', { class: 'row' }, avatar(p.avatar, p.name),
@@ -944,6 +1139,12 @@ const chainTab = {
         return h('div', { class: 'panel' }, ta, h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { class: 'primary', onclick: async () => { if (!ta.value.trim()) return; await append(id, { type: 'post', text: ta.value.trim() }); ta.value = ''; } }, 'Post'))); }) : null,
       h('div', { class: 'panel' }, d.posts.length ? d.posts.map(b => h('div', { class: 'item' }, h('div', { class: 'sub' }, ago(b.ts)), h('p', {}, b.payload.text),
         isMine(d.owner) ? h('button', { class: 'small', onclick: () => append(id, { type: 'hide', target: b.hash }) }, 'Hide') : null)) : h('div', { class: 'sub' }, 'No posts.')));
+  },
+  ranking(id) {
+    const r = E.rankings.get(id);
+    if (!r) return h('div', { class: 'empty' }, 'This ranking list has not published a ranking yet.');
+    return h('div', {}, h('p', { class: 'sub' }, `${r.items.length} videos · algorithm ${r.algo} · published ${ago(r.at)}, signed by this list's key.`),
+      h('div', { class: 'grid' }, r.items.slice(0, 100).map((i, n) => rankCard(i, n + 1))));
   },
   channels(id, d) {
     return h('div', {},
@@ -1087,6 +1288,16 @@ views.watch = {
     const box = h('input', { type: 'text', placeholder: 'Add a comment…', maxLength: LIMITS.comment, style: 'flex:1' });
     const postBtn = h('button', {}, 'Comment');
     const postStatus = h('span', { class: 'sub' });
+    const upBtn = h('button', { title: 'I like this' }), downBtn = h('button', { title: 'I dislike this' });
+    const voteStatus = h('span', { class: 'sub' });
+    const vote = async (dir) => {
+      const dd = derive(id), cur = dd.votes.get(video)?.by.get(isMine(dd.owner) ? dd.owner : me.pub) || 0;
+      upBtn.disabled = downBtn.disabled = true; voteStatus.textContent = isMine(dd.owner) ? '' : 'signing…';
+      try { await append(id, { type: 'vote', target: video, v: cur === dir ? 0 : dir }); }
+      catch (e) { toast('Vote failed: ' + (e.message || e)); }
+      finally { upBtn.disabled = downBtn.disabled = false; voteStatus.textContent = ''; }
+    };
+    upBtn.onclick = () => vote(1); downBtn.onclick = () => vote(-1);
     const policySel = isMine(d.owner) ? h('select', { style: 'width:auto', title: 'Who can comment on this video', onchange: async () => {
       await append(id, { type: 'settings', target: video, comments: policySel.value }); toast('Comment setting recorded on the chain');
     } }, [['default', `Channel default (${({ anyone: 'anyone', approved: 'approved only', off: 'off' })[d.profile.comments]})`], ['anyone', 'Anyone can comment'], ['approved', 'Approved users only'], ['off', 'Comments off']].map(([v, l]) => h('option', { value: v }, l))) : null;
@@ -1109,6 +1320,10 @@ views.watch = {
     t.ready ? play() : t.once('ready', play);
     const refreshComments = () => {
       const dd = derive(id);
+      const t = dd.votes.get(video) || { up: 0, down: 0, by: new Map() };
+      const myVote = t.by.get(isMine(dd.owner) ? dd.owner : me.pub) || 0;
+      upBtn.textContent = `👍 ${t.up}`; downBtn.textContent = `👎 ${t.down}`;
+      upBtn.classList.toggle('mine', myVote > 0); downBtn.classList.toggle('mine', myVote < 0);
       const list = dd.commentsFor(video).sort((a, z) => z.ts - a.ts);
       comments.replaceChildren(...(list.length ? list.map(cb => {
         const hidden = dd.hidden.has(cb.hash);
@@ -1143,6 +1358,7 @@ views.watch = {
         h('h2', { style: 'margin:8px 0 4px' }, v.title),
         h('div', { class: 'row' }, h('a', { href: `#/c/${id}`, class: 'row', style: 'color:var(--text)' }, avatar(d.profile.avatar, d.profile.name, 'sm'), h('b', {}, d.profile.name)),
           h('span', { class: 'sub' }, ago(b.ts) + ' · ' + fmtBytes(v.size)),
+          h('span', { class: 'votes' }, upBtn, downBtn), voteStatus,
           h('button', { class: 'small', onclick: () => { const url = location.href; navigator.clipboard?.writeText(url).then(() => toast('Link copied'), () => prompt('Copy link', url)); } }, 'Copy link'),
           isMine(d.owner) ? h('button', { class: 'small', onclick: async () => { await append(id, { type: 'hide', target: video }); location.hash = `#/c/${id}`; } }, 'Hide video') : null),
         h('div', { class: 'panel', style: 'margin-top:12px' }, h('p', { class: 'pre', style: 'margin:0' }, v.desc || 'No description.')),

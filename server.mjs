@@ -7,6 +7,7 @@
 //   PEERS=wss://other.example/ot node server.mjs   # also sync with other home nodes
 //   MAIN_ONLY=1 node server.mjs           # keep only the main chain, not channel chains
 //   MINE=0 node server.mjs                # don't spend CPU confirming registrations
+//   NODE_NAME="My site" node server.mjs   # name used for this node's ranking list
 //
 // No npm install needed: Node 20+ (Ed25519 WebCrypto, global WebSocket client on 22+).
 // For https/wss, put it behind a TLS proxy such as Caddy:  caddy reverse-proxy --to :8080
@@ -67,13 +68,27 @@ function send(msg, to) {
   else for (const p of peers.values()) p.send(data);
 }
 
+// ---- this node's ranking list ("Trending on <name>"): its own key, created once
+const rankerFile = path.join(DATA, 'ranker.json');
+let ranker = fs.existsSync(rankerFile) ? JSON.parse(fs.readFileSync(rankerFile, 'utf8')) : null;
+if (!ranker) { ranker = { key: await core.newIdentity() }; fs.writeFileSync(rankerFile, JSON.stringify(ranker), { mode: 0o600 }); }
+const rankerSigner = await core.signer(ranker.key);
+
+// Rerank ~20 s after new videos/votes arrive (publishRanking is defined further down).
+let rankTimer = null;
+function soonRank() { if (!rankTimer) rankTimer = setTimeout(() => { rankTimer = null; publishRanking(); }, 20000); }
+
 const engine = await core.createEngine({
   signer, send,
+  keyFor: (pub) => pub === rankerSigner.pub ? rankerSigner : null,
   mine: MINE ? mine : null,
   shouldMine: () => true,          // a home node confirms everyone's registrations
   trackAll: !MAIN_ONLY,
   persist: (c, b) => blockLog.write(JSON.stringify({ c, b }) + '\n'),
-  onBlock: (chain, b) => { if (chain === engine.main) log(`main #${b.height} ${b.hash.slice(0, 12)} (${b.payload.entries.length} registration(s))`); }
+  onBlock: (chain, b) => {
+    if (chain === engine.main) log(`main #${b.height} ${b.hash.slice(0, 12)} (${b.payload.entries.length} registration(s))`);
+    else if (b.payload.type === 'video' || b.payload.type === 'vote' || b.payload.type === 'hide') soonRank();
+  }
 });
 
 // ---- replay stored blocks
@@ -89,9 +104,30 @@ if (fs.existsSync(blocksFile)) {
 log(`network ${engine.MAIN_ID.slice(0, 16)}… · main height ${engine.main.best.height} · ${engine.directory.size} registered · ${engine.chains.size} chains loaded`);
 setInterval(() => engine.gossip(), 15000);
 
+if (!ranker.genesis) {
+  const name = (process.env.NODE_NAME || `Trending on ${(await import('node:os')).hostname()}`).slice(0, 60);
+  ranker.genesis = await engine.createGenesis({ type: 'genesis', kind: 'list', name, about: 'Videos ranked by votes and freshness, computed by this home node.', ranking: true }, rankerSigner);
+  fs.writeFileSync(rankerFile, JSON.stringify(ranker), { mode: 0o600 });
+  log(`created ranking list "${name}"`);
+} else if (!engine.directory.has(ranker.genesis.hash)) {
+  await engine.addToMempool(ranker.genesis); engine.openChain(ranker.genesis.hash); engine.maybeMine();
+}
+const RANKER_ID = ranker.genesis.hash;
+async function publishRanking() {
+  if (!engine.directory.has(RANKER_ID)) return;   // wait until the list is registered on the main chain
+  const items = engine.rank();
+  try { await engine.publishRanking(RANKER_ID, items); } catch (e) { log('ranking failed', e.message); }
+}
+// Also rerank every RANK_EVERY_SECONDS (default 5 minutes) regardless.
+setTimeout(publishRanking, 5000);
+setInterval(publishRanking, Math.max(10, Number(process.env.RANK_EVERY_SECONDS) || 300) * 1000);
+
+// ---- video tracker at /tracker: introduces browsers that hold the same video
+const tracker = core.createTracker();
+
 // ---- minimal WebSocket server (RFC 6455: text frames, ping/pong, close), so no dependencies
 const MAX_MSG = 16 * 1024 * 1024;
-function acceptSocket(req, socket) {
+function acceptSocket(req, socket, role = 'node') {
   const key = req.headers['sec-websocket-key'];
   if (!key) return socket.destroy();
   const accept = crypto.createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
@@ -105,7 +141,9 @@ function acceptSocket(req, socket) {
       : (() => { const b = Buffer.alloc(10); b[0] = 0x80 | op; b[1] = 127; b.writeBigUInt64BE(BigInt(len), 2); return b; })();
     if (!socket.destroyed) socket.write(Buffer.concat([head, payload]));
   };
-  peers.set(id, { send: (s) => frame(1, Buffer.from(s)), label: req.socket.remoteAddress });
+  const sendText = (s) => frame(1, Buffer.from(s));
+  if (role === 'tracker') tracker.attach(id, sendText);
+  else peers.set(id, { send: sendText, label: req.socket.remoteAddress });
   let buf = Buffer.alloc(0), parts = [];
   socket.on('data', (chunk) => {
     buf = Buffer.concat([buf, chunk]);
@@ -126,12 +164,17 @@ function acceptSocket(req, socket) {
       if (op === 1 || op === 0) {
         parts.push(payload);
         if (parts.reduce((s, p) => s + p.length, 0) > MAX_MSG) return socket.destroy();
-        if (fin) { const text = Buffer.concat(parts).toString('utf8'); parts = []; try { engine.handle(JSON.parse(text), id); } catch {} }
+        if (fin) {
+          const text = Buffer.concat(parts).toString('utf8'); parts = [];
+          let msg; try { msg = JSON.parse(text); } catch { continue; }
+          if (role === 'tracker') tracker.message(id, msg); else engine.handle(msg, id).catch(() => {});
+        }
       }
     }
   });
-  const gone = () => { if (peers.delete(id)) log(`- browser ${id} (${peers.size} connected)`); };
+  const gone = () => { if (role === 'tracker') tracker.detach(id); else if (peers.delete(id)) log(`- browser ${id} (${peers.size} connected)`); };
   socket.on('close', gone); socket.on('error', gone);
+  if (role === 'tracker') return;
   log(`+ browser ${id} (${peers.size} connected)`);
   engine.peerJoined(id);
 }
@@ -157,12 +200,14 @@ const server = http.createServer((req, res) => {
   }
   if (url.pathname === '/status') {
     res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
-    return res.end(JSON.stringify({ network: engine.MAIN_ID, height: engine.main.best.height, tip: engine.main.best.hash, registered: engine.directory.size, pending: engine.mempool.size, chains: engine.chains.size, peers: peers.size, mining: !!engine.miner, node: signer.pub }));
+    return res.end(JSON.stringify({ network: engine.MAIN_ID, height: engine.main.best.height, tip: engine.main.best.hash, registered: engine.directory.size, pending: engine.mempool.size, chains: engine.chains.size, peers: peers.size, mining: !!engine.miner, node: signer.pub, ranker: RANKER_ID, tracker: tracker.stats() }));
   }
   res.writeHead(404); res.end('not found');
 });
 server.on('upgrade', (req, socket) => {
-  if (new URL(req.url, 'http://x').pathname !== '/ot') return socket.destroy();
-  acceptSocket(req, socket);
+  const p = new URL(req.url, 'http://x').pathname;
+  if (p === '/ot') acceptSocket(req, socket, 'node');
+  else if (p === '/tracker') acceptSocket(req, socket, 'tracker');
+  else socket.destroy();
 });
-server.listen(PORT, () => log(`OpenTube node on http://localhost:${PORT}  (WebSocket /ot, status /status)`));
+server.listen(PORT, () => log(`OpenTube node on http://localhost:${PORT}  (node /ot, video tracker /tracker, status /status)`));
