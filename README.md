@@ -34,6 +34,17 @@ npx wrangler deploy
 
 `wrangler.jsonc` builds the page (`cloudflare/build.mjs`) and deploys `cloudflare/worker.mjs`. The Worker serves `index.html` and routes `/ot` and `/status` to a single Durable Object, which runs the full node. It stores every chain in its built-in SQLite storage and uses WebSocket hibernation, so idle connections cost nothing. Durable Objects with SQLite storage are available on the Workers free plan. If you deploy through Cloudflare's Git integration, pushing this repository is enough: the build step runs automatically.
 
+### Always-on hosting: the page itself, headless
+
+Browsers host videos only while their tabs are open. To keep videos available around the clock, run **the same page** on a server in headless Chromium:
+
+```sh
+npm install && npx playwright install --with-deps chromium   # once
+node headless.mjs https://your-site.example/
+```
+
+It opens the site in host mode (`?host=all`): it joins every channel, downloads and seeds every video over WebRTC like any viewer, and keeps everything in a persistent browser profile (`PROFILE_DIR`, default `./browser-profile`). `CAP_GB` sets the storage limit per channel, and `JOIN_ALL=0` hosts only channels you've joined. It logs a status line every 30 seconds and restarts the page if it crashes. Any VPS, home PC or Raspberry Pi works. Cloudflare can't keep a browser running, so on a Cloudflare deployment the Worker handles chains, tracker and rankings, and headless hosts handle video.
+
 ## How browsers connect
 
 1. **Home node first.** The page connects to `wss://<the host it was loaded from>/ot`. That node keeps the main chain (and by default every channel chain) and relays between all connected browsers. `server.mjs` also mines pending registrations; the Cloudflare node only mines its own ranking list. The same host runs a **video tracker** at `/tracker`, which introduces browsers that have the same video so they can connect over WebRTC. Public WebTorrent trackers are only a fallback.

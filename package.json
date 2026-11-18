@@ -1,0 +1,14 @@
+{
+  "name": "opentube",
+  "private": true,
+  "type": "module",
+  "description": "Decentralized video platform: every browser is a blockchain node and a video host.",
+  "scripts": {
+    "server": "node server.mjs",
+    "headless": "node headless.mjs",
+    "deploy:cloudflare": "wrangler deploy"
+  },
+  "dependencies": {
+    "playwright": "1.64.1"
+  }
+}

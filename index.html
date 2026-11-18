@@ -1451,6 +1451,26 @@ else {
   const url = params.get('net') === 'p2p' ? null : homeNodeUrl();
   if (!(url && await connectHome(url))) startP2P();
 }
+
+// ---------------------------------------------------------------- host mode
+// ?host=all turns this page into an always-on hosting node (e.g. headless Chromium on a server,
+// see headless.mjs): it joins every registered channel, so it downloads and seeds every video.
+// ?cap=<GB> sets the storage limit per channel.
+if (params.get('cap')) settings.hostCapGB = Math.max(1, Number(params.get('cap')) || settings.hostCapGB);
+if (params.get('host') === 'all') {
+  const joinEverything = () => {
+    for (const [id, e] of E.directory) if (e.genesis.payload.kind === 'channel' && subs[id] !== 'join') setSub(id, 'join');
+  };
+  const report = () => console.log('opentube-status ' + JSON.stringify({
+    net: net.status(), height: main.best.height, channels: Object.values(subs).filter(m => m === 'join').length,
+    hosting: hosting.size, hostedBytes: [...hosting.values()].reduce((s, x) => s + x.size, 0), downloading: fetching.size,
+    peers: wt.torrents.reduce((n, t) => n + t.numPeers, 0), up: Math.round(wt.uploadSpeed), down: Math.round(wt.downloadSpeed)
+  }));
+  joinEverything();
+  setInterval(joinEverything, 15000);
+  setInterval(report, 30000);
+  setTimeout(report, 3000);
+}
 </script>
 </body>
 </html>
