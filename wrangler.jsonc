@@ -1,0 +1,13 @@
+// Cloudflare deployment: `npx wrangler deploy` from this folder.
+// Serves index.html and runs the OpenTube home node (a Durable Object) at /ot.
+{
+  "name": "opentubedecentralized",
+  "main": "cloudflare/worker.mjs",
+  "compatibility_date": "2025-09-01",
+  "build": { "command": "node cloudflare/build.mjs" },
+  "assets": { "directory": "cloudflare/dist", "binding": "ASSETS" },
+  "durable_objects": {
+    "bindings": [{ "name": "NODE", "class_name": "OpenTubeNode" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["OpenTubeNode"] }]
+}

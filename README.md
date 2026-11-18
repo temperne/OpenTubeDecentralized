@@ -24,6 +24,16 @@ You need Node 20 or newer, and there's no `npm install`. For HTTPS, put it behin
 
 `GET /status` returns the node's height, tip and peer count as JSON.
 
+### On Cloudflare (Workers + Durable Objects)
+
+A plain static deployment has no node, so browsers have to find each other through public trackers, which often fails. Deploy with the included config instead:
+
+```sh
+npx wrangler deploy
+```
+
+`wrangler.jsonc` builds the page (`cloudflare/build.mjs`) and deploys `cloudflare/worker.mjs`. The Worker serves `index.html` and routes `/ot` and `/status` to a single Durable Object, which runs the full node. It stores every chain in its built-in SQLite storage and uses WebSocket hibernation, so idle connections cost nothing. Durable Objects with SQLite storage are available on the Workers free plan. If you deploy through Cloudflare's Git integration, pushing this repository is enough: the build step runs automatically.
+
 ## How browsers connect
 
 1. **Home node first.** The page connects to `wss://<the host it was loaded from>/ot`. That node keeps the main chain (and by default every channel chain), relays between all connected browsers, and mines pending registrations.
@@ -51,9 +61,15 @@ MAIN CHAIN (proof of work, every node keeps it)
 
 - **Main chain:** blocks need proof of work (18 leading zero bits by default; a browser takes a few seconds, a server well under one). The highest chain wins. Each block embeds the **complete signed genesis blocks** of the channels and lists it registers, so any node can open a channel from the main chain alone.
 - **Channel chains:** only the channel key can post videos, posts and settings. Other people can write `comment` and `hide` (their own comments) blocks when that video's comment setting allows it. Each video either uses the channel default or overrides it: *anyone*, *approved users only*, or *off*. The owner can change a video's setting at any time; the change is appended as a `settings` record. Other people's blocks also need a small proof of work (10 bits) to deter spam.
+- **How the network enforces comment rules:** there's no central server deciding. Every node, whether a browser, `server.mjs` or the Cloudflare node, runs the same rules on every block it receives. A comment is accepted only if, according to the owner's records in that comment's own history, its author may comment on that video and hasn't been revoked. A comment that fails is rejected: never stored, never relayed. A modified client can still create such a block, but no honest node will keep or forward it. Commenters could try to dodge a newer "off" or revoke by attaching to older blocks, so nodes also re-apply the owner's latest settings and revokes when they display a channel.
 - **Several writers:** a block may have up to 8 parents, so blocks written at the same time by different people merge instead of conflicting.
 - **Nothing is deleted.** Hiding a video or comment, or revoking a commenter, appends a signed record. Every node applies these records when it displays the channel, so the full history stays verifiable.
-- **Keys:** every channel and list gets **its own Ed25519 key pair** when you create it. Whoever holds the private key controls the channel. Each channel's *Manage* tab has **Export channel key**, and the channel page warns you until you've exported it. *My node → Import channel key* moves control to another browser, or shares it with a co-owner. Separately, each browser has a **personal key** that identifies you when you comment; back it up from *My node*.
+- **Keys:** every channel and list gets **its own Ed25519 key pair** when you create it, and whoever holds the private key controls it. Each browser also has a **personal key** that identifies you when you comment. Channels made before per-channel keys are controlled by the personal key. Everything is managed on *My node*:
+  - **Back up all keys:** one file with your personal key and every channel and list key.
+  - **Export key:** on each channel row, for just that channel. For older channels, this exports the personal key file, labelled with what it controls.
+  - **Import keys:** accepts any of these files on another browser.
+
+  Channel pages warn you until the key controlling that channel has been backed up.
 
 ## Subscribe vs. Join
 

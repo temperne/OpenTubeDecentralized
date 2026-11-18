@@ -222,8 +222,8 @@ function validPayload(chain, b, CFG) {
   const kind = chain.genesis.payload.kind;
   if (!owner) {
     if (kind !== 'channel' || zeroBits(b.hash) < CFG.commentDifficulty) return false;
-    if (p.type === 'comment') return isHex(p.target, 64) && isStr(p.text, LIMITS.comment) && p.text.trim().length > 0 && isStr(p.name ?? '', LIMITS.name);
-    if (p.type === 'hide') return isHex(p.target, 64);
+    if (p.type === 'comment') return isHex(p.target, 64) && isStr(p.text, LIMITS.comment) && p.text.trim().length > 0 && isStr(p.name ?? '', LIMITS.name) && permittedAt(chain, b);
+    if (p.type === 'hide') return isHex(p.target, 64) && permittedAt(chain, b);
     return false;
   }
   switch (p.type) {
@@ -237,6 +237,33 @@ function validPayload(chain, b, CFG) {
     case 'add': return kind === 'list' && isHex(p.target, 64) && isStr(p.note ?? '', LIMITS.about);
     default: return false;
   }
+}
+
+// Network-level enforcement: every node checks a non-owner block against the owner's
+// rules as they stood in that block's own history. Blocks that fail are rejected:
+// not stored, not relayed. (derive() additionally applies later revokes and "off"
+// switches when displaying, so picking old parents can't dodge them.)
+function permittedAt(chain, b) {
+  const owner = chain.owner;
+  const history = chain.ancestors(b.parents);
+  const ownerBlocks = [...history].map(x => chain.blocks.get(x)).filter(x => x.author === owner && x.hash !== chain.id)
+    .sort((x, y) => x.height - y.height || x.ts - y.ts || (x.hash < y.hash ? -1 : 1));
+  let def = chain.genesis.payload.comments;
+  const videoPolicy = new Map(), allowed = new Set(), revoked = new Set();
+  for (const x of ownerBlocks) {
+    const p = x.payload;
+    if (p.type === 'profile' && p.comments) def = p.comments;
+    if (p.type === 'video' && p.comments) videoPolicy.set(x.hash, p.comments);
+    if (p.type === 'settings') { if (p.comments === 'default') videoPolicy.delete(p.target); else videoPolicy.set(p.target, p.comments); }
+    if (p.type === 'allow') { allowed.add(p.key); revoked.delete(p.key); }
+    if (p.type === 'revoke') { revoked.add(p.key); allowed.delete(p.key); }
+  }
+  if (revoked.has(b.author) || !history.has(b.payload.target)) return false;
+  const target = chain.blocks.get(b.payload.target);
+  if (b.payload.type === 'hide') return target.author === b.author;              // only your own comments
+  if (target.author !== owner || target.payload.type !== 'video') return false;  // comments attach to the channel's videos
+  const pol = videoPolicy.get(target.hash) ?? def;
+  return pol === 'anyone' || (pol === 'approved' && allowed.has(b.author));
 }
 
 // What a channel/list looks like after applying every rule (permissions, hides, profile edits).
@@ -416,7 +443,7 @@ async function createEngine(o) {
       const blocks = chain.missingFor(m.w.slice(0, 64), m.h.slice(0, 64));
       if (blocks.length) send({ t: 'bk', c: chain.id, b: blocks }, from);
     } else if (m.t === 'bk' && chain && Array.isArray(m.b)) {
-      insert(chain.id, m.b.slice(0, 5000), from);
+      await insert(chain.id, m.b.slice(0, 5000), from);
     } else if (m.t === 'mp' && Array.isArray(m.e)) {
       let any = false;
       for (const g of m.e.slice(0, 64)) if (await addToMempool(g)) any = true;
@@ -529,6 +556,7 @@ const channelKeys = Object.assign({}, await kv.get('channelKeys'));   // pub -> 
 const ownedSigners = new Map();
 for (const k of Object.values(channelKeys)) ownedSigners.set(k.pub, await makeSigner(k));
 const isMine = (pub) => pub === me.pub || ownedSigners.has(pub);
+let personalExported = !!(await kv.get('personalExported'));
 async function addChannelKey(k) {
   channelKeys[k.pub] = { ...channelKeys[k.pub], ...k };
   ownedSigners.set(k.pub, await makeSigner(k));
@@ -538,12 +566,61 @@ function download(name, obj) {
   const a = h('a', { href: URL.createObjectURL(new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' })), download: name });
   document.body.append(a); a.click(); a.remove();
 }
+const safeName = (n) => (n || 'key').replace(/[^\w-]+/g, '_').slice(0, 40);
+// Everything the personal key controls (channels created before each channel had its own key).
+const personalChains = () => [...new Set([...E.directory.keys(), ...mempool.keys(), ...chains.keys()])]
+  .filter(id => id !== MAIN_ID && genesisFor(id)?.author === me.pub).map(id => ({ chain: id, kind: genesisFor(id).payload.kind, name: genesisFor(id).payload.name }));
+function markExported(pub) {
+  if (channelKeys[pub]) { channelKeys[pub].exported = true; kv.set('channelKeys', channelKeys); }
+  if (pub === me.pub) kv.set('personalExported', (personalExported = true));
+  scheduleRender();
+}
 function exportChannelKey(chainId) {
-  const g = genesisFor(chainId); const k = channelKeys[g?.author];
-  if (!k) return toast('This browser does not hold that key');
-  download(`opentube-${g.payload.kind}-${(g.payload.name || 'key').replace(/[^\w-]+/g, '_')}-${fp(k.pub)}.json`,
-    { format: 'opentube-key', kind: g.payload.kind, chain: chainId, name: g.payload.name, pub: k.pub, priv: k.priv });
-  channelKeys[k.pub].exported = true; kv.set('channelKeys', channelKeys); scheduleRender();
+  const g = genesisFor(chainId); if (!g) return;
+  const k = channelKeys[g.author] || (g.author === me.pub ? identity : null);
+  if (!k) return toast('This browser does not hold the key for that ' + g.payload.kind);
+  const file = { format: 'opentube-key', kind: g.payload.kind, chain: chainId, name: g.payload.name, pub: k.pub, priv: k.priv };
+  // An older channel shares the personal key: say so in the file, and list everything that key controls.
+  if (g.author === me.pub) Object.assign(file, { sharedWithPersonalKey: true, controls: personalChains() });
+  download(`opentube-${g.payload.kind}-${safeName(g.payload.name)}-${fp(k.pub)}.json`, file);
+  markExported(k.pub);
+}
+const keyExported = (pub) => pub === me.pub ? personalExported : !!channelKeys[pub]?.exported;
+function backupAllKeys() {
+  const owned = (pub) => [...new Set([...E.directory.keys(), ...mempool.keys(), ...chains.keys()])].filter(id => id !== MAIN_ID && genesisFor(id)?.author === pub);
+  download(`opentube-all-keys-${new Date().toISOString().slice(0, 10)}.json`, {
+    format: 'opentube-keys', created: new Date().toISOString(),
+    personal: { pub: identity.pub, priv: identity.priv, controls: personalChains() },
+    channels: Object.values(channelKeys).map(k => {
+      const id = k.chain || owned(k.pub)[0]; const g = id && genesisFor(id);
+      return { chain: id || null, kind: g?.payload.kind || 'channel', name: g?.payload.name || k.name || '', pub: k.pub, priv: k.priv };
+    })
+  });
+  markExported(me.pub); for (const pub of Object.keys(channelKeys)) markExported(pub);
+  toast('All keys saved in one file. Keep it private.');
+}
+// One import for every kind of key file: a full backup, a channel/list key, or a personal key.
+async function importKeyFile(text) {
+  let f; try { f = JSON.parse(text); } catch { return toast('That file is not JSON'); }
+  const channelEntries = f.format === 'opentube-keys' ? (f.channels || []) : (f.kind === 'channel' || f.kind === 'list') && !f.sharedWithPersonalKey ? [f] : [];
+  const personal = f.format === 'opentube-keys' ? f.personal : (f.kind === 'personal' || f.sharedWithPersonalKey || !f.kind) ? f : null;
+  let added = 0, firstChain = null;
+  for (const k of channelEntries) {
+    if (!(await checkKeyPair(k))) continue;
+    await addChannelKey({ pub: k.pub, priv: k.priv, chain: isHex(k.chain, 64) ? k.chain : undefined, name: typeof k.name === 'string' ? k.name.slice(0, 60) : '', exported: true });
+    added++; firstChain ||= isHex(k.chain, 64) ? k.chain : null;
+  }
+  if (personal && personal.pub !== me.pub) {
+    if (!(await checkKeyPair(personal))) return toast('The personal key in that file is not valid');
+    const n = personal.controls?.length || 0;
+    if (confirm(`Use the personal key from this file in this browser?${n ? ` It controls ${n} older channel(s)/list(s).` : ''} Your current personal key will be replaced, so back it up first if it matters.`)) {
+      await kv.set('identity', { pub: personal.pub, priv: personal.priv }); await kv.set('personalExported', true);
+      return location.reload();
+    }
+  }
+  if (!added && !personal) return toast('No valid OpenTube keys found in that file');
+  if (added) toast(`Imported ${added} channel/list key${added === 1 ? '' : 's'}.`);
+  if (firstChain && openChain(firstChain)) { E.requestChain(chains.get(firstChain)); location.hash = `#/c/${firstChain}`; } else scheduleRender();
 }
 // Proves the private key matches the public key before accepting an import.
 async function checkKeyPair(k) {
@@ -795,11 +872,15 @@ function render(force) {
   if (!force && key === routeKey && views[route.name].refresh) return views[route.name].refresh();
   if (!force && key === routeKey && document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
   if (routeKey !== key) views.watch.leave?.();
+  if (routeKey !== key) kept.clear();
   routeKey = key;
   $('#app').replaceChildren(views[route.name].render());
 }
 
 const views = {};
+// Forms that must survive re-renders while new blocks stream in (cleared when the route changes).
+const kept = new Map();
+const keep = (key, make) => kept.get(key) || kept.set(key, make()).get(key);
 
 // ---- feed
 views.home = { render() {
@@ -846,7 +927,7 @@ views.chain = { render() {
       h('div', { style: 'flex:1;min-width:200px' }, h('h1', { style: 'margin:0' }, p.name),
         h('div', { class: 'sub' }, h('span', { class: 'fp' }, 'owner ' + fp(d.owner)), ` · ${d.blockCount} blocks · `, reg ? `registered in main block #${reg.height}` : h('span', { class: 'badge warn' }, 'registration pending'))),
       subBtn, joinBtn),
-    mine && channelKeys[d.owner] && !channelKeys[d.owner].exported ? h('div', { class: 'panel', style: 'margin:14px 0 0;border-color:var(--warn)' },
+    mine && !keyExported(d.owner) ? h('div', { class: 'panel', style: 'margin:14px 0 0;border-color:var(--warn)' },
       h('div', { class: 'row' }, h('span', { style: 'flex:1' }, `⚠ This ${d.kind}'s private key exists only in this browser. If you clear site data or lose this device, you lose the ${d.kind}.`),
         h('button', { class: 'primary', onclick: () => exportChannelKey(id) }, 'Export key now'))) : null,
     h('div', { class: 'tabs' }, tabs.map(t => h('a', { href: `#/c/${id}/${t}`, class: t === tab ? 'active' : '' }, t[0].toUpperCase() + t.slice(1)))),
@@ -854,22 +935,23 @@ views.chain = { render() {
 } };
 const chainTab = {
   videos(id, d) {
-    return h('div', {}, isMine(d.owner) ? uploadForm(id) : null,
+    return h('div', {}, isMine(d.owner) ? keep('upload', () => uploadForm(id)) : null,
       d.videos.length ? h('div', { class: 'grid' }, d.videos.map(b => videoCard(id, b))) : h('div', { class: 'empty' }, 'No videos yet.'));
   },
   posts(id, d) {
-    const ta = h('textarea', { placeholder: 'Write a post for your channel…', maxLength: LIMITS.text });
     return h('div', {},
-      isMine(d.owner) ? h('div', { class: 'panel' }, ta, h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { class: 'primary', onclick: async () => { if (!ta.value.trim()) return; await append(id, { type: 'post', text: ta.value.trim() }); ta.value = ''; } }, 'Post'))) : null,
+      isMine(d.owner) ? keep('post', () => { const ta = h('textarea', { placeholder: 'Write a post for your channel…', maxLength: LIMITS.text });
+        return h('div', { class: 'panel' }, ta, h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { class: 'primary', onclick: async () => { if (!ta.value.trim()) return; await append(id, { type: 'post', text: ta.value.trim() }); ta.value = ''; } }, 'Post'))); }) : null,
       h('div', { class: 'panel' }, d.posts.length ? d.posts.map(b => h('div', { class: 'item' }, h('div', { class: 'sub' }, ago(b.ts)), h('p', {}, b.payload.text),
         isMine(d.owner) ? h('button', { class: 'small', onclick: () => append(id, { type: 'hide', target: b.hash }) }, 'Hide') : null)) : h('div', { class: 'sub' }, 'No posts.')));
   },
   channels(id, d) {
-    const sel = h('select', {}, h('option', { value: '' }, 'Choose a registered channel…'), [...E.directory.values()].filter(e => e.genesis.payload.kind === 'channel').map(e => h('option', { value: e.genesis.hash }, `${e.genesis.payload.name} ·${fp(e.genesis.author)}`)));
-    const note = h('input', { type: 'text', placeholder: 'Why you recommend it (optional)', maxLength: 200 });
     return h('div', {},
-      isMine(d.owner) ? h('div', { class: 'panel' }, h('label', {}, 'Add a channel to this list'), sel, h('div', { style: 'margin-top:8px' }, note),
-        h('button', { class: 'primary', style: 'margin-top:8px', onclick: async () => { if (!sel.value) return; await append(id, { type: 'add', target: sel.value, note: note.value.trim() }); } }, 'Add')) : null,
+      isMine(d.owner) ? keep('add', () => {
+        const sel = h('select', {}, h('option', { value: '' }, 'Choose a registered channel…'), [...E.directory.values()].filter(e => e.genesis.payload.kind === 'channel').map(e => h('option', { value: e.genesis.hash }, `${e.genesis.payload.name} ·${fp(e.genesis.author)}`)));
+        const note = h('input', { type: 'text', placeholder: 'Why you recommend it (optional)', maxLength: 200 });
+        return h('div', { class: 'panel' }, h('label', {}, 'Add a channel to this list'), sel, h('div', { style: 'margin-top:8px' }, note),
+          h('button', { class: 'primary', style: 'margin-top:8px', onclick: async () => { if (!sel.value) return; await append(id, { type: 'add', target: sel.value, note: note.value.trim() }); note.value = ''; } }, 'Add')); }) : null,
       h('div', { class: 'panel', style: 'padding:8px' }, d.adds.length ? d.adds.map(b => h('div', { class: 'row' },
         h('div', { style: 'flex:1' }, chanRow(b.payload.target) || h('span', { class: 'sub' }, 'Unknown channel ' + b.payload.target.slice(0, 10))),
         b.payload.note ? h('span', { class: 'sub' }, b.payload.note) : null,
@@ -884,7 +966,8 @@ const chainTab = {
         h('div', {}, 'Blocks'), h('div', {}, String(d.blockCount)),
         h('div', {}, 'Heads'), h('div', { class: 'mono' }, [...chains.get(id).heads].map(x => x.slice(0, 12)).join(', '))));
   },
-  manage(id, d) {
+  manage(id, d) { return keep('manage', () => chainTab.manageBuild(id, d)); },
+  manageBuild(id, d) {
     const name = h('input', { type: 'text', value: d.profile.name, maxLength: LIMITS.name });
     const about = h('textarea', { value: d.profile.about, maxLength: LIMITS.about });
     const policy = h('select', {}, [['anyone', 'Anyone can comment'], ['approved', 'Only approved users'], ['off', 'Comments off']].map(([v, l]) => h('option', { value: v, selected: d.profile.comments === v }, l)));
@@ -899,11 +982,13 @@ const chainTab = {
     };
     return h('div', { class: 'split' },
       h('div', { class: 'panel', style: 'grid-column:1/-1' }, h('h3', { style: 'margin-top:0' }, 'Channel key'),
-        h('p', { class: 'sub' }, `This ${d.kind} is controlled by its own key pair. Whoever holds the private key controls it. Export it to keep a backup or to manage the ${d.kind} from another browser (import it on “My node”). Keep the file private.`),
+        h('p', { class: 'sub' }, d.owner === me.pub
+          ? `This ${d.kind} was created before each channel had its own key, so it is controlled by your personal key. The exported file is that personal key, labelled with everything it controls.`
+          : `This ${d.kind} is controlled by its own key pair. Whoever holds the private key controls it. Export it to keep a backup or to manage the ${d.kind} from another browser (My node → Import keys). Keep the file private.`),
         h('div', { class: 'mono', style: 'padding:8px;background:var(--panel-2);border-radius:6px' }, 'Public key: ' + d.owner),
         h('div', { class: 'row', style: 'margin-top:10px' },
-          channelKeys[d.owner] ? h('button', { class: 'primary', onclick: () => exportChannelKey(id) }, 'Export channel key') : h('span', { class: 'sub' }, 'This channel is signed by your personal key: back it up from “My node”.'),
-          channelKeys[d.owner]?.exported ? h('span', { class: 'badge ok' }, 'exported') : null)),
+          h('button', { class: 'primary', onclick: () => exportChannelKey(id) }, `Export ${d.kind} key`),
+          keyExported(d.owner) ? h('span', { class: 'badge ok' }, 'exported') : h('span', { class: 'badge warn' }, 'not backed up'))),
       h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Profile'),
         h('label', {}, 'Name'), name, h('label', {}, 'About'), about,
         d.kind === 'channel' ? [h('label', {}, 'Default comment setting (each video can override it)'), policy] : null,
@@ -912,8 +997,8 @@ const chainTab = {
       d.kind === 'channel' ? h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Commenters'),
         h('p', { class: 'sub' }, 'Approve a user to comment when the policy is “approved”. Revoking hides everything that user writes afterwards, in any mode. Nothing is deleted from the chain.'),
         key, h('div', { class: 'row', style: 'margin-top:8px' },
-          h('button', { onclick: async () => { if (!isKey(key.value.trim())) return toast('Not a valid public key'); await append(id, { type: 'allow', key: key.value.trim() }); key.value = ''; } }, 'Approve'),
-          h('button', { onclick: async () => { if (!isKey(key.value.trim())) return toast('Not a valid public key'); await append(id, { type: 'revoke', key: key.value.trim() }); key.value = ''; } }, 'Revoke')),
+          h('button', { onclick: async () => { if (!isKey(key.value.trim())) return toast('Not a valid public key'); await append(id, { type: 'allow', key: key.value.trim() }); kept.delete('manage'); scheduleRender(); } }, 'Approve'),
+          h('button', { onclick: async () => { if (!isKey(key.value.trim())) return toast('Not a valid public key'); await append(id, { type: 'revoke', key: key.value.trim() }); kept.delete('manage'); scheduleRender(); } }, 'Revoke')),
         h('h4', {}, 'Approved'), d.allowed.size ? [...d.allowed].map(k => h('div', { class: 'mono' }, k)) : h('div', { class: 'sub' }, 'None'),
         h('h4', {}, 'Revoked'), d.revoked.size ? [...d.revoked].map(k => h('div', { class: 'mono' }, k)) : h('div', { class: 'sub' }, 'None')) : null);
   }
@@ -1091,43 +1176,34 @@ views.me = { render() {
       await addChannelKey({ ...key, chain: g.hash });
     } catch (e) { create.disabled = false; return toast(e.message); }
     kv.set('pending', [...mempool.values()].filter(x => isMine(x.author)));
-    toast('Created with its own key. Export the key from the channel page to back it up.');
+    toast('Created with its own key. Back it up from My node → Back up all keys.');
     location.hash = `#/c/${g.hash}`;
   };
   const nameIn = h('input', { type: 'text', value: settings.name, maxLength: LIMITS.name });
   const cap = h('input', { type: 'number', min: 1, max: 1000, value: settings.hostCapGB });
   const importIn = h('input', { type: 'file', accept: 'application/json', class: 'hidden' });
-  const chanImport = h('input', { type: 'file', accept: 'application/json', class: 'hidden' });
-  chanImport.onchange = async () => {
-    try {
-      const k = JSON.parse(await chanImport.files[0].text());
-      if (!(await checkKeyPair(k))) throw new Error('bad');
-      await addChannelKey({ pub: k.pub, priv: k.priv, chain: isHex(k.chain, 64) ? k.chain : undefined, name: typeof k.name === 'string' ? k.name.slice(0, 60) : '', exported: true });
-      const id = isHex(k.chain, 64) ? k.chain : [...E.directory.keys()].find(x => genesisFor(x).author === k.pub);
-      toast('Key imported. You now control this ' + (k.kind || 'channel') + ' from this browser.');
-      if (id && openChain(id)) { E.requestChain(chains.get(id)); location.hash = `#/c/${id}`; } else scheduleRender();
-    } catch { toast('That is not a valid OpenTube channel key file'); }
-    chanImport.value = '';
-  };
-  importIn.onchange = async () => {
-    try {
-      const k = JSON.parse(await importIn.files[0].text());
-      if (!(await checkKeyPair(k))) throw new Error('bad file');
-      if (k.kind === 'channel' || k.kind === 'list') return toast('That is a channel key: use “Import channel key” instead');
-      if (!confirm('Replace this browser’s identity with the imported key? Channels owned by the current key will no longer be editable here unless you export it first.')) return;
-      await kv.set('identity', { pub: k.pub, priv: k.priv }); location.reload();
-    } catch { toast('That is not a valid OpenTube key file'); }
-  };
+  importIn.onchange = async () => { const f = importIn.files[0]; importIn.value = ''; if (f) await importKeyFile(await f.text()); };
+  const unbacked = owned.filter(id => !keyExported(genesisFor(id).author)).length + (personalExported ? 0 : 1);
   return h('div', {},
     h('h2', { style: 'margin-top:0' }, 'My node'),
+    h('div', { class: 'panel', style: unbacked ? 'border-color:var(--warn)' : '' },
+      h('div', { class: 'row', style: 'justify-content:space-between' }, h('h3', { style: 'margin:0' }, 'Keys & backup'),
+        unbacked ? h('span', { class: 'badge warn' }, `${unbacked} key${unbacked === 1 ? '' : 's'} not backed up`) : h('span', { class: 'badge ok' }, 'all keys backed up')),
+      h('p', { class: 'sub' }, 'Your keys exist only in this browser. Whoever holds a channel’s private key controls that channel. “Back up all keys” saves your personal key and every channel and list key in one file. “Import keys” accepts that file, or any single key file, on another browser.'),
+      h('div', { class: 'row' },
+        h('button', { class: 'primary', onclick: backupAllKeys }, 'Back up all keys'),
+        h('button', { onclick: () => importIn.click() }, 'Import keys'), importIn)),
+    h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Your channels & lists'),
+      owned.length ? owned.map(id => { const owner = genesisFor(id).author; return h('div', { class: 'row' }, h('div', { style: 'flex:1;min-width:220px' }, chanRow(id)),
+        h('span', { class: 'sub' }, owner === me.pub ? 'personal key' : 'own key'),
+        h('button', { class: 'small', onclick: () => exportChannelKey(id) }, keyExported(owner) ? 'Export key' : 'Export key ⚠')); })
+        : h('div', { class: 'sub' }, 'None yet. Create one below, or import a key.')),
     h('div', { class: 'split' },
-      h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Identity'),
-        h('p', { class: 'sub' }, 'Your personal key identifies you when you comment on other channels. Channels and lists you create each get their own key; export those from each channel’s Manage tab.'),
+      h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Personal key'),
+        h('p', { class: 'sub' }, 'Identifies you when you comment on other people’s channels. It is included in “Back up all keys”.'),
         h('div', { class: 'mono', style: 'padding:8px;background:var(--panel-2);border-radius:6px' }, me.pub),
         h('div', { class: 'row', style: 'margin-top:10px' },
-          h('button', { onclick: () => navigator.clipboard?.writeText(me.pub).then(() => toast('Key copied')) }, 'Copy public key'),
-          h('button', { onclick: () => download(`opentube-personal-key-${fp(me.pub)}.json`, { format: 'opentube-key', kind: 'personal', pub: identity.pub, priv: identity.priv }) }, 'Back up personal key'),
-          h('button', { onclick: () => importIn.click() }, 'Restore personal key'), importIn),
+          h('button', { onclick: () => navigator.clipboard?.writeText(me.pub).then(() => toast('Public key copied')) }, 'Copy public key')),
         h('label', {}, 'Display name for comments'), nameIn,
         h('label', {}, 'Storage limit per joined channel (GB)'), cap,
         h('button', { style: 'margin-top:10px', onclick: () => { settings.name = nameIn.value.trim().slice(0, LIMITS.name) || settings.name; settings.hostCapGB = Math.max(1, Number(cap.value) || 5); saveSettings(); toast('Saved'); } }, 'Save')),
@@ -1135,11 +1211,6 @@ views.me = { render() {
         h('p', { class: 'sub' }, `This creates a new key pair and a new chain whose genesis block it signs. The whole genesis block is embedded in a main-chain block, which your browser mines (proof of work, ${CFG.difficulty} bits). That usually takes seconds to a minute.`),
         h('label', {}, 'Type'), kind, h('label', {}, 'Name'), name, h('label', {}, 'About'), about, chanOnly,
         h('div', { style: 'margin-top:12px' }, create))),
-    h('div', { class: 'panel' }, h('div', { class: 'row', style: 'justify-content:space-between' }, h('h3', { style: 'margin:0' }, 'Your channels & lists'),
-        h('button', { onclick: () => chanImport.click() }, 'Import channel key'), chanImport),
-      owned.length ? owned.map(id => h('div', { class: 'row' }, h('div', { style: 'flex:1' }, chanRow(id)),
-        channelKeys[genesisFor(id).author] ? h('button', { class: 'small', onclick: () => exportChannelKey(id) }, channelKeys[genesisFor(id).author].exported ? 'Export key again' : 'Export key ⚠') : null))
-        : h('div', { class: 'sub' }, 'None yet.')),
     h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Subscriptions'), Object.keys(subs).length ? Object.keys(subs).map(chanRow) : h('div', { class: 'sub' }, 'None yet.')),
     h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Node'),
       h('div', { class: 'kv' },
