@@ -1,0 +1,608 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenTube Decentralized</title>
+<meta name="description" content="A serverless, peer-to-peer video platform that runs entirely in your browser.">
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel-2: #1f232c; --border: #2a2f3a;
+    --text: #e8eaf0; --muted: #9aa3b2; --accent: #ff4d5e; --accent-2: #3ea6ff; --ok: #3ecf8e;
+    --radius: 12px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f6f7f9; --panel: #ffffff; --panel-2: #eef0f4; --border: #dde1e8; --text: #15181e; --muted: #5b6475; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  a { color: var(--accent-2); }
+  header {
+    position: sticky; top: 0; z-index: 10; display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+    padding: 12px 16px; background: var(--panel); border-bottom: 1px solid var(--border);
+  }
+  .logo { font-weight: 800; font-size: 20px; letter-spacing: -0.5px; cursor: pointer; white-space: nowrap; }
+  .logo span { color: var(--accent); }
+  #search { flex: 1 1 220px; min-width: 0; padding: 9px 14px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel-2); color: var(--text); }
+  nav { display: flex; gap: 8px; flex-wrap: wrap; }
+  button, .btn {
+    font: inherit; cursor: pointer; border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
+    padding: 8px 14px; border-radius: 8px;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  main { max-width: 1200px; margin: 0 auto; padding: 20px 16px 60px; }
+  .status { font-size: 12px; color: var(--muted); display: flex; gap: 14px; flex-wrap: wrap; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 5px; }
+  .dot.on { background: var(--ok); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 18px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; cursor: pointer; transition: transform .1s; }
+  .card:hover { transform: translateY(-2px); }
+  .thumb { aspect-ratio: 16/9; background: #000 center/cover no-repeat; display: grid; place-items: center; color: #555; font-size: 32px; }
+  .card .meta { padding: 10px 12px; }
+  .card h3 { margin: 0 0 4px; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; }
+  .watch { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 20px; }
+  @media (max-width: 900px) { .watch { grid-template-columns: 1fr; } }
+  video { width: 100%; aspect-ratio: 16/9; background: #000; border-radius: var(--radius); display: block; }
+  .stats { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--muted); margin: 10px 0; }
+  .bar { height: 4px; background: var(--panel-2); border-radius: 2px; overflow: hidden; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+  label { display: block; font-weight: 600; margin: 14px 0 6px; }
+  input[type=text], textarea {
+    width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel-2); color: var(--text); font: inherit;
+  }
+  textarea { min-height: 90px; resize: vertical; }
+  .drop { border: 2px dashed var(--border); border-radius: var(--radius); padding: 30px; text-align: center; color: var(--muted); cursor: pointer; }
+  .drop.over { border-color: var(--accent); color: var(--text); }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .comment { border-top: 1px solid var(--border); padding: 10px 0; }
+  .comment b { font-size: 13px; }
+  .comment p { margin: 4px 0 0; white-space: pre-wrap; word-break: break-word; }
+  .desc { white-space: pre-wrap; word-break: break-word; }
+  code.magnet { display: block; font-size: 11px; word-break: break-all; background: var(--panel-2); padding: 8px; border-radius: 6px; color: var(--muted); }
+  .empty { text-align: center; color: var(--muted); padding: 60px 20px; }
+  .hidden { display: none !important; }
+  #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--panel-2); border: 1px solid var(--border); padding: 10px 18px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: calc(100% - 32px); }
+  #toast.show { opacity: 1; }
+  .badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); }
+  .badge.seed { color: var(--ok); border-color: var(--ok); }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo" id="home">Open<span>Tube</span></div>
+  <input id="search" type="search" placeholder="Search videos…" aria-label="Search videos">
+  <nav>
+    <button class="primary" id="nav-upload">Upload</button>
+    <button id="nav-mine">My videos</button>
+    <button id="nav-settings">Settings</button>
+  </nav>
+  <div class="status" style="width:100%">
+    <span><span class="dot" id="dot-db"></span><span id="st-db">Catalog: connecting…</span></span>
+    <span><span class="dot" id="dot-p2p"></span><span id="st-p2p">P2P: starting…</span></span>
+    <span id="st-seed"></span>
+  </div>
+</header>
+
+<main>
+  <!-- Browse -->
+  <section id="view-browse">
+    <div class="grid" id="grid"></div>
+    <div class="empty hidden" id="grid-empty">
+      <p><strong>No videos yet.</strong></p>
+      <p>Be the first: click <b>Upload</b>. Your browser will share the video directly with other viewers — no server required.</p>
+    </div>
+  </section>
+
+  <!-- Watch -->
+  <section id="view-watch" class="hidden">
+    <div class="watch">
+      <div>
+        <video id="player" controls playsinline></video>
+        <div class="bar"><div id="w-progress"></div></div>
+        <div class="stats" id="w-stats"></div>
+        <h2 id="w-title" style="margin:8px 0 4px"></h2>
+        <div class="sub" id="w-sub"></div>
+        <div class="row" style="margin:12px 0">
+          <button id="w-share">Copy share link</button>
+          <button id="w-download" disabled>Download</button>
+          <span class="badge" id="w-badge"></span>
+        </div>
+        <div class="panel"><div class="desc" id="w-desc"></div></div>
+        <h3>Comments</h3>
+        <div class="row">
+          <input type="text" id="c-text" placeholder="Add a comment…" maxlength="1000" style="flex:1">
+          <button id="c-post">Post</button>
+        </div>
+        <div id="comments"></div>
+      </div>
+      <aside>
+        <h3 style="margin-top:0">More videos</h3>
+        <div id="related" style="display:grid;gap:12px"></div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- Upload -->
+  <section id="view-upload" class="hidden">
+    <div class="panel" style="max-width:720px;margin:0 auto">
+      <h2 style="margin-top:0">Publish a video</h2>
+      <p class="sub">Your video is never uploaded to a server. Your browser becomes a seed and streams it peer‑to‑peer (WebRTC / WebTorrent). Other viewers re‑share it while they watch. Keep at least one tab open (yours or a viewer's) so the video stays available.</p>
+      <div class="drop" id="drop">Drop a video file here or click to choose<br><small>MP4 (H.264/AAC) or WebM stream best</small></div>
+      <input type="file" id="file" accept="video/*" class="hidden">
+      <div id="u-preview" class="hidden" style="margin-top:14px">
+        <video id="u-video" controls muted playsinline></video>
+      </div>
+      <label for="u-title">Title</label>
+      <input type="text" id="u-title" maxlength="120">
+      <label for="u-desc">Description</label>
+      <textarea id="u-desc" maxlength="5000"></textarea>
+      <div class="row" style="margin-top:16px">
+        <button class="primary" id="u-publish" disabled>Publish</button>
+        <span class="sub" id="u-status"></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Settings -->
+  <section id="view-settings" class="hidden">
+    <div class="panel" style="max-width:720px;margin:0 auto">
+      <h2 style="margin-top:0">Settings</h2>
+      <label for="s-name">Display name</label>
+      <input type="text" id="s-name" maxlength="40">
+      <label for="s-relays">Catalog relays (Gun.js peers, one per line)</label>
+      <textarea id="s-relays"></textarea>
+      <p class="sub">Relays only sync the small public catalog (titles, magnet links, comments). Anyone can run one with <code>npx gun</code>. Video data never touches them.</p>
+      <label for="s-trackers">WebTorrent trackers (one per line)</label>
+      <textarea id="s-trackers"></textarea>
+      <p class="sub">Trackers help peers find each other (signaling only).</p>
+      <div class="row" style="margin-top:16px">
+        <button class="primary" id="s-save">Save &amp; reload</button>
+        <button id="s-reset">Reset defaults</button>
+      </div>
+      <h3>Add video by magnet link</h3>
+      <div class="row">
+        <input type="text" id="s-magnet" placeholder="magnet:?xt=urn:btih:…" style="flex:1">
+        <button id="s-open">Watch</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="toast"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/gun@0.2020.1240/gun.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/webtorrent@1.9.7/webtorrent.min.js"></script>
+<script>
+(() => {
+  'use strict';
+
+  // ---------- Config ----------
+  const NAMESPACE = 'opentube-decentralized-v1';
+  const DEFAULT_RELAYS = [
+    'https://gun-manhattan.herokuapp.com/gun',
+    'https://peer.wallie.io/gun',
+    'https://gundb-relay-mlccl.ondigitalocean.app/gun'
+  ];
+  const DEFAULT_TRACKERS = [
+    'wss://tracker.openwebtorrent.com',
+    'wss://tracker.webtorrent.dev',
+    'wss://tracker.btorrent.xyz',
+    'wss://tracker.files.fm:7073/announce'
+  ];
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+  };
+  const settings = {
+    name: store.get('ot.name', 'anon-' + Math.random().toString(36).slice(2, 7)),
+    relays: store.get('ot.relays', DEFAULT_RELAYS),
+    trackers: store.get('ot.trackers', DEFAULT_TRACKERS)
+  };
+  store.set('ot.name', settings.name);
+
+  // ---------- Helpers ----------
+  const $ = (id) => document.getElementById(id);
+  const el = (tag, props = {}, ...kids) => {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(props)) {
+      if (k === 'class') n.className = v;
+      else if (k === 'style') n.style.cssText = v;
+      else if (k.startsWith('on')) n.addEventListener(k.slice(2), v);
+      else n[k] = v;
+    }
+    for (const kid of kids) if (kid != null) n.append(kid);
+    return n;
+  };
+  const toast = (msg) => { const t = $('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), 2600); };
+  const fmtBytes = (b) => { if (!b) return '0 B'; const u = ['B','KB','MB','GB']; const i = Math.min(3, Math.floor(Math.log(b) / Math.log(1024))); return (b / 1024 ** i).toFixed(i ? 1 : 0) + ' ' + u[i]; };
+  const timeAgo = (ts) => {
+    const s = Math.max(1, (Date.now() - ts) / 1000);
+    for (const [n, l] of [[31536000,'year'],[2592000,'month'],[86400,'day'],[3600,'hour'],[60,'minute']]) if (s >= n) { const v = Math.floor(s / n); return `${v} ${l}${v > 1 ? 's' : ''} ago`; }
+    return 'just now';
+  };
+  const str = (v, max) => (typeof v === 'string' ? v : '').slice(0, max);
+  const isHash = (h) => typeof h === 'string' && /^[a-f0-9]{40}$/i.test(h);
+  const safeThumb = (t) => (typeof t === 'string' && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(t) && t.length < 200000) ? t : '';
+  const hashFromMagnet = (m) => { const x = /xt=urn:btih:([a-f0-9]{40})/i.exec(m || ''); return x ? x[1].toLowerCase() : null; };
+  const magnetFor = (hash, name) => 'magnet:?xt=urn:btih:' + hash + (name ? '&dn=' + encodeURIComponent(name) : '') + settings.trackers.map(t => '&tr=' + encodeURIComponent(t)).join('');
+
+  // ---------- Local persistence of your own videos (IndexedDB) ----------
+  // Lets you keep seeding your uploads after a page reload.
+  const idb = (() => {
+    let dbp;
+    const open = () => dbp || (dbp = new Promise((res, rej) => {
+      const r = indexedDB.open('opentube', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('files', { keyPath: 'hash' });
+      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+    }));
+    const tx = async (mode, fn) => { const db = await open(); return new Promise((res, rej) => { const t = db.transaction('files', mode); const r = fn(t.objectStore('files')); t.oncomplete = () => res(r && r.result); t.onerror = () => rej(t.error); }); };
+    return {
+      put: (rec) => tx('readwrite', s => s.put(rec)),
+      all: () => tx('readonly', s => s.getAll()),
+      del: (hash) => tx('readwrite', s => s.delete(hash))
+    };
+  })();
+
+  // ---------- Decentralized catalog (Gun.js) ----------
+  const gun = Gun({ peers: settings.relays, localStorage: true });
+  const root = gun.get(NAMESPACE);
+  const videos = new Map(); // hash -> video meta
+
+  let relayUp = false;
+  gun.on('hi', () => { relayUp = true; setStatus(); });
+  gun.on('bye', () => { setStatus(); });
+  setTimeout(setStatus, 4000);
+
+  root.get('videos').map().on((data, key) => {
+    if (!data || !isHash(key)) return;
+    if (data.deleted) { videos.delete(key); scheduleRender(); return; }
+    const v = {
+      hash: key.toLowerCase(),
+      title: str(data.title, 120) || 'Untitled',
+      desc: str(data.desc, 5000),
+      author: str(data.author, 40) || 'anon',
+      name: str(data.name, 200),
+      size: Number(data.size) || 0,
+      ts: Number(data.ts) || 0,
+      thumb: safeThumb(data.thumb)
+    };
+    videos.set(v.hash, v);
+    scheduleRender();
+  });
+
+  function publishMeta(v) {
+    root.get('videos').get(v.hash).put({
+      title: v.title, desc: v.desc, author: v.author, name: v.name, size: v.size, ts: v.ts, thumb: v.thumb || ''
+    });
+  }
+
+  // ---------- P2P video transport (WebTorrent) ----------
+  if (!WebTorrent.WEBRTC_SUPPORT) toast('Your browser lacks WebRTC — peer-to-peer streaming will not work.');
+  const client = new WebTorrent();
+  client.on('error', (e) => { console.error(e); toast('P2P error: ' + (e.message || e)); });
+  const mySeeds = new Set();
+
+  function setStatus() {
+    $('dot-db').classList.toggle('on', relayUp);
+    $('st-db').textContent = relayUp ? `Catalog: synced (${videos.size} videos)` : `Catalog: offline/local (${videos.size} videos)`;
+    $('dot-p2p').classList.add('on');
+    const peers = client.torrents.reduce((n, t) => n + t.numPeers, 0);
+    $('st-p2p').textContent = `P2P: ${client.torrents.length} torrents · ${peers} peers · ↑ ${fmtBytes(client.uploadSpeed)}/s ↓ ${fmtBytes(client.downloadSpeed)}/s`;
+    $('st-seed').textContent = mySeeds.size ? `Seeding ${mySeeds.size} of your videos` : '';
+  }
+  setInterval(setStatus, 1000);
+
+  function getTorrent(hash) { return client.torrents.find(t => t.infoHash === hash) || null; }
+
+  function seedFile(file) {
+    return new Promise((resolve, reject) => {
+      const existing = client.torrents.find(t => t.files[0] && t.files[0].name === file.name && t.length === file.size && t.done);
+      if (existing) return resolve(existing);
+      try {
+        client.seed(file, { announce: settings.trackers, name: file.name }, (t) => resolve(t));
+      } catch (e) { reject(e); }
+    });
+  }
+
+  async function reseedSaved() {
+    try {
+      const recs = await idb.all();
+      for (const r of recs) {
+        const file = new File([r.blob], r.name, { type: r.type || 'video/mp4' });
+        const t = await seedFile(file);
+        mySeeds.add(t.infoHash);
+        if (t.infoHash !== r.hash) console.warn('Hash mismatch while reseeding', r.hash, t.infoHash);
+        // Re-announce metadata in case the catalog lost it.
+        if (r.meta) publishMeta(r.meta);
+      }
+      if (recs.length) toast(`Re-seeding ${recs.length} saved video(s)`);
+    } catch (e) { console.warn('IndexedDB unavailable', e); }
+  }
+
+  // ---------- Rendering ----------
+  let renderQueued = false;
+  function scheduleRender() { if (renderQueued) return; renderQueued = true; requestAnimationFrame(() => { renderQueued = false; render(); }); }
+
+  function card(v, compact) {
+    const thumb = el('div', { class: 'thumb' });
+    if (v.thumb) thumb.style.backgroundImage = `url("${v.thumb}")`; else thumb.textContent = '▶';
+    const meta = el('div', { class: 'meta' },
+      el('h3', { textContent: v.title, title: v.title }),
+      el('div', { class: 'sub', textContent: `${v.author} · ${v.ts ? timeAgo(v.ts) : ''}${v.size ? ' · ' + fmtBytes(v.size) : ''}` })
+    );
+    if (mySeeds.has(v.hash)) meta.append(el('span', { class: 'badge seed', textContent: 'seeding' }));
+    const c = el('div', { class: 'card', onclick: () => go('watch', v.hash) }, thumb, meta);
+    if (compact) { c.style.display = 'grid'; c.style.gridTemplateColumns = '140px 1fr'; }
+    return c;
+  }
+
+  function sortedVideos(filter) {
+    const q = ($('search').value || '').trim().toLowerCase();
+    return [...videos.values()]
+      .filter(v => !q || (v.title + ' ' + v.desc + ' ' + v.author).toLowerCase().includes(q))
+      .filter(filter || (() => true))
+      .sort((a, b) => b.ts - a.ts);
+  }
+
+  let view = 'browse', viewArg = null, mineOnly = false;
+  function render() {
+    setStatus();
+    if (view === 'browse') {
+      const list = sortedVideos(mineOnly ? (v => mySeeds.has(v.hash)) : null);
+      $('grid').replaceChildren(...list.map(v => card(v)));
+      $('grid-empty').classList.toggle('hidden', list.length > 0);
+    } else if (view === 'watch') {
+      const v = videos.get(viewArg);
+      if (v) {
+        $('w-title').textContent = v.title;
+        $('w-sub').textContent = `${v.author} · ${v.ts ? timeAgo(v.ts) : ''}${v.size ? ' · ' + fmtBytes(v.size) : ''}`;
+        $('w-desc').textContent = v.desc || 'No description.';
+      }
+      $('related').replaceChildren(...sortedVideos(x => x.hash !== viewArg).slice(0, 12).map(x => card(x, true)));
+    }
+  }
+
+  // ---------- Routing ----------
+  function go(name, arg) {
+    const hash = name === 'browse' ? '' : name === 'watch' ? '#watch=' + arg : '#' + name;
+    if (location.hash !== hash) history.pushState(null, '', hash || location.pathname + location.search);
+    route();
+  }
+  let lastRoute = null;
+  function route() {
+    const h = location.hash.slice(1);
+    if (h === lastRoute && view === 'watch') return; // popstate + hashchange can both fire
+    lastRoute = h;
+    const params = new URLSearchParams(h);
+    let name = 'browse', arg = null;
+    if (params.has('watch')) { name = 'watch'; arg = params.get('watch'); }
+    else if (['upload', 'settings', 'mine'].includes(h)) name = h;
+    mineOnly = name === 'mine';
+    if (name === 'mine') name = 'browse';
+    for (const s of ['browse', 'watch', 'upload', 'settings']) $('view-' + s).classList.toggle('hidden', s !== name);
+    if (view === 'watch' && (name !== 'watch' || arg !== viewArg)) stopWatching();
+    view = name; viewArg = arg;
+    if (name === 'watch') startWatching(arg, params);
+    if (name === 'settings') fillSettings();
+    render();
+    window.scrollTo(0, 0);
+  }
+  window.addEventListener('popstate', route);
+  window.addEventListener('hashchange', route);
+
+  // ---------- Watch ----------
+  let watchTimer = null, watchCommentsRef = null, watchTorrent = null;
+  function stopWatching() {
+    clearInterval(watchTimer); watchTimer = null;
+    if (watchCommentsRef) { watchCommentsRef.off(); watchCommentsRef = null; }
+    const p = $('player'); p.pause(); p.removeAttribute('src'); p.load();
+    // Keep torrents we seed; drop torrents we were only watching to save memory.
+    if (watchTorrent && !mySeeds.has(watchTorrent.infoHash)) watchTorrent.destroy();
+    watchTorrent = null;
+  }
+
+  function startWatching(arg, params) {
+    let hash = isHash(arg) ? arg.toLowerCase() : hashFromMagnet(arg);
+    if (!hash) { $('w-title').textContent = 'Invalid video link'; return; }
+    viewArg = hash;
+    // A share link may carry metadata so it works even if the catalog hasn't synced.
+    if (!videos.has(hash) && params.get('t')) {
+      videos.set(hash, { hash, title: str(params.get('t'), 120), desc: '', author: str(params.get('a'), 40) || 'anon', name: '', size: 0, ts: 0, thumb: '' });
+    }
+    $('w-title').textContent = 'Loading…'; $('w-sub').textContent = ''; $('w-desc').textContent = '';
+    $('w-progress').style.width = '0';
+    $('w-download').disabled = true;
+    $('comments').replaceChildren();
+
+    const v = videos.get(hash);
+    const magnet = magnetFor(hash, v && v.name);
+    const onTorrent = (t) => {
+      watchTorrent = t;
+      const file = t.files.find(f => /\.(mp4|m4v|webm|mkv|mov|ogv)$/i.test(f.name)) || t.files.reduce((a, b) => a.length > b.length ? a : b);
+      const player = $('player');
+      try {
+        file.renderTo(player, { autoplay: true, controls: true }, (err) => {
+          if (err) fallbackBlob(file, player);
+        });
+      } catch { fallbackBlob(file, player); }
+      $('w-download').disabled = false;
+      $('w-download').onclick = () => file.getBlobURL((err, url) => {
+        if (err) return toast('Download not ready: ' + err.message);
+        el('a', { href: url, download: file.name }).click();
+      });
+    };
+    const existing = getTorrent(hash);
+    if (existing) {
+      if (existing.ready) onTorrent(existing); else existing.once('ready', () => onTorrent(existing));
+    } else {
+      const t = client.add(magnet, { announce: settings.trackers });
+      t.once('ready', () => onTorrent(t));
+      watchTorrent = t;
+    }
+
+    watchTimer = setInterval(() => {
+      const t = getTorrent(hash);
+      if (!t) return;
+      $('w-progress').style.width = (t.progress * 100).toFixed(1) + '%';
+      const seeding = mySeeds.has(hash);
+      $('w-badge').textContent = seeding ? 'You are seeding this' : t.done ? 'Downloaded · sharing with others' : 'Streaming from peers';
+      $('w-badge').className = 'badge' + (seeding || t.done ? ' seed' : '');
+      $('w-stats').replaceChildren(
+        el('span', { textContent: `${(t.progress * 100).toFixed(1)}%` }),
+        el('span', { textContent: `${t.numPeers} peer${t.numPeers === 1 ? '' : 's'}` }),
+        el('span', { textContent: `↓ ${fmtBytes(t.downloadSpeed)}/s` }),
+        el('span', { textContent: `↑ ${fmtBytes(t.uploadSpeed)}/s` }),
+        !t.ready ? el('span', { textContent: 'Finding peers… (someone who has this video must be online)' }) : null
+      );
+    }, 500);
+
+    // Comments
+    const seen = new Set();
+    watchCommentsRef = root.get('comments').get(hash);
+    watchCommentsRef.map().on((c, id) => {
+      if (!c || seen.has(id) || typeof c.text !== 'string') return;
+      seen.add(id);
+      const node = el('div', { class: 'comment' },
+        el('b', { textContent: str(c.author, 40) || 'anon' }),
+        el('span', { class: 'sub', textContent: ' · ' + (c.ts ? timeAgo(Number(c.ts)) : '') }),
+        el('p', { textContent: str(c.text, 1000) })
+      );
+      node.dataset.ts = Number(c.ts) || 0;
+      const list = $('comments');
+      const after = [...list.children].find(x => Number(x.dataset.ts) < node.dataset.ts);
+      list.insertBefore(node, after || null);
+    });
+  }
+
+  function fallbackBlob(file, player) {
+    $('w-stats').append(el('span', { textContent: 'This format can\'t stream progressively — playing once fully downloaded…' }));
+    file.getBlobURL((err, url) => { if (!err) { player.src = url; player.play().catch(() => {}); } });
+  }
+
+  $('c-post').onclick = () => {
+    const text = $('c-text').value.trim();
+    if (!text || !watchCommentsRef) return;
+    watchCommentsRef.set({ text: text.slice(0, 1000), author: settings.name, ts: Date.now() });
+    $('c-text').value = '';
+  };
+  $('c-text').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('c-post').click(); });
+
+  $('w-share').onclick = async () => {
+    const v = videos.get(viewArg);
+    const url = location.origin + location.pathname + '#watch=' + viewArg + (v ? '&t=' + encodeURIComponent(v.title) + '&a=' + encodeURIComponent(v.author) : '');
+    try { await navigator.clipboard.writeText(url); toast('Share link copied'); }
+    catch { prompt('Copy this link:', url); }
+  };
+
+  // ---------- Upload ----------
+  let pendingFile = null, pendingThumb = '';
+  const drop = $('drop');
+  drop.onclick = () => $('file').click();
+  drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+  drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('over'); if (e.dataTransfer.files[0]) pickFile(e.dataTransfer.files[0]); });
+  $('file').onchange = (e) => { if (e.target.files[0]) pickFile(e.target.files[0]); };
+
+  function pickFile(file) {
+    if (!file.type.startsWith('video/') && !/\.(mp4|m4v|webm|mkv|mov|ogv)$/i.test(file.name)) return toast('Please choose a video file');
+    pendingFile = file; pendingThumb = '';
+    drop.textContent = `${file.name} (${fmtBytes(file.size)})`;
+    if (!$('u-title').value) $('u-title').value = file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ');
+    const v = $('u-video');
+    v.src = URL.createObjectURL(file);
+    $('u-preview').classList.remove('hidden');
+    v.onloadeddata = () => { v.currentTime = Math.min(1, (v.duration || 2) / 2); };
+    v.onseeked = () => { if (!pendingThumb) pendingThumb = makeThumb(v); };
+    $('u-publish').disabled = false;
+  }
+
+  function makeThumb(video) {
+    try {
+      const c = document.createElement('canvas');
+      c.width = 320; c.height = 180;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#000'; ctx.fillRect(0, 0, 320, 180);
+      const r = Math.min(320 / video.videoWidth, 180 / video.videoHeight);
+      const w = video.videoWidth * r, h = video.videoHeight * r;
+      ctx.drawImage(video, (320 - w) / 2, (180 - h) / 2, w, h);
+      return c.toDataURL('image/jpeg', 0.7);
+    } catch { return ''; }
+  }
+
+  $('u-publish').onclick = async () => {
+    if (!pendingFile) return;
+    const title = $('u-title').value.trim();
+    if (!title) return toast('Please add a title');
+    $('u-publish').disabled = true;
+    $('u-status').textContent = 'Hashing & seeding…';
+    try {
+      if (!pendingThumb) pendingThumb = makeThumb($('u-video'));
+      const t = await seedFile(pendingFile);
+      mySeeds.add(t.infoHash);
+      const meta = {
+        hash: t.infoHash, title, desc: $('u-desc').value.trim(), author: settings.name,
+        name: pendingFile.name, size: pendingFile.size, ts: Date.now(), thumb: pendingThumb
+      };
+      videos.set(meta.hash, meta);
+      publishMeta(meta);
+      idb.put({ hash: meta.hash, name: pendingFile.name, type: pendingFile.type, blob: pendingFile, meta })
+        .catch(e => console.warn('Could not persist file for re-seeding', e));
+      $('u-status').textContent = '';
+      toast('Published! Keep this tab open so others can stream it.');
+      resetUpload();
+      go('watch', meta.hash);
+    } catch (e) {
+      console.error(e);
+      $('u-status').textContent = 'Failed: ' + (e.message || e);
+      $('u-publish').disabled = false;
+    }
+  };
+
+  function resetUpload() {
+    pendingFile = null; pendingThumb = '';
+    $('u-title').value = ''; $('u-desc').value = '';
+    $('u-preview').classList.add('hidden'); $('u-video').removeAttribute('src');
+    drop.textContent = 'Drop a video file here or click to choose';
+    $('u-publish').disabled = true; $('file').value = '';
+  }
+
+  // ---------- Settings ----------
+  function fillSettings() {
+    $('s-name').value = settings.name;
+    $('s-relays').value = settings.relays.join('\n');
+    $('s-trackers').value = settings.trackers.join('\n');
+  }
+  const lines = (s) => s.split('\n').map(x => x.trim()).filter(Boolean);
+  $('s-save').onclick = () => {
+    store.set('ot.name', $('s-name').value.trim().slice(0, 40) || settings.name);
+    store.set('ot.relays', lines($('s-relays').value));
+    store.set('ot.trackers', lines($('s-trackers').value));
+    location.hash = ''; location.reload();
+  };
+  $('s-reset').onclick = () => { settings.relays = DEFAULT_RELAYS; settings.trackers = DEFAULT_TRACKERS; fillSettings(); };
+  $('s-open').onclick = () => {
+    const h = hashFromMagnet($('s-magnet').value);
+    if (!h) return toast('That is not a valid magnet link');
+    go('watch', h);
+  };
+
+  // ---------- Nav ----------
+  $('home').onclick = () => go('browse');
+  $('nav-upload').onclick = () => go('upload');
+  $('nav-mine').onclick = () => go('mine');
+  $('nav-settings').onclick = () => go('settings');
+  $('search').addEventListener('input', () => { if (view !== 'browse') go('browse'); scheduleRender(); });
+
+  window.addEventListener('beforeunload', (e) => {
+    if (mySeeds.size && !client.torrents.every(t => t.numPeers === 0)) { e.preventDefault(); e.returnValue = ''; }
+  });
+
+  reseedSaved();
+  route();
+})();
+</script>
+</body>
+</html>
