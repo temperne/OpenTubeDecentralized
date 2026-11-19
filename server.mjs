@@ -8,7 +8,11 @@
 //   MAIN_ONLY=1 node server.mjs           # keep only the main chain, not channel chains
 //   MINE=0 node server.mjs                # don't spend CPU confirming registrations
 //   NODE_NAME="My site" node server.mjs   # name used for this node's ranking list
+//   RTMP_PORT=1935 node server.mjs        # receive OBS "Start Streaming" (rtmp://localhost/live)
+//   RANKER=0 node server.mjs              # don't run a ranking list
 //
+// Started by opentube.mjs (the copy-paste command on My node), it also gets NODE_GRANT (your signed grant: this node
+// is yours), NODE_SITE (the site it belongs to) and NODE_ROLES, and announces itself to your My node page.
 // No npm install needed: Node 20+ (Ed25519 WebCrypto, global WebSocket client on 22+).
 // For https/wss, put it behind a TLS proxy such as Caddy:  caddy reverse-proxy --to :8080
 import http from 'node:http';
@@ -112,7 +116,27 @@ if (fs.existsSync(memFile)) for (const m of JSON.parse(fs.readFileSync(memFile, 
 log(`network ${engine.MAIN_ID.slice(0, 16)}… · main height ${engine.main.best.height} · ${engine.directory.size} registered · ${engine.chains.size} chains loaded`);
 setInterval(() => engine.gossip(), 15000);
 
-if (!ranker.genesis) {
+// ---- "your node": started from someone's My node command, it announces itself to their My node page
+const GRANT = (() => { try { return process.env.NODE_GRANT ? JSON.parse(Buffer.from(process.env.NODE_GRANT, 'base64url').toString('utf8')) : null; } catch { return null; } })();
+if (process.env.NODE_GRANT && !(GRANT && core.validNodeGrant(GRANT))) log('NODE_GRANT is not a valid grant; not announcing this node');
+else if (GRANT) {
+  const os = await import('node:os');
+  const roles = (process.env.NODE_ROLES || 'node').split(',').filter(Boolean).slice(0, 8);
+  const addrs = () => [...(process.env.PUBLIC_URL ? [process.env.PUBLIC_URL] : []), ...Object.values(os.networkInterfaces()).flat()
+    .filter(i => i && i.family === 'IPv4' && !i.internal).map(i => `http://${i.address}:${PORT}`), `http://localhost:${PORT}`].slice(0, 8);
+  const announce = async () => {
+    let host = null; try { host = JSON.parse(fs.readFileSync(process.env.HOST_STATUS_FILE, 'utf8')); if (Date.now() - host.at > 120000) host = { ...host, stale: true }; } catch {}
+    const info = { name: (process.env.NODE_LABEL || os.hostname()).slice(0, 60), os: `${os.platform()} ${os.arch()}`, node: process.version, height: engine.main.best.height,
+      peers: peers.size, chains: engine.chains.size, site: process.env.NODE_SITE || null, host, obs: globalThis.openTubeRtmp?.status?.() || null };
+    try { await engine.publishNodeInfo({ grant: GRANT, roles, addrs: addrs(), info }); } catch (e) { log('announce failed:', e.message); }
+  };
+  log(`this node belongs to user ${GRANT.user.slice(0, 8)}… (${roles.join(', ')}); it will show up on their My node page`);
+  setTimeout(announce, 4000); setInterval(announce, 30000);
+}
+
+const RANKS = process.env.RANKER !== '0';   // RANKER=0: no ranking list (personal nodes started by opentube.mjs)
+if (!RANKS) {}
+else if (!ranker.genesis) {
   const name = (process.env.NODE_NAME || `Trending on ${(await import('node:os')).hostname()}`).slice(0, 60);
   ranker.genesis = await engine.createGenesis({ type: 'genesis', kind: 'list', name, about: 'Videos ranked by votes and freshness, computed by this home node.', ranking: true }, rankerSigner);
   fs.writeFileSync(rankerFile, JSON.stringify(ranker), { mode: 0o600 });
@@ -120,9 +144,9 @@ if (!ranker.genesis) {
 } else if (!engine.directory.has(ranker.genesis.hash)) {
   await engine.addToMempool(ranker.genesis); engine.openChain(ranker.genesis.hash); engine.maybeMine();
 }
-const RANKER_ID = ranker.genesis.hash;
+const RANKER_ID = RANKS ? ranker.genesis.hash : null;
 async function publishRanking() {
-  if (!engine.directory.has(RANKER_ID)) return;   // wait until the list is registered on the main chain
+  if (!RANKER_ID || !engine.directory.has(RANKER_ID)) return;   // wait until the list is registered on the main chain
   const items = engine.rank();
   try { await engine.publishRanking(RANKER_ID, items); } catch (e) { log('ranking failed', e.message); }
 }
@@ -247,6 +271,10 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/' || url.pathname === '/index.html' || /^\/[@~][A-Za-z0-9._-]{3,30}\/?$/.test(url.pathname)) {  // /@channel and /~list links open the page
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' });
     return res.end(fs.readFileSync(path.join(DIR, 'index.html')));
+  }
+  if (['/opentube.mjs', '/server.mjs', '/headless.mjs', '/rtmp.mjs'].includes(url.pathname) && fs.existsSync(path.join(DIR, url.pathname.slice(1)))) {   // for the My node command
+    res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-cache', 'access-control-allow-origin': '*' });
+    return res.end(fs.readFileSync(path.join(DIR, url.pathname.slice(1))));
   }
   if (url.pathname === '/sw.js') {  // WebTorrent's streaming service worker: lets videos play while downloading
     res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-cache' });

@@ -133,6 +133,7 @@ async function run() {
     if (t.startsWith('opentube-status ')) {
       try {
         const s = JSON.parse(t.slice(16));
+        if (process.env.HOST_STATUS_FILE) fsp.writeFile(process.env.HOST_STATUS_FILE, JSON.stringify({ at: Date.now(), videoDir: VIDEO_DIR, channels: s.channels, hosting: s.hosting, hostedBytes: s.hostedBytes, downloading: s.downloading, peers: s.peers, found: s.found })).catch(() => {});
         log(`${s.net} · main #${s.height} · ${s.found ? '' : "waiting for this user's channel list · "}${s.channels} channels joined · hosting ${s.hosting} videos (${fmt(s.hostedBytes)})` +
           `${s.downloading ? ` · downloading ${s.downloading}` : ''} · ${s.peers} video peers · ↑${fmt(s.up)}/s ↓${fmt(s.down)}/s`);
       } catch {}
