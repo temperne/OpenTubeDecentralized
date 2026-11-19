@@ -132,6 +132,12 @@ setInterval(publishRanking, Math.max(10, Number(process.env.RANK_EVERY_SECONDS) 
 
 // ---- video tracker at /tracker: introduces browsers that hold the same video
 const tracker = core.createTracker();
+// ---- live hub at /live: introduces live viewers to each other (members first) and relays signed segments
+const liveHub = core.createLiveHub({
+  ownerOf: (c) => engine.directory.get(c)?.genesis.author || engine.chains.get(c)?.owner || null,
+  signerOf: (c, s) => engine.chains.has(c) ? engine.derive(c)?.streams.find(b => b.payload.stream === s)?.payload.relay || null : null,
+  isJoined: (k, c) => !!engine.memberships.get(k)?.joined?.includes(c)
+});
 
 // ---- minimal WebSocket server (RFC 6455: text frames, ping/pong, close), so no dependencies
 const MAX_MSG = 16 * 1024 * 1024;
@@ -151,6 +157,7 @@ function acceptSocket(req, socket, role = 'node') {
   };
   const sendText = (s) => frame(1, Buffer.from(s));
   if (role === 'tracker') tracker.attach(id, sendText);
+  else if (role === 'live') liveHub.attach(id, sendText);
   else peers.set(id, { send: sendText, label: req.socket.remoteAddress });
   let buf = Buffer.alloc(0), parts = [];
   socket.on('data', (chunk) => {
@@ -175,14 +182,14 @@ function acceptSocket(req, socket, role = 'node') {
         if (fin) {
           const text = Buffer.concat(parts).toString('utf8'); parts = [];
           let msg; try { msg = JSON.parse(text); } catch { continue; }
-          if (role === 'tracker') tracker.message(id, msg); else engine.handle(msg, id).catch(() => {});
+          if (role === 'tracker') tracker.message(id, msg); else if (role === 'live') liveHub.message(id, msg).catch(() => {}); else engine.handle(msg, id).catch(() => {});
         }
       }
     }
   });
-  const gone = () => { if (role === 'tracker') tracker.detach(id); else if (peers.delete(id)) log(`- browser ${id} (${peers.size} connected)`); };
+  const gone = () => { if (role === 'tracker') tracker.detach(id); else if (role === 'live') liveHub.detach(id); else if (peers.delete(id)) log(`- browser ${id} (${peers.size} connected)`); };
   socket.on('close', gone); socket.on('error', gone);
-  if (role === 'tracker') return;
+  if (role === 'tracker' || role === 'live') return;
   log(`+ browser ${id} (${peers.size} connected)`);
   engine.peerJoined(id);
 }
@@ -212,7 +219,7 @@ const server = http.createServer((req, res) => {
   }
   if (url.pathname === '/status') {
     res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
-    return res.end(JSON.stringify({ network: engine.MAIN_ID, height: engine.main.best.height, tip: engine.main.best.hash, registered: engine.directory.size, pending: engine.mempool.size, chains: engine.chains.size, peers: peers.size, mining: !!engine.miner, node: signer.pub, now: Date.now(), ranker: RANKER_ID, tracker: tracker.stats(), memberships: engine.memberships.size }));
+    return res.end(JSON.stringify({ network: engine.MAIN_ID, height: engine.main.best.height, tip: engine.main.best.hash, registered: engine.directory.size, pending: engine.mempool.size, chains: engine.chains.size, peers: peers.size, mining: !!engine.miner, node: signer.pub, now: Date.now(), ranker: RANKER_ID, tracker: tracker.stats(), live: liveHub.stats(), memberships: engine.memberships.size }));
   }
   res.writeHead(404); res.end('not found');
 });
@@ -220,6 +227,7 @@ server.on('upgrade', (req, socket) => {
   const p = new URL(req.url, 'http://x').pathname;
   if (p === '/ot') acceptSocket(req, socket, 'node');
   else if (p === '/tracker') acceptSocket(req, socket, 'tracker');
+  else if (p === '/live') acceptSocket(req, socket, 'live');
   else socket.destroy();
 });
-server.listen(PORT, () => log(`OpenTube node on http://localhost:${PORT}  (node /ot, video tracker /tracker, status /status)`));
+server.listen(PORT, () => log(`OpenTube node on http://localhost:${PORT}  (node /ot, video tracker /tracker, live hub /live, status /status)`));

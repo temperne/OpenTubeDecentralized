@@ -2,6 +2,7 @@
 // a single Durable Object runs the node:
 //   /ot       blockchain node (WebSocket)
 //   /tracker  WebTorrent tracker, so browsers find each other for video
+//   /live     live hub: WebRTC introductions (members first) and signed segment relay
 //   /status   JSON status
 // Deploy with `npx wrangler deploy` from the repository root.
 import core from './core.gen.mjs';
@@ -12,7 +13,7 @@ const rankEvery = (env) => Math.max(10, Number(env.RANK_EVERY_SECONDS) || 300) *
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname === '/ot' || url.pathname === '/tracker' || url.pathname === '/status') {
+    if (url.pathname === '/ot' || url.pathname === '/tracker' || url.pathname === '/live' || url.pathname === '/status') {
       // One node for the whole network: every browser talks to the same Durable Object.
       return env.NODE.get(env.NODE.idFromName('main')).fetch(request);
     }
@@ -42,6 +43,11 @@ export class OpenTubeNode {
     this.ctx = ctx;
     this.env = env;
     this.tracker = core.createTracker();
+    this.liveHub = core.createLiveHub({
+      ownerOf: (c) => this.engine?.directory.get(c)?.genesis.author || this.engine?.chains.get(c)?.owner || null,
+      signerOf: (c, s) => this.engine?.chains.has(c) ? this.engine.derive(c)?.streams.find(b => b.payload.stream === s)?.payload.relay || null : null,
+      isJoined: (k, c) => !!this.engine?.memberships.get(k)?.joined?.includes(c)
+    });
     this.ready = this.ctx.blockConcurrencyWhile(() => this.init());
   }
 
@@ -149,7 +155,7 @@ export class OpenTubeNode {
         network: E.MAIN_ID, now: Date.now(), height: E.main.best.height, tip: E.main.best.hash, registered: E.directory.size,
         pending: E.mempool.size, chains: E.chains.size, peers: this.ctx.getWebSockets().length,
         ranker: this.ranker.genesis?.hash || null, ranking: this.meta('rankingStatus'), nextAlarm: await this.ctx.storage.getAlarm(),
-        tracker: this.tracker.stats(), memberships: E.memberships.size
+        tracker: this.tracker.stats(), live: this.liveHub.stats(), memberships: E.memberships.size
       }, { headers: { 'access-control-allow-origin': '*' } });
     }
     if (request.headers.get('upgrade') !== 'websocket') return new Response('expected a WebSocket', { status: 426 });
@@ -161,6 +167,15 @@ export class OpenTubeNode {
       this.tracker.attach(id, (s) => server.send(s));
       server.addEventListener('message', (e) => { try { this.tracker.message(id, JSON.parse(e.data)); } catch {} });
       const bye = () => this.tracker.detach(id);
+      server.addEventListener('close', bye); server.addEventListener('error', bye);
+      return new Response(null, { status: 101, webSocket: client });
+    }
+    if (url.pathname === '/live') {
+      // Live sockets stay in memory too: the viewer tree and the last minute of segments live here.
+      server.accept();
+      this.liveHub.attach(id, (s) => server.send(s));
+      server.addEventListener('message', (e) => { try { this.liveHub.message(id, JSON.parse(e.data)).catch(() => {}); } catch {} });
+      const bye = () => this.liveHub.detach(id);
       server.addEventListener('close', bye); server.addEventListener('error', bye);
       return new Response(null, { status: 101, webSocket: client });
     }

@@ -103,6 +103,8 @@
   .tx { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; padding: 10px 0; border-top: 1px solid var(--border); font-size: 14px; }
   .tx:first-child { border-top: 0; }
   .amt-in { color: var(--ok); font-weight: 700; } .amt-out { color: var(--accent); font-weight: 700; }
+  .badge.live { background: #e5293b; color: #fff; border-color: #e5293b; font-weight: 700; }
+  .live-banner { display: block; text-decoration: none; color: inherit; margin: 0 0 12px; border-color: #e5293b; }
   #folderbar { display: flex; gap: 12px; align-items: center; justify-content: center; flex-wrap: wrap; padding: 10px 16px; background: var(--panel-2); border-bottom: 1px solid var(--warn); font-size: 14px; }
   #folderbar.hidden { display: none; }
   .split { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
@@ -265,7 +267,12 @@ function validPayload(chain, b, CFG) {
     return false;
   }
   switch (p.type) {
-    case 'video': return kind === 'channel' && isStr(p.title, LIMITS.title) && isStr(p.desc, LIMITS.text) && isHex(p.infohash, 40) && isStr(p.file, 200) && Number.isSafeInteger(p.size) && isImg(p.thumb) && (p.comments === undefined || ['anyone', 'approved', 'off'].includes(p.comments));
+    case 'video': return kind === 'channel' && isStr(p.title, LIMITS.title) && isStr(p.desc, LIMITS.text) && isHex(p.infohash, 40) && isStr(p.file, 200) && Number.isSafeInteger(p.size) && isImg(p.thumb) && (p.comments === undefined || ['anyone', 'approved', 'off'].includes(p.comments))
+      && (p.stream === undefined || isHex(p.stream, 64));   // the recording of a live stream
+    // A live stream starts. Its media goes through the live hub (see createLiveHub), signed by this key or by `relay`
+    // (a home node the owner lets sign for this stream, e.g. for OBS ingest). Chat is comments on this block.
+    case 'live': return kind === 'channel' && isStr(p.title, LIMITS.title) && p.title.trim().length > 0 && isHex(p.stream, 64) && isStr(p.mime, 80) && (p.relay === undefined || isKey(p.relay));
+    case 'liveend': return kind === 'channel' && isHex(p.stream, 64) && ['published', 'discarded', 'ended'].includes(p.outcome);
     case 'settings': return kind === 'channel' && isHex(p.target, 64) && ['default', 'anyone', 'approved', 'off'].includes(p.comments);
     case 'post': return isStr(p.text, LIMITS.text) && p.text.trim().length > 0;
     case 'comment': return isHex(p.target, 64) && isStr(p.text, LIMITS.comment) && p.text.trim().length > 0;
@@ -551,6 +558,137 @@ function createTracker() {
   };
 }
 
+// ---- live streams. Every home node runs this hub at /live.
+// The broadcaster's browser sends WebRTC to a tree of viewers: verified members of the channel (people who joined it)
+// get the slots right under the broadcaster, everyone else hangs under members, and each viewer can relay to a few
+// more. The hub only introduces peers and relays their WebRTC signalling. It also relays SEGMENTS: ~1 s pieces of the
+// broadcaster's recording, each signed by the channel key and carrying its byte offset in the recording. Viewers whose
+// WebRTC fails play the segments instead; members always receive them and write them into the channel's folder, so
+// their copy is the broadcaster's recording byte for byte (with holes only for what they missed).
+const LIVE = { keepMs: 60000, maxSeg: 1 << 20, srcSlots: 4, maxSlots: 6, maxDepth: 8 };
+const liveSegPreimage = (g) => `opentube-live:${g.stream}:${g.n}:${g.o}:${g.h}`;   // h = sha256 hex of the bytes
+const liveAuthPreimage = (nonce) => 'opentube-live-auth:' + nonce;
+function createLiveHub(o) {   // o: { ownerOf(chain) -> key|null, signerOf(chain, stream) -> extra key allowed to send, isJoined(user, chain) }
+  const sockets = new Map();   // sid -> { send, nonce, keys: Set, watching: Set(stream) }
+  const streams = new Map();   // stream -> { chain, src, mime, seg0, segs, nodes: Map(sid -> node) }
+  const out = (sid, m) => { try { sockets.get(sid)?.send(JSON.stringify(m)); } catch {} };
+  const hex = (n) => [...crypto.getRandomValues(new Uint8Array(n))].map(b => b.toString(16).padStart(2, '0')).join('');
+  const member = (sid, chain) => [...(sockets.get(sid)?.keys || [])].some(k => o.isJoined(k, chain));
+  function counts(st) {
+    let members = 0, rtc = 0, seg = 0;
+    for (const [sid, n] of st.nodes) if (sid !== st.src) { if (n.member) members++; if (n.mode === 'rtc') rtc++; else if (n.mode === 'seg') seg++; }
+    return { viewers: st.nodes.size - 1, members, rtc, seg, direct: st.nodes.get(st.src)?.children.size || 0 };
+  }
+  const report = (st) => out(st.src, { t: 'viewers', stream: st.id, ...counts(st) });
+  function sendSegs(sid, st) { if (st.seg0) out(sid, { t: 'seg', seg: st.seg0 }); for (const g of st.segs) if (g.n !== 0) out(sid, { t: 'seg', seg: g }); }
+  function detach(st, sid) {   // cut sid from its parent; its subtree stays attached to it
+    const n = st.nodes.get(sid); if (!n || !n.parent) return;
+    const p = st.nodes.get(n.parent); if (p) { p.children.delete(sid); out(n.parent, { t: 'unchild', stream: st.id, peer: sid }); }
+    out(sid, { t: 'unparent', stream: st.id, peer: n.parent }); n.parent = null;
+  }
+  function subtree(st, sid, acc = new Set()) { acc.add(sid); for (const c of st.nodes.get(sid)?.children || []) subtree(st, c, acc); return acc; }
+  function assign(st, sid) {
+    const n = st.nodes.get(sid); if (!n) return;
+    const below = subtree(st, sid);
+    const free = (x, id) => (x.mode === 'src' || x.mode === 'rtc') && x.children.size < x.slots && x.depth < LIVE.maxDepth && !below.has(id);
+    const src = st.nodes.get(st.src);
+    if (n.member && src.children.size >= src.slots) {   // members first: move a non-member off the broadcaster
+      const bump = [...src.children].find(c => !st.nodes.get(c)?.member);
+      if (bump) { detach(st, bump); queueMicrotask(() => assign(st, bump)); }
+    }
+    const cands = [...st.nodes].filter(([id, x]) => id !== sid && free(x, id));
+    cands.sort(([ia, a], [ib, b]) => (n.member ? (ib === st.src) - (ia === st.src) : (b.member - a.member)) || a.depth - b.depth || a.children.size - b.children.size);
+    const pick = cands[0];
+    if (!pick) { n.mode = 'seg'; out(sid, { t: 'mode', stream: st.id, mode: 'seg' }); if (!n.member) sendSegs(sid, st); return report(st); }
+    const [pid, p] = pick;
+    n.parent = pid; n.depth = p.depth + 1; n.mode = 'rtc'; p.children.add(sid);
+    for (const c of below) if (c !== sid) st.nodes.get(c).depth = st.nodes.get(st.nodes.get(c).parent).depth + 1;
+    out(sid, { t: 'parent', stream: st.id, peer: pid });
+    out(pid, { t: 'child', stream: st.id, peer: sid });
+    report(st);
+  }
+  function leave(st, sid) {
+    const n = st.nodes.get(sid); if (!n) return;
+    if (sid === st.src) {   // the broadcaster left: the stream is over
+      for (const id of st.nodes.keys()) if (id !== sid) { out(id, { t: 'ended', stream: st.id }); sockets.get(id)?.watching.delete(st.id); }
+      streams.delete(st.id); return;
+    }
+    detach(st, sid);
+    const orphans = [...n.children]; n.children.clear();
+    st.nodes.delete(sid); sockets.get(sid)?.watching.delete(st.id);
+    for (const c of orphans) { const x = st.nodes.get(c); if (x) { x.parent = null; out(c, { t: 'unparent', stream: st.id, peer: sid }); assign(st, c); } }
+    report(st);
+  }
+  return {
+    attach(sid, send) { const nonce = hex(16); sockets.set(sid, { send, nonce, keys: new Set(), watching: new Set() }); out(sid, { t: 'hi', nonce }); },
+    detach(sid) {
+      const s = sockets.get(sid); if (!s) return;
+      for (const id of [...s.watching]) { const st = streams.get(id); if (st) leave(st, sid); }
+      sockets.delete(sid);
+    },
+    stats() { return { streams: streams.size, sockets: sockets.size }; },
+    live() { return [...streams.values()].map(st => ({ stream: st.id, chain: st.chain, ...counts(st) })); },
+    message(sid, m) {   // one socket's messages are handled strictly in order (auth must finish before watch)
+      const s = sockets.get(sid); if (!s) return Promise.resolve();
+      return (s.queue = (s.queue || Promise.resolve()).then(() => handle(sid, m)).catch(() => {}));
+    }
+  };
+  async function handle(sid, m) {
+      const s = sockets.get(sid);
+      if (!s || !m || typeof m !== 'object' || typeof m.t !== 'string') return;
+      if (m.t === 'auth') {   // prove you hold a key (your personal key, or a channel key to broadcast)
+        if (isKey(m.key) && typeof m.sig === 'string' && s.keys.size < 50 && await verify(m.key, liveAuthPreimage(s.nonce), m.sig)) s.keys.add(m.key);
+        return;
+      }
+      if (m.t === 'seg' && m.stream === undefined) m.stream = m.seg?.stream;
+      const st = isHex(m.stream, 64) ? streams.get(m.stream) : null;
+      if (m.t === 'broadcast') {
+        if (!isHex(m.stream, 64) || !isHex(m.chain, 64) || !isStr(m.mime, 80)) return;
+        const owner = o.ownerOf(m.chain), relay = o.signerOf?.(m.chain, m.stream);
+        if (!(owner && s.keys.has(owner)) && !(relay && s.keys.has(relay))) return out(sid, { t: 'error', stream: m.stream, error: 'not the owner of this channel' });
+        if (st && st.chain !== m.chain) return;
+        if (st && st.src !== sid) leave(st, st.src);   // a reconnecting broadcaster replaces the old connection
+        const fresh = { id: m.stream, chain: m.chain, src: sid, mime: m.mime, seg0: st?.seg0 || null, segs: st?.segs || [], nodes: new Map() };
+        fresh.nodes.set(sid, { parent: null, children: new Set(), slots: Math.min(Math.max(m.slots | 0, 0), LIVE.maxSlots) || LIVE.srcSlots, member: true, depth: 0, mode: 'src' });
+        streams.set(m.stream, fresh); s.watching.add(m.stream);
+        return out(sid, { t: 'broadcasting', stream: m.stream });
+      }
+      if (!st) return m.t === 'watch' ? out(sid, { t: 'nostream', stream: m.stream }) : undefined;
+      if (m.t === 'seg') {
+        const g = m.seg;
+        if (sid !== st.src || !g || g.stream !== st.id || !Number.isSafeInteger(g.n) || !Number.isSafeInteger(g.o) || typeof g.d !== 'string' || g.d.length > LIVE.maxSeg * 1.4) return;
+        g.at = Date.now();
+        if (g.n === 0) st.seg0 = g;
+        st.segs.push(g);
+        while (st.segs.length && st.segs[0].at < g.at - LIVE.keepMs) st.segs.shift();
+        for (const [id, n] of st.nodes) if (id !== sid && (n.mode === 'seg' || n.member)) out(id, { t: 'seg', seg: g });
+        return;
+      }
+      if (m.t === 'watch') {
+        if (st.nodes.has(sid) || s.watching.size >= 20) return;
+        const n = { parent: null, children: new Set(), slots: Math.min(Math.max(m.slots | 0, 0), LIVE.maxSlots), member: member(sid, st.chain), depth: 0, mode: 'pending' };
+        st.nodes.set(sid, n); s.watching.add(st.id);
+        out(sid, { t: 'watching', stream: st.id, mime: st.mime, member: n.member });
+        if (n.member) sendSegs(sid, st);   // members save the stream: give them what we have
+        if (m.segOnly) { n.mode = 'seg'; out(sid, { t: 'mode', stream: st.id, mode: 'seg' }); if (!n.member) sendSegs(sid, st); return report(st); }
+        return assign(st, sid);
+      }
+      if (m.t === 'leave') return leave(st, sid);
+      if (m.t === 'fallback') {   // WebRTC didn't work for this viewer: segments instead
+        const n = st.nodes.get(sid); if (!n || n.mode === 'src') return;
+        detach(st, sid);
+        const orphans = [...n.children]; n.children.clear();
+        for (const c of orphans) { const x = st.nodes.get(c); if (x) { x.parent = null; out(c, { t: 'unparent', stream: st.id, peer: sid }); assign(st, c); } }
+        n.mode = 'seg'; out(sid, { t: 'mode', stream: st.id, mode: 'seg' }); if (!n.member) sendSegs(sid, st);
+        return report(st);
+      }
+      if (m.t === 'signal') {   // WebRTC offer/answer/candidates, only between a parent and its child
+        const a = st.nodes.get(sid), b = st.nodes.get(m.to);
+        if (a && b && (a.parent === m.to || b.parent === sid) && JSON.stringify(m.data || null).length < 20000) out(m.to, { t: 'signal', stream: st.id, from: sid, data: m.data });
+      }
+  }
+}
+
 // Network-level enforcement: every node checks a non-owner block against the owner's
 // rules as they stood in that block's own history. Blocks that fail are rejected:
 // not stored, not relayed. (derive() additionally applies later revokes and "off"
@@ -573,7 +711,7 @@ function permittedAt(chain, b) {
   if (revoked.has(b.author) || !history.has(b.payload.target)) return false;
   const target = chain.blocks.get(b.payload.target);
   if (b.payload.type === 'hide') return target.author === b.author;              // only your own comments
-  if (target.author !== owner || target.payload.type !== 'video') return false;  // comments and votes attach to the channel's videos
+  if (target.author !== owner || !['video', 'live'].includes(target.payload.type)) return false;  // comments and votes attach to the channel's videos and live streams
   if (b.payload.type === 'vote') return true;                                   // anyone not revoked may vote
   const pol = videoPolicy.get(target.hash) ?? def;
   return pol === 'anyone' || (pol === 'approved' && allowed.has(b.author));
@@ -621,6 +759,15 @@ function derive(c) {
     adds: live.filter(b => b.payload.type === 'add' && b.author === owner).reverse(),
     ads: live.filter(b => b.payload.type === 'ad' && b.author === owner).reverse(),
     sponsors: live.filter(b => b.payload.type === 'sponsor' && b.author === owner).reverse(),
+    ...(() => {   // live streams: started, not yet ended (and less than a day old)
+      const ends = new Map(), recordings = new Map();
+      for (const b of live) if (b.author === owner) {
+        if (b.payload.type === 'liveend') ends.set(b.payload.stream, b.payload.outcome);
+        if (b.payload.type === 'video' && b.payload.stream) recordings.set(b.payload.stream, b);
+      }
+      const streams = live.filter(b => b.payload.type === 'live' && b.author === owner).reverse();
+      return { streams, liveEnds: ends, recordings, liveNow: streams.filter(b => !ends.has(b.payload.stream) && Date.now() - b.ts < 24 * 3600000) };
+    })(),
     commentsFor: (target) => visible.filter(b => b.payload.type === 'comment' && b.payload.target === target),
     votes: tallyVotes(visible),
     policyFor, videoPolicy,
@@ -988,7 +1135,7 @@ async function createEngine(o) {
   });
 }
 
-globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, NAMES, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
+globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
 })();
 </script>
 
@@ -1227,13 +1374,14 @@ async function startP2P() {
 function saveRankings() { kv.set('rankings', [...engine.rankings.values()]); }
 const fetching = new Set();
 let watchState = null;  // the video being watched (see the watch view)
+let liveHooks = null;   // set up by the live-streaming section
 engine = await createEngine({
   signer: me,
   keyFor: (pub) => ownedSigners.get(pub) || null,
   mine,
   send: (m, to) => net.send(m, to),
   persist: (chainId, b) => idb('blocks', 'readwrite', s => s.put({ hash: b.hash, chainId, block: b })).catch(() => {}),
-  onBlock: (chain, b) => { if (subs[chain.id] === 'join' && b.payload.type === 'video' && b.author === chain.owner) hostVideo(chain.id, b.payload); },
+  onBlock: (chain, b) => { if (subs[chain.id] === 'join' && b.payload.type === 'video' && b.author === chain.owner) hostVideo(chain.id, b.payload); if (b.author === chain.owner) liveHooks?.onBlock(chain.id, b); },
   onChange: () => scheduleRender(),
   onMembership: (m) => { if (m.author === me.pub) kv.set('membership', m); },
   onWatch: (m) => adSession?.onMessage(m),
@@ -1446,6 +1594,12 @@ async function downloadToFolder(chainId, v) {
   try {
     const ch = await channelFolder(chainId);
     let entry = ch.meta.videos[ih];
+    const capture = v.stream && ch.meta.lives?.[v.stream];   // the recording of a live stream we saved: reuse it
+    if (!entry && capture) {
+      await viewing.get(v.stream)?.capture?.store.finish().catch(() => {});
+      entry = ch.meta.videos[ih] = { file: capture.file, name: v.file, title: v.title, size: v.size, complete: false, ts: Date.now() };
+      delete ch.meta.lives[v.stream]; saveMeta(ch);
+    }
     if (!entry) { entry = ch.meta.videos[ih] = { file: await uniqueFileName(ch, v.file), name: v.file, title: v.title, size: v.size, complete: false, ts: Date.now() }; saveMeta(ch); }
     const fh = await ch.dir.getFileHandle(entry.file, { create: true });
     const old = getTorrent(ih);
@@ -1545,6 +1699,7 @@ async function folderReady() {
   for (const [chainId, ch] of folder.channels)
     for (const [ih, e] of Object.entries(ch.meta.videos)) if (e.complete || subs[chainId] === 'join') shareFromFolder(chainId, ih);
   for (const id of joinedList()) hostJoined(id);
+  setTimeout(() => liveHooks && liveForJoined(), 3000);
   scheduleRender();
 }
 async function initFolder() {
@@ -1580,6 +1735,347 @@ function folderPrompt(what) {
   if (folder.state === 'unsupported') return h('div', { class: 'sub' }, `${what} needs a folder on your computer, which this browser can’t give a web page. Use Chrome or Edge on a computer. You can still watch videos here.`);
   if (folder.state === 'needs-permission') return h('div', { class: 'row' }, h('span', { class: 'sub' }, `${what}: the browser needs your OK to use “${folder.root.name}” again.`), h('button', { class: 'primary', onclick: reconnectFolder }, 'Reconnect folder'));
   return h('div', { class: 'row' }, h('span', { class: 'sub' }, `${what} needs a folder on your computer where OpenTube keeps each channel’s videos.`), h('button', { class: 'primary', onclick: chooseFolder }, 'Choose video folder'));
+}
+
+// ---------------------------------------------------------------- live streaming (see createLiveHub in the core)
+// Broadcaster: camera / OBS Virtual Camera / screen -> MediaRecorder -> ~1 s chunks. Each chunk is signed with the
+// channel key, sent to the hub as a segment, and written into the recording file in the channel's folder. Viewers
+// the hub assigns get the stream over WebRTC (and relay it to a few more); if that fails they play the segments.
+// Members of the channel (joined) take part in the background: they relay and save every segment at its byte offset,
+// so their file is the broadcaster's recording. When the streamer publishes it, they only fetch what they missed.
+const { liveSegPreimage, liveAuthPreimage, verify: coreVerify } = globalThis.OpenTubeCore;
+const LIVE_MIME = ['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9,opus', 'video/webm'].find(m => window.MediaRecorder?.isTypeSupported?.(m)) || null;
+const ICE = [{ urls: 'stun:stun.l.google.com:19302' }];
+const b64 = {
+  enc(u8) { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); },
+  dec(s) { const b = atob(s), u8 = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u8[i] = b.charCodeAt(i); return u8; }
+};
+const toHex = (buf) => [...new Uint8Array(buf)].map(x => x.toString(16).padStart(2, '0')).join('');
+const sha256Bytes = async (u8) => toHex(await crypto.subtle.digest('SHA-256', u8));
+// Where a WebM cluster (a point a decoder can start from) begins inside a chunk, or -1.
+function clusterAt(u8, from = 0) {
+  for (let i = from; i + 6 < u8.length; i++) {
+    if (u8[i] !== 0x1f || u8[i + 1] !== 0x43 || u8[i + 2] !== 0xb6 || u8[i + 3] !== 0x75) continue;
+    const first = u8[i + 4]; if (!first) continue;
+    const len = Math.clz32(first) - 23;   // EBML size length, 1..8
+    if (u8[i + 4 + len] === 0xe7) return i;   // a cluster starts with its Timecode element
+  }
+  return -1;
+}
+
+const liveNet = (() => {
+  let ws = null, ready = null, nonce = null;
+  const handlers = new Map(), authed = new Set();
+  const url = () => { const u = homeNodeUrl(); return u && !params.get('net') ? u.replace(/\/ot$/, '/live') : null; };
+  const send = (m) => { if (ws?.readyState === 1) ws.send(JSON.stringify(m)); };
+  async function auth(signer) {
+    if (!signer || !nonce || authed.has(signer.pub)) return;
+    authed.add(signer.pub); send({ t: 'auth', key: signer.pub, sig: await signer.sign(liveAuthPreimage(nonce)) });
+  }
+  function connect() {
+    if (ready) return ready;
+    ready = new Promise((res) => {
+      const u = url(); if (!u) return res(false);
+      try { ws = new WebSocket(u); } catch { ready = null; return res(false); }
+      const failTimer = setTimeout(() => res(false), 8000);
+      ws.onmessage = async (e) => {
+        let m; try { m = JSON.parse(e.data); } catch { return; }
+        if (m.t === 'hi') {
+          nonce = m.nonce; authed.clear();
+          await auth(me); for (const s of ownedSigners.values()) await auth(s);
+          clearTimeout(failTimer); res(true);
+          for (const fn of handlers.values()) fn({ t: 'reconnected' });
+          return;
+        }
+        handlers.get(m.stream ?? m.seg?.stream)?.(m);
+      };
+      ws.onclose = () => {
+        ready = null; ws = null; nonce = null;
+        for (const fn of handlers.values()) fn({ t: 'disconnected' });
+        if (handlers.size) setTimeout(connect, 3000);
+        res(false);
+      };
+    });
+    return ready;
+  }
+  return { connect, send, auth, available: () => !!url(), on: (s, fn) => handlers.set(s, fn), off: (s) => handlers.delete(s) };
+})();
+
+// WebRTC helpers. Offers come from the parent (closer to the broadcaster); candidates wait for the remote description.
+function newPc() { const pc = new RTCPeerConnection({ iceServers: ICE }); pc.waiting = []; return pc; }
+async function onSignal(pc, data) {
+  try {
+    if (data.sdp) { await pc.setRemoteDescription(data.sdp); for (const c of pc.waiting.splice(0)) await pc.addIceCandidate(c).catch(() => {}); }
+    else if (data.c) { if (pc.remoteDescription) await pc.addIceCandidate(data.c).catch(() => {}); else pc.waiting.push(data.c); }
+  } catch (e) { console.warn('live signal', e.message); }
+}
+function offerTo(stream, peer, media, kids) {
+  kids.get(peer)?.close();
+  const pc = newPc(); kids.set(peer, pc);
+  for (const t of media.getTracks()) pc.addTrack(t, media);
+  pc.onicecandidate = (e) => { if (e.candidate) liveNet.send({ t: 'signal', stream, to: peer, data: { c: e.candidate.toJSON() } }); };
+  pc.onconnectionstatechange = () => { if (pc.connectionState === 'failed' || pc.connectionState === 'closed') { if (kids.get(peer) === pc) kids.delete(peer); } };
+  (async () => { await pc.setLocalDescription(await pc.createOffer()); liveNet.send({ t: 'signal', stream, to: peer, data: { sdp: pc.localDescription.toJSON() } }); })().catch(e => console.warn('live offer', e.message));
+  return pc;
+}
+// Point every relayed connection at new tracks (after we got a new parent).
+function retarget(kids, media) {
+  for (const pc of kids.values()) for (const s of pc.getSenders()) { const t = media.getTracks().find(x => x.kind === s.track?.kind); if (t) s.replaceTrack(t).catch(() => {}); }
+}
+
+// ---- broadcasting
+const broadcasts = new Map();   // chainId -> session
+async function startLive(chainId, media, title) {
+  if (!canHost()) throw new Error('Going live needs a video folder (it records the stream there).');
+  if (!LIVE_MIME) throw new Error('This browser can’t record video for streaming. Use Chrome, Edge or Firefox.');
+  if (!(await liveNet.connect())) throw new Error('No home node to stream through. Open the site from its own address (not a file or ?net=p2p).');
+  const d = derive(chainId), signer = signerFor(d.owner);
+  await liveNet.auth(signer);
+  const stream = toHex(crypto.getRandomValues(new Uint8Array(32)));
+  const ch = await channelFolder(chainId);
+  const file = await uniqueFileName(ch, cleanName(title, 'Live') + '.webm');
+  const fh = await ch.dir.getFileHandle(file, { create: true });
+  (ch.meta.lives ||= {})[stream] = { file, title, own: true, started: Date.now() }; saveMeta(ch);
+  const sess = { chainId, stream, title, media, file, fh, signer, n: 0, o: 0, kids: new Map(), viewers: null, started: Date.now(), queue: Promise.resolve(), ended: false, block: null };
+  sess.rec = new (fileStore(fh, false))(1, { length: Number.MAX_SAFE_INTEGER });   // writes each chunk at its offset
+  broadcasts.set(chainId, sess);
+  liveNet.on(stream, (m) => {
+    if (m.t === 'child') offerTo(stream, m.peer, media, sess.kids);
+    else if (m.t === 'unchild') { sess.kids.get(m.peer)?.close(); sess.kids.delete(m.peer); }
+    else if (m.t === 'signal') { const pc = sess.kids.get(m.from); if (pc) onSignal(pc, m.data); }
+    else if (m.t === 'viewers') { sess.viewers = m; scheduleRender(); }
+    else if (m.t === 'reconnected' && !sess.ended) liveNet.send({ t: 'broadcast', stream, chain: chainId, mime: LIVE_MIME, slots: 4 });
+    else if (m.t === 'error') toast('Live: ' + m.error);
+  });
+  liveNet.send({ t: 'broadcast', stream, chain: chainId, mime: LIVE_MIME, slots: 4 });
+  sess.block = await append(chainId, { type: 'live', title, stream, mime: LIVE_MIME });
+  const opts = { mimeType: LIVE_MIME, videoBitsPerSecond: 2_000_000, audioBitsPerSecond: 128_000, videoKeyFrameIntervalDuration: 2000 };
+  const recorder = sess.recorder = new MediaRecorder(media, opts);
+  recorder.ondataavailable = (e) => { if (e.data.size) sess.queue = sess.queue.then(() => pushSegment(sess, e.data)).catch(err => console.warn('live segment', err)); };
+  recorder.start(1000);
+  return sess;
+}
+async function pushSegment(sess, blob) {
+  const u8 = new Uint8Array(await blob.arrayBuffer());
+  const g = { stream: sess.stream, n: sess.n++, o: sess.o, h: await sha256Bytes(u8) };
+  sess.o += u8.length;
+  g.sig = await sess.signer.sign(liveSegPreimage(g));
+  g.d = b64.enc(u8);
+  liveNet.send({ t: 'seg', seg: g });
+  await new Promise((res, rej) => sess.rec.put(g.o, u8, (e) => e ? rej(e) : res()));
+}
+async function stopLive(chainId) {
+  const sess = broadcasts.get(chainId); if (!sess || sess.ended) return;
+  sess.ended = true;
+  await new Promise((res) => { sess.recorder.onstop = res; try { sess.recorder.stop(); } catch { res(); } });
+  await sess.queue; await sess.rec.finish();
+  liveNet.send({ t: 'leave', stream: sess.stream }); liveNet.off(sess.stream);
+  for (const pc of sess.kids.values()) pc.close();
+  sess.thumb = sess.preview ? makeThumb(sess.preview) : '';
+  for (const t of sess.media.getTracks()) t.stop();
+  scheduleRender();
+}
+// The streamer's choice when it's over: publish the recording as a video, or discard it.
+async function finishLive(chainId, stream, publish, fields = {}) {
+  const ch = await channelFolder(chainId), rec = ch.meta.lives?.[stream];
+  if (!rec) return;
+  if (publish) {
+    const fh = await ch.dir.getFileHandle(rec.file);
+    const file = await fh.getFile();
+    const entry = { file: rec.file, name: rec.file, type: 'video/webm', size: file.size, complete: true, own: true, ts: Date.now() };
+    const t = await seedFile(chainId, null, fh, entry, ch);
+    ch.meta.videos[t.infoHash] = entry;
+    await append(chainId, { type: 'video', title: (fields.title || rec.title).slice(0, LIMITS.title), desc: (fields.desc || '').slice(0, LIMITS.text), infohash: t.infoHash, file: rec.file.slice(0, 200), size: file.size, mime: 'video/webm', thumb: fields.thumb || '', stream });
+    await append(chainId, { type: 'liveend', stream, outcome: 'published' });
+  } else {
+    await append(chainId, { type: 'liveend', stream, outcome: 'discarded' });
+    try { await ch.dir.removeEntry(rec.file); } catch {}
+  }
+  delete ch.meta.lives[stream]; saveMeta(ch);
+  broadcasts.delete(chainId);
+  scheduleRender();
+}
+
+// ---- watching, relaying and (for members) saving
+const viewing = new Map();   // stream -> session
+function liveSigner(chainId, lb) { return lb.payload.relay ? [derive(chainId).owner, lb.payload.relay] : [derive(chainId).owner]; }
+async function joinLive(chainId, lb, ui = null) {
+  const stream = lb.payload.stream;
+  let sess = viewing.get(stream);
+  if (sess) { sess.ui = ui || sess.ui; if (ui) ui.attach(sess); return sess; }
+  if (!(await liveNet.connect())) { ui?.status('No home node to watch live streams through.'); return null; }
+  sess = { chainId, stream, block: lb.hash, mime: lb.payload.mime, title: lb.payload.title, keys: liveSigner(chainId, lb), ui, parent: null, parentPc: null, media: null,
+    kids: new Map(), pendingKids: new Set(), mode: 'pending', member: false, capture: null, ended: false, tries: 0, background: !ui };
+  viewing.set(stream, sess);
+  liveNet.on(stream, (m) => onLiveMsg(sess, m));
+  sendWatch(sess);
+  if (ui) ui.attach(sess);
+  return sess;
+}
+const sendWatch = (sess) => liveNet.send({ t: 'watch', stream: sess.stream, slots: sess.background ? 3 : 2, segOnly: !sess.background && params.get('live') === 'segments' });   // ?live=segments: skip WebRTC (testing)
+function leaveLive(stream, { keepIfMember = true } = {}) {
+  const sess = viewing.get(stream); if (!sess) return;
+  sess.ui = null;
+  if (keepIfMember && sess.capture && !sess.ended) { sess.background = true; return; }   // members keep relaying and saving
+  liveNet.send({ t: 'leave', stream }); liveNet.off(stream);
+  sess.parentPc?.close(); for (const pc of sess.kids.values()) pc.close();
+  clearTimeout(sess.mediaTimer);
+  sess.capture?.store.close();
+  viewing.delete(stream);
+}
+async function onLiveMsg(sess, m) {
+  if (params.get('debug')) console.log('live msg', m.t, m.seg ? m.seg.n : '');
+  switch (m.t) {
+    case 'watching':
+      sess.member = m.member;
+      if (m.member && canHost() && !sess.capture) await openCapture(sess);
+      return;
+    case 'nostream':   // not started yet, or already over: try again for a little while
+      if (++sess.tries < 10 && !sess.ended) setTimeout(() => viewing.get(sess.stream) === sess && sendWatch(sess), 3000);
+      else { sess.ended = true; sess.ui?.ended('This stream isn’t live right now.'); }
+      return;
+    case 'parent':
+      sess.parent = m.peer; sess.mode = 'rtc'; sess.ui?.status('Connecting…');
+      clearTimeout(sess.mediaTimer);
+      sess.mediaTimer = setTimeout(() => { if (!sess.media && sess.mode === 'rtc') { liveNet.send({ t: 'fallback', stream: sess.stream }); } }, 12000);
+      return;
+    case 'unparent':
+      if (sess.parent === m.peer) { sess.parent = null; sess.parentPc?.close(); sess.parentPc = null; }
+      return;
+    case 'signal':
+      if (m.from === sess.parent) {
+        if (m.data.sdp?.type === 'offer') {
+          sess.parentPc?.close();
+          const pc = sess.parentPc = newPc();
+          pc.onicecandidate = (e) => { if (e.candidate) liveNet.send({ t: 'signal', stream: sess.stream, to: m.from, data: { c: e.candidate.toJSON() } }); };
+          pc.ontrack = (e) => {
+            const media = e.streams[0]; if (!media || sess.media === media) return;
+            const first = !sess.media; sess.media = media; clearTimeout(sess.mediaTimer);
+            if (!first) retarget(sess.kids, media);
+            for (const k of sess.pendingKids) offerTo(sess.stream, k, media, sess.kids); sess.pendingKids.clear();
+            sess.ui?.media(media);
+          };
+          pc.onconnectionstatechange = () => { if (pc.connectionState === 'failed' && sess.parentPc === pc) { sess.media = null; liveNet.send({ t: 'fallback', stream: sess.stream }); } };
+          await onSignal(pc, m.data);
+          await pc.setLocalDescription(await pc.createAnswer());
+          liveNet.send({ t: 'signal', stream: sess.stream, to: m.from, data: { sdp: pc.localDescription.toJSON() } });
+        } else if (sess.parentPc) await onSignal(sess.parentPc, m.data);
+      } else { const pc = sess.kids.get(m.from); if (pc) await onSignal(pc, m.data); }
+      return;
+    case 'child':   // relay to someone further from the broadcaster
+      if (sess.media) offerTo(sess.stream, m.peer, sess.media, sess.kids); else sess.pendingKids.add(m.peer);
+      return;
+    case 'unchild':
+      sess.pendingKids.delete(m.peer); sess.kids.get(m.peer)?.close(); sess.kids.delete(m.peer);
+      return;
+    case 'mode':
+      sess.mode = m.mode; sess.media = null; clearTimeout(sess.mediaTimer);
+      sess.ui?.segmentMode();
+      return;
+    case 'seg': {
+      const g = m.seg; if (!g || g.stream !== sess.stream) return;
+      const u8 = b64.dec(g.d);
+      if (await sha256Bytes(u8) !== g.h) { if (params.get('debug')) console.log('live seg bad hash', g.n); return; }
+      let ok = false; for (const k of sess.keys) if (await coreVerify(k, liveSegPreimage(g), g.sig)) { ok = true; break; }
+      if (!ok) { if (params.get('debug')) console.log('live seg bad signature', g.n, sess.keys); return; }
+      if (sess.capture) sess.capture.store.put(g.o, u8, () => {});
+      if (g.n === 0) { const c = clusterAt(u8); sess.init = c > 0 ? u8.slice(0, c) : null; }
+      sess.ui?.segment(g, u8);
+      return;
+    }
+    case 'ended':
+      sess.ended = true; sess.ui?.ended('The stream has ended.');
+      if (sess.capture) await sess.capture.store.finish().catch(() => {});
+      liveNet.off(sess.stream); viewing.delete(sess.stream);
+      return;
+    case 'disconnected': sess.ui?.status('Lost the connection to the home node; reconnecting…'); return;
+    case 'reconnected': if (!sess.ended) { sess.parentPc?.close(); sess.parentPc = null; sess.media = null; sendWatch(sess); } return;
+  }
+}
+// Members save the stream into the channel's folder, each chunk at its place in the recording.
+async function openCapture(sess) {
+  const ch = await channelFolder(sess.chainId);
+  ch.meta.lives ||= {};
+  let rec = ch.meta.lives[sess.stream];
+  if (!rec) { rec = ch.meta.lives[sess.stream] = { file: await uniqueFileName(ch, cleanName(sess.title, 'Live') + '.webm'), title: sess.title, own: false, started: Date.now() }; saveMeta(ch); }
+  const fh = await ch.dir.getFileHandle(rec.file, { create: true });
+  sess.capture = { file: rec.file, store: new (fileStore(fh, false))(1, { length: Number.MAX_SAFE_INTEGER }) };
+}
+// After a stream: a member's copy becomes the published video (fetching only the missing parts) or is deleted.
+async function settleCaptures(chainId) {
+  const ch = folder.channels.get(chainId), d = derive(chainId);
+  if (!ch?.meta.lives || !d) return;
+  for (const [stream, rec] of Object.entries(ch.meta.lives)) {
+    if (rec.own || viewing.get(stream)?.ended === false) continue;
+    const outcome = d.liveEnds.get(stream), video = d.recordings.get(stream);
+    if (video) {
+      const v = video.payload;
+      if (!ch.meta.videos[v.infohash]) ch.meta.videos[v.infohash] = { file: rec.file, name: v.file, title: v.title, size: v.size, complete: false, ts: Date.now() };
+      delete ch.meta.lives[stream]; await saveMeta(ch);
+      if (subs[chainId] === 'join') hostVideo(chainId, v);
+    } else if (outcome === 'discarded') {
+      delete ch.meta.lives[stream]; await saveMeta(ch);
+      try { await ch.dir.removeEntry(rec.file); } catch {}
+    }
+  }
+}
+// Members join their channels' live streams in the background, and settle finished ones.
+function liveForJoined() {
+  if (!canHost() || !liveNet.available() || !LIVE_MIME) return;
+  for (const id of joinedList()) {
+    const d = derive(id); if (!d) continue;
+    for (const lb of d.liveNow) if (!viewing.has(lb.payload.stream) && !broadcasts.has(id)) joinLive(id, lb);
+    settleCaptures(id);
+  }
+}
+liveHooks = {
+  onBlock(chainId, b) {
+    if (!['live', 'liveend', 'video'].includes(b.payload.type)) return;
+    setTimeout(() => {
+      if (subs[chainId] === 'join') liveForJoined();
+      if (b.payload.type === 'liveend') { const s = viewing.get(b.payload.stream); if (s && !s.ended) { s.ended = true; s.ui?.ended('The stream has ended.'); } settleCaptures(chainId); }
+      scheduleRender();
+    }, 200);
+  }
+};
+setInterval(liveForJoined, 20000);
+
+// Segment playback (when WebRTC isn't possible): Media Source Extensions fed with the signed chunks.
+function segmentPlayer(video, mime, header = null) {
+  if (!window.MediaSource?.isTypeSupported?.(mime)) return null;
+  const ms = new MediaSource(); video.src = URL.createObjectURL(ms);
+  let sb = null, init = header, next = null, synced = false, q = [];
+  const dbg = params.get('debug') ? (...a) => console.log('live mse', ...a) : () => {};
+  ms.addEventListener('sourceopen', () => { dbg('sourceopen', mime); try { sb = ms.addSourceBuffer(mime); sb.onupdateend = () => { dbg('appended; buffered', video.buffered.length ? [video.buffered.start(0), video.buffered.end(0)] : 'none'); pump(); }; sb.onerror = () => dbg('sourcebuffer error'); pump(); } catch (e) { console.warn('live mse', e.message); } });
+  function pump() {
+    if (!sb || sb.updating || !q.length) return;
+    const x = q.shift();
+    try {
+      if (x === 'reset') { sb.abort(); return pump(); }
+      sb.appendBuffer(x);
+    } catch (e) {
+      if (e.name === 'QuotaExceededError' && video.currentTime > 30) { q.unshift(x); try { sb.remove(0, video.currentTime - 20); } catch {} }
+      else console.warn('live mse append', e.message);
+    }
+  }
+  setInterval(() => {   // stay near the live edge
+    if (!sb || !video.buffered.length) return;
+    const end = video.buffered.end(video.buffered.length - 1), start = video.buffered.start(0);
+    if (video.currentTime < start || end - video.currentTime > 8) video.currentTime = Math.max(start, end - 2);
+  }, 1000);
+  return {
+    push(g, u8) {
+      if (g.n === 0) { const c = clusterAt(u8); init = c > 0 ? u8.slice(0, c) : null; }
+      if (synced && g.n === next) { next++; q.push(u8); return pump(); }
+      if (synced && g.n < next) return;
+      if (!init) return;   // need the stream header first (segment 0)
+      const c = g.n === 0 ? clusterAt(u8) : clusterAt(u8);
+      if (c < 0) return;   // wait for a chunk where a decoder can start
+      if (synced) q.push('reset');
+      q.push(init, u8.subarray(c)); synced = true; next = g.n + 1; pump();
+      video.play().catch(() => {});
+    }
+  };
 }
 
 // ---------------------------------------------------------------- startup: load stored blocks, then connect
@@ -1715,6 +2211,7 @@ function parseRoute() {
   if (p[0] === 'wallet') return { name: 'wallet', key: isKey(p[1]) ? p[1] : null };
   if (p[0] === 'c' && isHex(p[1], 64)) return { name: 'chain', id: p[1], tab: p[2] || 'videos' };
   if (p[0] === 'v' && isHex(p[1], 64) && isHex(p[2], 64)) return { name: 'watch', id: p[1], video: p[2] };
+  if (p[0] === 'live' && isHex(p[1], 64) && isHex(p[2], 64)) return { name: 'livewatch', id: p[1], block: p[2] };
   return { name: 'home' };
 }
 window.addEventListener('hashchange', () => { route = parseRoute(); render(true); window.scrollTo(0, 0); });
@@ -1728,7 +2225,7 @@ function render(force) {
   // Preserve focus/inputs on views with forms: only full re-render when route changes, otherwise refresh live parts.
   if (!force && key === routeKey && views[route.name].refresh) return views[route.name].refresh();
   if (!force && key === routeKey && document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
-  if (routeKey !== key) views.watch.leave?.();
+  if (routeKey !== key) for (const v of Object.values(views)) v.leave?.();
   if (routeKey !== key) kept.clear();
   routeKey = key;
   $('#app').replaceChildren(views[route.name].render());
@@ -1751,8 +2248,10 @@ const keep = (key, make) => kept.get(key) || kept.set(key, make()).get(key);
 views.home = { render() {
   const ids = Object.keys(subs).filter(id => chains.has(id));
   const items = ids.flatMap(id => derive(id)?.kind === 'channel' ? derive(id).videos.map(b => [id, b]) : []).sort((a, b) => b[1].ts - a[1].ts);
+  const liveNow = ids.flatMap(id => derive(id)?.kind === 'channel' ? derive(id).liveNow.map(lb => [id, lb]) : []);
   return h('div', {},
-    h('h2', { style: 'margin-top:0' }, 'Your feed'),
+    liveNow.length ? h('div', {}, h('h2', { style: 'margin-top:0' }, 'Live now'), liveNow.map(([id, lb]) => liveBanner(id, lb))) : null,
+    h('h2', { style: liveNow.length ? '' : 'margin-top:0' }, 'Your feed'),
     items.length ? h('div', { class: 'grid' }, items.slice(0, 200).map(([id, b]) => videoCard(id, b)))
       : h('div', { class: 'empty' }, h('p', {}, 'No videos from your subscriptions yet.'), h('p', {}, h('a', { href: '#/explore' }, 'Explore channels'), ' or ', h('a', { href: '#/me' }, 'create your own channel'), '.')));
 } };
@@ -1856,9 +2355,163 @@ function namePanel(id, d) {
     pend !== cur ? h('div', { class: 'sub', style: 'margin-bottom:8px' }, h('span', { class: 'badge warn' }, 'pending'), ' ', pend ? `${pend} is waiting for the next main-chain block.` : 'Release is waiting for the next main-chain block.') : null,
     h('div', { class: 'row' }, h('b', {}, space), input, claimBtn, releaseBtn), h('div', { style: 'margin-top:6px' }, status));
 }
+// ---- live: the studio (your channel), banners, and the watch page
+function liveStudio(chainId) {
+  const box = h('div', { class: 'panel live-studio' });
+  let media = null, timer = null;
+  const stopPreview = () => { if (media && !broadcasts.get(chainId)) for (const t of media.getTracks()) t.stop(); media = null; };
+  const ui = () => {
+    clearInterval(timer);
+    const sess = broadcasts.get(chainId), ch = folder.channels.get(chainId);
+    const pending = Object.entries(ch?.meta.lives || {}).find(([s, r]) => r.own && !(sess && !sess.ended && sess.stream === s));
+    if (sess && !sess.ended) return box.replaceChildren(...onAir(sess));
+    if (pending) return box.replaceChildren(...decide(pending[0], pending[1], sess));
+    box.replaceChildren(...setup());
+  };
+  function setup() {
+    const head = h('h3', { style: 'margin-top:0' }, '🔴 Go live');
+    if (!LIVE_MIME) return [head, h('p', { class: 'sub' }, 'This browser can’t record video for streaming. Use Chrome, Edge or Firefox on a computer.')];
+    if (!liveNet.available()) return [head, h('p', { class: 'sub' }, 'Live streams go through the site’s home node. Open the site from its own address (not a saved file or ?net=p2p).')];
+    if (!canHost()) return [head, folderPrompt('Going live (the recording is kept in your video folder)')];
+    const source = h('select', {}, h('option', { value: '' }, 'Choose a camera…'));
+    const mic = h('select', {}, h('option', { value: '' }, 'No microphone'));
+    const title = h('input', { type: 'text', placeholder: 'Stream title', maxLength: LIMITS.title });
+    const preview = h('video', { muted: true, playsInline: true, autoplay: true, class: 'hidden', style: 'width:100%;max-width:480px;border-radius:8px;margin-top:10px;background:#000' });
+    const status = h('span', { class: 'sub' });
+    const go = h('button', { class: 'primary', disabled: true }, 'Start streaming');
+    const fill = async () => {
+      const devs = await navigator.mediaDevices.enumerateDevices();
+      const cams = devs.filter(d => d.kind === 'videoinput'), mics = devs.filter(d => d.kind === 'audioinput');
+      const keepCam = source.value, keepMic = mic.value;
+      source.replaceChildren(h('option', { value: '' }, 'Choose a camera…'), ...cams.map((d, i) => h('option', { value: d.deviceId }, d.label || `Camera ${i + 1}`)), h('option', { value: 'screen' }, 'Share my screen or a window'));
+      mic.replaceChildren(h('option', { value: '' }, 'No microphone'), ...mics.map((d, i) => h('option', { value: d.deviceId }, d.label || `Microphone ${i + 1}`)));
+      if (keepCam) source.value = keepCam; if (keepMic) mic.value = keepMic; else if (mics.length) mic.value = mics[0].deviceId;
+    };
+    const acquire = async () => {
+      stopPreview(); go.disabled = true;
+      if (!source.value) { preview.classList.add('hidden'); return; }
+      try {
+        const audio = mic.value ? await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: mic.value } } }) : null;
+        const video = source.value === 'screen' ? await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30 }, audio: false })
+          : await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: source.value }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } } });
+        media = new MediaStream([...video.getVideoTracks(), ...(audio?.getAudioTracks() || [])]);
+        preview.srcObject = media; preview.classList.remove('hidden'); go.disabled = false; status.textContent = '';
+        await fill();
+      } catch (e) { status.textContent = 'Couldn’t open that source: ' + e.message; }
+    };
+    const ask = h('button', { onclick: async () => {
+      try { const s = await navigator.mediaDevices.getUserMedia({ video: true, audio: true }).catch(() => navigator.mediaDevices.getUserMedia({ video: true })); for (const t of s.getTracks()) t.stop(); } catch (e) { status.textContent = 'The browser didn’t allow the camera: ' + e.message; }
+      await fill(); ask.remove();
+    } }, 'Allow camera & microphone');
+    source.onchange = acquire; mic.onchange = acquire;
+    go.onclick = async () => {
+      if (!media) return; if (!title.value.trim()) return toast('Give the stream a title');
+      go.disabled = true; status.textContent = 'Starting…';
+      try { const sess = await startLive(chainId, media, title.value.trim()); sess.preview = preview; media = null; ui(); }
+      catch (e) { status.textContent = e.message; go.disabled = false; }
+    };
+    fill().catch(() => {});
+    return [head,
+      h('p', { class: 'sub', style: 'margin-top:0' }, 'Using OBS Studio? Click “Start Virtual Camera” in OBS, then pick “OBS Virtual Camera” below. Your stream is recorded into this channel’s folder; when you end it you choose whether to publish the recording.'),
+      ask, h('div', { class: 'split', style: 'margin-top:8px' }, h('div', {}, h('label', {}, 'Video'), source), h('div', {}, h('label', {}, 'Audio'), mic)),
+      h('label', {}, 'Title'), title, preview, h('div', { class: 'row', style: 'margin-top:10px' }, go, status)];
+  }
+  function onAir(sess) {
+    const preview = sess.preview && sess.preview.srcObject === sess.media ? sess.preview : h('video', { muted: true, playsInline: true, autoplay: true, style: 'width:100%;max-width:480px;border-radius:8px;background:#000' });
+    preview.srcObject = sess.media; preview.classList.remove('hidden'); sess.preview = preview;
+    const stats = h('div', { class: 'sub' });
+    const tick = () => {
+      const s = Math.floor((Date.now() - sess.started) / 1000), v = sess.viewers;
+      stats.textContent = `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')} · ` + (v ? `${v.viewers} watching (${v.members} members · ${v.rtc} by WebRTC · ${v.seg} by segments) · ${sess.kids.size} connected to you` : 'waiting for viewers') + ` · recorded ${fmtBytes(sess.o)}`;
+    };
+    tick(); timer = setInterval(() => { if (!box.isConnected) return clearInterval(timer); tick(); }, 1000);
+    const end = h('button', { class: 'primary', onclick: async () => { end.disabled = true; end.textContent = 'Ending…'; await stopLive(chainId); ui(); } }, 'End stream');
+    return [h('div', { class: 'row', style: 'justify-content:space-between' }, h('h3', { style: 'margin:0' }, h('span', { class: 'badge live' }, 'LIVE'), ' ', sess.title), end),
+      preview, stats, sess.block ? h('a', { href: `#/live/${chainId}/${sess.block.hash}` }, 'Open the viewer page') : null];
+  }
+  function decide(stream, rec, sess) {
+    const title = h('input', { type: 'text', value: rec.title, maxLength: LIMITS.title });
+    const desc = h('textarea', { placeholder: 'Description', maxLength: LIMITS.text });
+    const status = h('span', { class: 'sub' });
+    const act = (publish) => async () => {
+      if (!publish && !confirm('Delete the recording? Members’ copies are deleted too.')) return;
+      status.textContent = publish ? 'Hashing the recording and publishing…' : 'Discarding…';
+      for (const b of box.querySelectorAll('button')) b.disabled = true;
+      try { await finishLive(chainId, stream, publish, { title: title.value.trim() || rec.title, desc: desc.value.trim(), thumb: sess?.thumb || '' }); toast(publish ? 'Recording published as a video.' : 'Recording discarded.'); ui(); }
+      catch (e) { status.textContent = 'Failed: ' + e.message; for (const b of box.querySelectorAll('button')) b.disabled = false; }
+    };
+    return [h('h3', { style: 'margin-top:0' }, 'Your stream has ended'),
+      h('p', { class: 'sub', style: 'margin-top:0' }, `The recording is “${rec.file}” in this channel’s folder. Publish it as a video (members already have most of it), or discard it.`),
+      h('label', {}, 'Title'), title, h('label', {}, 'Description'), desc,
+      h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'primary', onclick: act(true) }, 'Publish recording'), h('button', { onclick: act(false) }, 'Discard'), status)];
+  }
+  ui();
+  return box;
+}
+function liveBanner(chainId, lb) {
+  return h('a', { class: 'panel live-banner', href: `#/live/${chainId}/${lb.hash}` }, h('span', { class: 'badge live' }, 'LIVE'), ' ', h('b', {}, lb.payload.title), h('span', { class: 'sub' }, ' · started ' + ago(lb.ts) + ' · watch now →'));
+}
+views.livewatch = {
+  leave() { const s = views.livewatch.current; if (s) { views.livewatch.current = null; clearInterval(s.timer); leaveLive(s.stream); } },
+  render() {
+    const { id, block } = route;
+    const c = openChain(id);
+    if (!c) return h('div', { class: 'empty' }, 'Unknown channel.');
+    if (!c.has(block)) { E.send({ t: 'rq', c: id, w: [block], h: headsOf(c) }); views.livewatch.refresh = () => { if (c.has(block)) render(true); }; return h('div', { class: 'empty' }, 'Fetching this stream from peers…'); }
+    views.livewatch.refresh = null;
+    const lb = c.blocks.get(block), d = derive(id);
+    if (lb.payload.type !== 'live') return h('div', { class: 'empty' }, 'Not a live stream.');
+    const player = h('video', { playsInline: true, autoplay: true, muted: true, controls: true, style: 'width:100%;background:#000;border-radius:8px;aspect-ratio:16/9' });
+    const status = h('div', { class: 'sub' }, 'Joining…');
+    const unmute = h('button', { class: 'small', onclick: () => { player.muted = false; player.play().catch(() => {}); unmute.remove(); } }, '🔊 Unmute');
+    const chat = h('div', { style: 'max-height:420px;overflow:auto' });
+    const box = h('input', { type: 'text', placeholder: 'Say something…', maxLength: LIMITS.comment, style: 'flex:1' });
+    const send = h('button', {}, 'Send');
+    send.onclick = async () => {
+      const text = box.value.trim(); if (!text) return;
+      if (!isMine(d.owner) && !derive(id).canComment(me.pub, block)) return toast('Chat is not open to you on this channel');
+      send.disabled = true;
+      try { await append(id, { type: 'comment', target: block, text, name: settings.name.slice(0, LIMITS.name) }); box.value = ''; } finally { send.disabled = false; }
+    };
+    box.onkeydown = (e) => { if (e.key === 'Enter') send.click(); };
+    const drawChat = () => {
+      const dd = derive(id), list = dd.commentsFor(block).filter(b => !dd.hidden.has(b.hash)).sort((a, z) => a.ts - z.ts).slice(-200);
+      const atEnd = chat.scrollTop + chat.clientHeight >= chat.scrollHeight - 30;
+      chat.replaceChildren(...(list.length ? list.map(cb => h('div', { class: 'item' }, h('b', {}, cb.author === dd.owner ? dd.profile.name : (cb.payload.name || 'anon')), h('span', { class: 'fp' }, ' ·' + fp(cb.author)), ' ', cb.payload.text)) : [h('div', { class: 'sub' }, 'No messages yet.')]));
+      if (atEnd) chat.scrollTop = chat.scrollHeight;
+    };
+    let segp = null, how = '';
+    const ui = {
+      attach(sess) { ui.sess = sess; if (sess.media) ui.media(sess.media); else if (sess.mode === 'seg') ui.segmentMode(); },
+      media(ms) { segp = null; player.srcObject = ms; player.play().catch(() => {}); how = ui.sess?.parent && ui.sess.parent === ui.sess.parentHint ? '' : ''; status.textContent = 'Live · by WebRTC (about a second behind)'; },
+      segmentMode() { player.srcObject = null; segp = segmentPlayer(player, lb.payload.mime, ui.sess?.init); status.textContent = segp ? 'Live · by segments through the home node (a few seconds behind)' : 'This browser can’t play this stream format.'; },
+      segment(g, u8) { if (ui.sess?.mode === 'seg') segp?.push(g, u8); },
+      status(t) { status.textContent = t; },
+      ended(t) { status.textContent = t + (d.recordings.get(lb.payload.stream) ? '' : ' If the streamer publishes the recording, it appears with the channel’s videos.'); }
+    };
+    const ended = d.liveEnds.has(lb.payload.stream);
+    const rec = d.recordings.get(lb.payload.stream);
+    if (ended) status.replaceChildren('This stream has ended. ', rec ? h('a', { href: `#/v/${id}/${rec.hash}` }, 'Watch the recording') : 'The recording wasn’t published.');
+    else if (broadcasts.get(id)?.stream === lb.payload.stream && !broadcasts.get(id).ended) { player.srcObject = broadcasts.get(id).media; status.textContent = 'You are live. This is your own preview.'; }
+    else {
+      joinLive(id, lb, ui).then(sess => {
+        if (!sess) return;
+        views.livewatch.current = { stream: lb.payload.stream, timer: setInterval(() => { if (!player.isConnected) return; drawChat(); }, 2000) };
+      });
+    }
+    drawChat();
+    views.livewatch.refresh = drawChat;   // new blocks (chat) shouldn't rebuild the player
+    return h('div', { class: 'split', style: 'grid-template-columns:2fr 1fr' },
+      h('div', {}, player, h('div', { class: 'row', style: 'justify-content:space-between;margin-top:8px' }, h('h2', { style: 'margin:0' }, ended ? '' : h('span', { class: 'badge live' }, 'LIVE'), ' ', lb.payload.title), unmute),
+        h('div', { class: 'sub' }, h('a', { href: `#/c/${id}` }, d.profile.name), ' · started ', ago(lb.ts)), status),
+      h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Chat'), chat, h('div', { class: 'row', style: 'margin-top:8px' }, box, send)));
+  }
+};
 const chainTab = {
   videos(id, d) {
-    return h('div', {}, isMine(d.owner) ? keep('upload:' + id, () => uploadForm(id)) : null,
+    return h('div', {}, d.liveNow.map(lb => liveBanner(id, lb)),
+      isMine(d.owner) ? keep('studio:' + id, () => liveStudio(id)) : null,
+      isMine(d.owner) ? keep('upload:' + id, () => uploadForm(id)) : null,
       d.videos.length ? h('div', { class: 'grid' }, d.videos.map(b => videoCard(id, b))) : h('div', { class: 'empty' }, 'No videos yet.'));
   },
   posts(id, d) {
@@ -2785,7 +3438,7 @@ uiReady = true;
 render(true);
 window.addEventListener('beforeunload', (e) => { if (E.miner || hosting.size) { e.preventDefault(); e.returnValue = ''; } });
 // Exposed for debugging in the console.
-window.opentube = { me, engine: E, net, wt };
+window.opentube = { me, engine: E, net, wt, live: { broadcasts, viewing, hub: liveNet } };
 
 // ---------------------------------------------------------------- connect
 if (params.get('net') === 'local') startLocal();
