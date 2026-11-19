@@ -309,9 +309,9 @@ function tallyVotes(blocks) {
   }
   const out = new Map();
   for (const [video, m] of latest) {
-    let up = 0, down = 0; const by = new Map();
-    for (const [author, b] of m) { if (b.payload.v > 0) up++; else if (b.payload.v < 0) down++; by.set(author, b.payload.v); }
-    out.set(video, { up, down, by });
+    let up = 0, down = 0; const by = new Map(), recent = [];
+    for (const [author, b] of m) { if (b.payload.v > 0) up++; else if (b.payload.v < 0) down++; by.set(author, b.payload.v); if (b.payload.v) recent.push([b.ts, b.payload.v]); }
+    out.set(video, { up, down, by, recent });   // recent: [time, ±1] of each voter's current vote, for wave scoring
   }
   return out;
 }
@@ -326,7 +326,8 @@ function validRanking(r, listGenesis) {
   if (!listGenesis || listGenesis.payload.kind !== 'list' || listGenesis.payload.ranking !== true || r.author !== listGenesis.author) return false;
   if (!isStr(r.algo, 40) || !Array.isArray(r.items) || r.items.length > RANK.items || canon(r).length > 200000) return false;
   return r.items.every(i => i && isHex(i.c, 64) && isHex(i.v, 64) && isStr(i.t, RANK.title) && isStr(i.n, LIMITS.name)
-    && Number.isFinite(i.s) && Number.isSafeInteger(i.up) && Number.isSafeInteger(i.down) && Number.isSafeInteger(i.ts));
+    && Number.isFinite(i.s) && Number.isSafeInteger(i.up) && Number.isSafeInteger(i.down) && Number.isSafeInteger(i.ts)
+    && (i.w === undefined || (Array.isArray(i.w) && i.w.length === 4 && i.w.every(Number.isFinite))));
 }
 const rankingPreimage = (r) => { const { sig, ...rest } = r; return 'opentube-ranking:' + canon(rest); };
 
@@ -508,24 +509,39 @@ const validNodeInfo = (n) => !!n && typeof n === 'object' && n.v === 1 && n.kind
 const membershipPreimage = (m) => { const { sig, ...rest } = m; return 'opentube-membership:' + canon(rest); };
 const validMembership = (m) => !!m && typeof m === 'object' && m.v === 1 && isKey(m.author) && Number.isSafeInteger(m.at) && m.at <= Date.now() + 10 * 60000
   && typeof m.sig === 'string' && Array.isArray(m.joined) && m.joined.length <= 1000 && m.joined.every(x => isHex(x, 64)) && new Set(m.joined).size === m.joined.length;
-// "hot-v1": net votes with time decay (Hacker News style), so new videos get a chance.
+// Waves (algorithm "waves-v1"): every like/dislike fades with time, so a video rises while votes keep coming and sinks
+// when they stop. Scores at three speeds: w[0] rising (votes from the last minutes count most), w[1] today, w[2] this
+// week, plus w[3] all-time net votes. New uploads get a starting boost that fades, so they get a chance to collect
+// votes. `s` (hot) blends the three speeds: that's the default order, and why the feed comes in waves.
+const WAVES = { tau: [20 * 60000, 8 * 3600000, 3 * 86400000], fresh: [3600000, 12 * 3600000, 4 * 86400000], boost: 1.5, mix: [0.5, 0.35, 0.15] };
+function waveScores(video, tally, now = Date.now()) {
+  const w = [0, 0, 0];
+  for (const [ts, v] of tally?.recent || []) {
+    const age = Math.max(0, now - Math.min(ts, now));
+    for (let k = 0; k < 3; k++) w[k] += v * Math.exp(-age / WAVES.tau[k]);
+  }
+  const vAge = Math.max(0, now - video.ts);
+  for (let k = 0; k < 3; k++) w[k] += WAVES.boost * Math.exp(-vAge / WAVES.fresh[k]);
+  const r = (x) => Math.round(x * 1e4) / 1e4;
+  const all = (tally?.up || 0) - (tally?.down || 0);
+  return { s: r(w[0] * WAVES.mix[0] + w[1] * WAVES.mix[1] + w[2] * WAVES.mix[2]), w: [r(w[0]), r(w[1]), r(w[2]), all] };
+}
 function rankVideos(chainList, now = Date.now()) {
   const all = [];
   for (const c of chainList) {
     if (c.genesis.payload.kind !== 'channel') continue;
     const d = derive(c);
     for (const v of d.videos) {
-      const t = d.votes.get(v.hash) || { up: 0, down: 0 };
-      const ageH = Math.max(0, now - v.ts) / 3600000;
-      all.push({ c: c.id, v: v.hash, t: v.payload.title, n: d.profile.name, up: t.up, down: t.down, ts: v.ts,
-        s: Math.round(((t.up - t.down + 1) / Math.pow(ageH + 2, 1.5)) * 1e6) / 1e6 });
+      const t = d.votes.get(v.hash) || { up: 0, down: 0, recent: [] };
+      all.push({ c: c.id, v: v.hash, t: v.payload.title, n: d.profile.name, up: t.up, down: t.down, ts: v.ts, ...waveScores(v, t, now) });
     }
   }
-  const hot = [...all].sort((a, b) => b.s - a.s).slice(0, 150);
-  const fresh = [...all].sort((a, b) => b.ts - a.ts).slice(0, 50);
+  // Keep the best of every view, plus the newest, so each view has enough to show.
+  const pick = (key, n) => [...all].sort((a, b) => key(b) - key(a)).slice(0, n);
   const seen = new Set(), items = [];
-  for (const i of [...hot, ...fresh]) if (!seen.has(i.v)) { seen.add(i.v); items.push(i); }
-  return items.slice(0, RANK.items);
+  for (const i of [...pick(x => x.s, 80), ...pick(x => x.w[0], 40), ...pick(x => x.w[1], 40), ...pick(x => x.w[2], 40), ...pick(x => x.w[3] * 1e13 + x.ts, 40), ...pick(x => x.ts, 40)])
+    if (!seen.has(i.v)) { seen.add(i.v); items.push(i); }
+  return items.sort((a, b) => b.s - a.s).slice(0, RANK.items);
 }
 
 // ---- a WebTorrent-compatible tracker, so a home node can introduce video peers itself.
@@ -1080,7 +1096,7 @@ async function createEngine(o) {
     changed();
     return true;
   }
-  async function publishRanking(listId, items, algo = 'hot-v1') {
+  async function publishRanking(listId, items, algo = 'waves-v1') {
     const g = genesisFor(listId); const signer = g && o.keyFor?.(g.author);
     if (!signer) throw new Error('this node does not hold that list key');
     const r = { v: 1, list: listId, at: Date.now(), algo, author: signer.pub, items };
@@ -1190,7 +1206,7 @@ async function createEngine(o) {
   });
 }
 
-globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
+globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
 })();
 </script>
 
@@ -2368,11 +2384,16 @@ const keep = (key, make) => kept.get(key) || kept.set(key, make()).get(key);
 // ---- feed
 views.home = { render() {
   const ids = Object.keys(subs).filter(id => chains.has(id));
-  const items = ids.flatMap(id => derive(id)?.kind === 'channel' ? derive(id).videos.map(b => [id, b]) : []).sort((a, b) => b[1].ts - a[1].ts);
+  const now = Date.now(), sc = new Map();
+  const items = ids.flatMap(id => derive(id)?.kind === 'channel' ? derive(id).videos.map(b => [id, b]) : []);
+  for (const [id, b] of items) sc.set(b.hash, globalThis.OpenTubeCore.waveScores(b, derive(id).votes.get(b.hash), now).s);
+  const sortFeed = () => items.sort((a, b) => (settings.feedSort === 'new' ? 0 : sc.get(b[1].hash) - sc.get(a[1].hash)) || b[1].ts - a[1].ts);
+  sortFeed();
   const liveNow = ids.flatMap(id => derive(id)?.kind === 'channel' ? derive(id).liveNow.map(lb => [id, lb]) : []);
   return h('div', {},
     liveNow.length ? h('div', {}, h('h2', { style: 'margin-top:0' }, 'Live now'), liveNow.map(([id, lb]) => liveBanner(id, lb))) : null,
     h('h2', { style: liveNow.length ? '' : 'margin-top:0' }, 'Your feed'),
+    items.length ? viewChips('feedSort', [['hot', 'Hot'], ['new', 'Newest']], () => render(true)) : null,
     items.length ? h('div', { class: 'grid' }, items.slice(0, 200).map(([id, b]) => videoCard(id, b)))
       : h('div', { class: 'empty' }, h('p', {}, 'No videos from your subscriptions yet.'), h('p', {}, h('a', { href: '#/explore' }, 'Explore channels'), ' or ', h('a', { href: '#/me' }, 'create your own channel'), '.')));
 } };
@@ -2384,6 +2405,17 @@ function liveEverywhere() {
   const out = [];
   for (const c of chains.values()) { if (c === main) continue; const d = derive(c.id); if (d?.kind === 'channel') for (const lb of d.liveNow) out.push([c.id, lb]); }
   return out.sort((a, b) => b[1].ts - a[1].ts);
+}
+// Ways to order videos. Hot is the default: recent votes count most, so it changes in waves.
+const VIEWS = [['hot', 'Hot'], ['rising', 'Rising'], ['today', 'Today'], ['week', 'This week'], ['all', 'All time']];
+const VIEW_KEY = {
+  hot: (i) => i.s, rising: (i) => i.w ? i.w[0] : i.s, today: (i) => i.w ? i.w[1] : i.s, week: (i) => i.w ? i.w[2] : i.s,
+  all: (i) => i.w ? i.w[3] : i.up - i.down
+};
+function viewChips(setting, options, onChange) {
+  return h('div', { class: 'quick', style: 'margin:0 0 12px' }, options.map(([k, label]) => h('button', { class: 'small' + ((settings[setting] || options[0][0]) === k ? ' on' : ''), onclick: (e) => {
+    settings[setting] = k; saveSettings(); for (const b of e.target.parentNode.children) b.classList.toggle('on', b === e.target); onChange();
+  } }, label)));
 }
 views.explore = { render() {
   const tab = ['trending', 'new', 'channels', 'lists'].includes(route.tab) ? route.tab : 'trending';
@@ -2399,9 +2431,11 @@ views.explore = { render() {
     pickRanker.classList.toggle('hidden', tab === 'channels' || tab === 'lists');
     if (tab === 'trending' || tab === 'new') {
       let items = r.items.filter(i => match(i.t + ' ' + i.n));
+      if (tab === 'trending') { const key = VIEW_KEY[settings.view] || VIEW_KEY.hot; items = [...items].sort((a, b) => key(b) - key(a) || b.ts - a.ts); }
       const live = liveEverywhere().filter(([id, lb]) => match(lb.payload.title + ' ' + (derive(id)?.profile.name || '')));
       if (tab === 'new') items = [...items].sort((a, b) => b.ts - a.ts);
       body.replaceChildren(
+        tab === 'trending' ? viewChips('view', VIEWS, () => fill()) : '',
         live.length ? h('div', {}, h('h3', { style: 'margin-top:0' }, 'Live now'), live.map(([id, lb]) => liveBanner(id, lb))) : '',
         h('p', { class: 'sub', style: 'margin-top:0' }, r.local ? `No ranking list has published yet, so this browser ranked all ${[...E.directory.values()].filter(e => e.genesis.payload.kind === 'channel').length} registered channels itself.` : `Ranking published ${ago(r.at)} and signed by the list's key.`),
         items.length ? h('div', { class: 'grid' }, items.slice(0, 60).map((i, n) => rankCard(i, tab === 'trending' ? n + 1 : 0)))
