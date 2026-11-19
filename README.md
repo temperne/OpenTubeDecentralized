@@ -98,30 +98,20 @@ MAIN CHAIN (proof of work, every node keeps it)
 
   Channel pages warn you until the key controlling that channel has been backed up.
 
-## Tokens (the ledger)
+## Coins (the ledger)
 
-Ledger transactions ride in main-chain blocks, so proof of work orders them and nothing can be spent twice.
+OpenTube runs on **one shared coin**. 100 units = 1 coin. Transactions ride in main-chain blocks, so proof of work orders them and nothing can be spent twice; every node replays them and gets the same balances.
 
-- **Every identity issues its own token** and starts with a **free balance** of 100,000 (`LEDGER.cap`). There's no mining reward or central issuer.
-- **Spending your own token sends it out.** Your free balance is the cap minus how many of your tokens are in other people's hands. When they come back, your free balance recovers. They come back when someone **sells them back** to you (pays you in your own token) or **burns** them. Doing things that are a net negative is what drains it.
-- **Holdings** are other identities' tokens you've received. You can pass them on, sell them back to their issuer, or burn them. Selling back or burning destroys them.
-- **This is how tokens become money:** an advertiser's ads put its tokens in viewers' and creators' hands. The advertiser buys them back (payment happens outside the chain), the tokens die, and the advertiser's free balance recovers for new ads. Low-quality ads that nobody sells back leave the advertiser unable to advertise more.
-- **A transaction** pays one or many recipients (for example, a creator paying every member evenly) and/or burns. It carries a sequence number and a little proof of work, and is signed by the sender. Every node replays the ledger from the main chain and gets identical balances.
-- **On the site:** the *Wallet* page shows each of your accounts (your personal key and every channel key), free balance, holdings, sending (one or many recipients), selling back, burning, history, and network totals. Channel pages have a **Tip** button.
-- **Not built yet:** ad slots, watch proofs, paid votes and comment tips, storage proofs, identity verification, and adaptive limits.
-
-## Ads: creating, syndicating, and proving views
-
-- **Create an ad** (channel → *Advertise*): upload a short video (up to 120 s) and set a title, an optional `https://` link, **tokens per verified view** and **maximum views**. The ad is an `ad` block on your channel. Its **terms** are signed separately by the channel key so viewers can carry them to the main chain. Ads are paid in **that channel's own token**, so its free balance is the ad budget. *Stop ad* appends a hide record.
-- **Syndication** (channel or list → *Manage → Ads*): a `sponsor` record names an advertiser channel. Its ads then run before videos on that channel, and, for a list, before videos on **every channel in the list**. The advertiser's *Advertise* tab shows where its ads run.
-- **Proof of watching:**
-  1. Ads start on shared 10-second slots (`ADS.slotMs`), and clocks are synced to the home node. Everyone starting the same ad in the same slot forms a group.
-  2. Every second, each viewer broadcasts a hash of that second's ad-file bytes, mixed with the group's ID. Others check it against their own hash and that it arrived on time. Ticks are only sent while the ad is playing and the tab is visible.
-  3. At the end, each viewer signs a **witness statement** listing who stayed in sync for at least 80% of the ad.
-  4. A viewer with witnesses from at least `ADS.minWitnesses` *other* keys submits a **claim** transaction. Watch traffic is relayed by the home node and never stored.
-- **The ledger checks every claim:** the advertiser's signature on the terms, each witness signature, and that the witnesses named the viewer. It then enforces one claim per viewer per ad, one ad per viewer per slot, the maximum views, and the advertiser's free balance.
-- **Payout:** the price per view leaves the advertiser's free balance, half to the viewer and half to the creator of the video the ad ran with. When they sell those tokens back, the advertiser's budget recovers.
-- **Known weakness:** keys are free, so one person can run several "viewers" that vouch for each other. `ADS.minWitnesses` is 1 so the demo works with two viewers; the intended value is around 10, together with identity verification.
+- **Where coins come from:** only from running the network. Each main-chain block pays **1 coin** to whoever mined it (home nodes, your computers, or your browser when it confirms its own transaction). Every new key may claim **10 starter coins** once, which needs a few seconds of extra proof of work.
+- **What costs coins:**
+  - **Watching** someone else's video pays its creator. The page won't play it until the view is paid. It's free for your own videos, videos you host, and videos from before the coin.
+  - **Likes** pay the author of the video or comment. **Dislikes** cost the same but are burned. Only paid votes count in rankings.
+  - **Posting** a video pays the members registered as **hosts** of that channel, split evenly (joining a channel registers you). If nobody hosts it yet, the block's miner gets it. A video doesn't show up, rank or get hosted until its fee is paid; its owner sees a *Publish* button.
+  - **Tips** and transfers: *Wallet → Send coins*, and the *Tip* button on channels.
+- **Ads pay you back:** a verified ad view pays the ad's price, half to the viewer and half to the creator of the video it ran with, from the advertiser channel's coins. Ads only run where a channel or list sponsors an advertiser that has created an ad (*Advertise* tab, *Manage → sponsors*).
+- **Prices set themselves:** after every block, the watch, like and post-per-GB prices each move up to 12.5% toward a target load (`COIN.target`). Busy means dearer and quiet means cheaper, so storage and attention are priced by the network itself. A payment may be up to 25% under the current price, because prices move while it waits for a block.
+- **Before the coin:** videos and votes from before 2026-11-19 09:00 UTC stay free. Transactions in the old per-person tokens stay valid in history but no longer affect balances.
+- **Known weaknesses:** keys are free, so starter coins and block rewards can be farmed with CPU (each costs proof of work, like mining). Host registration isn't checked against actually storing the videos yet (storage proofs are not built). A modified page could watch without paying, because video travels peer to peer.
 
 ## Network & diagnostics
 
