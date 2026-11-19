@@ -1550,6 +1550,7 @@ const streaming = (async () => {
 })();
 // The worker must actually control this page, or the player's requests go to the server and get "not found" (some
 // browsers only hand control over a moment after the worker starts, or on the next load).
+function autoplay(el) { el.play().catch(() => { el.muted = true; el.play().catch(() => {}); }); }   // muted if sound isn't allowed yet
 async function swControls() {
   if (navigator.serviceWorker?.controller) return true;
   await new Promise((r) => { navigator.serviceWorker?.addEventListener('controllerchange', r, { once: true }); setTimeout(r, 3000); });
@@ -3010,7 +3011,7 @@ views.watch = {
     if (!(views.chain.requested ||= new Set()).has(id)) { views.chain.requested.add(id); E.requestChain(c); }
     if (!c.has(video)) { E.send({ t: 'rq', c: id, w: [video], h: headsOf(c) }); views.watch.refresh = () => { if (c.has(video)) render(true); }; return h('div', { class: 'empty' }, 'Fetching this video’s block from peers…'); }
     const b = c.blocks.get(video), v = b.payload, d = derive(id);
-    const player = h('video', { controls: true, playsInline: true, autoplay: true });
+    let player = h('video', { controls: true, playsInline: true, autoplay: true });   // replaced by a fresh one after an ad
     const bar = h('div'); const stats = h('div', { class: 'stats' });
     const comments = h('div');
     const box = h('input', { type: 'text', placeholder: 'Add a comment…', maxLength: LIMITS.comment, style: 'flex:1' });
@@ -3054,7 +3055,7 @@ views.watch = {
       const go = async () => {
         if (watchState !== ws) return;
         const b = new Blob([await new Response(f.stream()).blob()]);
-        if (watchState === ws) { player.removeAttribute('src'); ws.url = player.src = URL.createObjectURL(b); player.play().catch(() => {}); }
+        if (watchState === ws) { player.removeAttribute('src'); ws.url = player.src = URL.createObjectURL(b); autoplay(player); }
       };
       const fallback = (why) => {
         if (fell || watchState !== ws) return; fell = true;
@@ -3065,7 +3066,7 @@ views.watch = {
       if (await streaming && await swControls()) {
         if (watchState !== ws) return;
         player.addEventListener('error', () => fallback('player error ' + (player.error?.code || '')), { once: true });
-        f.streamTo(player); player.play().catch(() => {});
+        f.streamTo(player); autoplay(player);
         const check = setInterval(() => {   // nothing loaded although data is flowing: give up on streaming
           if (watchState !== ws || player.readyState > 0) return clearInterval(check);
           if (t.downloaded > 4 * 1024 ** 2 || t.done) { clearInterval(check); setTimeout(() => { if (player.readyState === 0) fallback('nothing loaded'); }, 8000); }
@@ -3079,7 +3080,7 @@ views.watch = {
     // A video in your folder plays straight from the file on disk: instant, seekable, any size.
     const startMain = () => hostedFile(id, v.infohash).then(file => {
       if (!alive()) return;
-      if (file) { ws.url = player.src = URL.createObjectURL(new Blob([file])); player.play().catch(() => {}); }   // untyped: the browser sniffs the format
+      if (file) { ws.url = player.src = URL.createObjectURL(new Blob([file])); autoplay(player); }   // untyped: the browser sniffs the format
       else t.ready ? play() : t.once('ready', play);
     });
     (async () => {
@@ -3090,7 +3091,11 @@ views.watch = {
       if (!alive()) return;
       if (res.text) adPanel.replaceChildren(h('span', { class: 'pill ' + (res.ok ? 'ok' : 'warn') }, res.ok ? 'Ad view verified' : 'Ad view not counted'), ' ', h('span', { class: 'sub' }, res.text));
       else adPanel.style.display = 'none';
-      player.pause(); player.removeAttribute('src'); player.load(); player.muted = false;
+      const wasMuted = player.muted;
+      player.pause();
+      const fresh = h('video', { controls: true, playsInline: true, autoplay: true });
+      fresh.muted = wasMuted;   // if the browser only allowed the ad muted, the video will be too (unmute with the controls)
+      player.replaceWith(fresh); player = fresh;
       startMain();
     })();
     watchState.adPanel = adPanel;
