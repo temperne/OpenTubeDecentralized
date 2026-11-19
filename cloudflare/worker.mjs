@@ -66,6 +66,7 @@ export class OpenTubeNode {
       send: (msg, to) => this.send(msg, to),
       mine,                // shouldMine defaults to this node's own keys: only its ranking list
       trackAll: true,      // keep every channel chain, not just the main chain
+      relayWatch: true,    // pass ad watch-group messages between browsers
       // Keep everyone's latest joined-channel list so headless hosts can follow their owner.
       onMembership: (m) => sql.exec('INSERT OR REPLACE INTO memberships (author, body) VALUES (?, ?)', m.author, JSON.stringify(m)),
       persist: (chain, b) => sql.exec('INSERT OR IGNORE INTO blocks (hash, chain, body) VALUES (?, ?, ?)', b.hash, chain, JSON.stringify(b)),
@@ -143,7 +144,7 @@ export class OpenTubeNode {
     await this.ensureAlarm();
     if (url.pathname === '/status') {
       return Response.json({
-        network: E.MAIN_ID, height: E.main.best.height, tip: E.main.best.hash, registered: E.directory.size,
+        network: E.MAIN_ID, now: Date.now(), height: E.main.best.height, tip: E.main.best.hash, registered: E.directory.size,
         pending: E.mempool.size, chains: E.chains.size, peers: this.ctx.getWebSockets().length,
         ranker: this.ranker.genesis?.hash || null, ranking: this.meta('rankingStatus'), nextAlarm: await this.ctx.storage.getAlarm(),
         tracker: this.tracker.stats(), memberships: E.memberships.size
