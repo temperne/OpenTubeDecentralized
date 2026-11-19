@@ -1229,7 +1229,10 @@ function channelCard(id) {
 // Which ranking to show: the viewer's choice, else this site's node, else any we know, else compute locally.
 function currentRanking() {
   const pick = [settings.ranker, homeRanker, ...E.rankings.keys()].find(id => id && E.rankings.has(id));
-  return pick ? E.rankings.get(pick) : { local: true, items: E.rank(), at: Date.now() };
+  if (pick) return E.rankings.get(pick);
+  // No ranking list has published: load every registered channel and rank them here.
+  for (const [id, e] of E.directory) if (e.genesis.payload.kind === 'channel' && !chains.has(id)) { const c = openChain(id); if (c) E.requestChain(c); }
+  return { local: true, items: E.rank(), at: Date.now() };
 }
 function chanRow(id) {
   const g = genesisFor(id); if (!g) return null;
@@ -1318,7 +1321,7 @@ views.explore = { render() {
       let items = r.items.filter(i => match(i.t + ' ' + i.n));
       if (tab === 'new') items = [...items].sort((a, b) => b.ts - a.ts);
       body.replaceChildren(
-        h('p', { class: 'sub', style: 'margin-top:0' }, r.local ? 'No ranking list has published yet, so this browser ranked the channels it has loaded.' : `Ranking published ${ago(r.at)} and signed by the list's key.`),
+        h('p', { class: 'sub', style: 'margin-top:0' }, r.local ? `No ranking list has published yet, so this browser ranked all ${[...E.directory.values()].filter(e => e.genesis.payload.kind === 'channel').length} registered channels itself.` : `Ranking published ${ago(r.at)} and signed by the list's key.`),
         items.length ? h('div', { class: 'grid' }, items.slice(0, 60).map((i, n) => rankCard(i, tab === 'trending' ? n + 1 : 0)))
           : h('div', { class: 'empty' }, q.value ? 'No videos match.' : 'No videos yet.'));
     } else {
@@ -1716,11 +1719,19 @@ function healthChecks() {
     const starving = wt.torrents.filter(t => !t.done && t.numPeers === 0 && Date.now() - (diag.torrentSeen.get(t.infoHash) || Date.now()) > 20000);
     if (starving.length) checks.push(bad('Video transfers', `${starving.length} video(s) have no peer: nobody online has them.`, 'The uploader and everyone who joined that channel are offline. A headless host for the channel keeps videos online.'));
   }
+  // rankings
+  if (homeRanker) {
+    const r = E.rankings.get(homeRanker);
+    const st = diag.home?.ranking;
+    checks.push(r ? (Date.now() - r.at > 20 * 60000 ? warn('Rankings', `The node’s ranking is ${ago(r.at)} old.`, 'The node republishes every 5 minutes; it may be stuck.') : ok('Rankings', `The node’s ranking (${r.items.length} videos) was published ${ago(r.at)}.`))
+      : warn('Rankings', 'This site’s node has a ranking list but hasn’t published a ranking yet' + (st?.error ? ` (last error: ${st.error})` : '') + '. Explore ranks channels in this browser meanwhile.', 'It should appear within 5 minutes of the node waking up.'));
+  }
   // storage
   if (diag.storage?.quota) {
     const pct = diag.storage.usage / diag.storage.quota;
     checks.push(pct > 0.9 ? bad('Storage', `Browser storage is ${Math.round(pct * 100)}% full.`, 'Lower the per-channel storage limit on My node, or leave a joined channel.')
-      : !diag.storage.persisted ? warn('Storage', `${fmtBytes(diag.storage.usage)} used. The browser may clear it under storage pressure.`, 'Click “Keep my data” below so the browser won’t evict your chains, keys and hosted videos.')
+      : !diag.storage.persisted && hosting.size ? warn('Storage', `Hosting ${hosting.size} video(s), but the browser may clear its storage under pressure.`, 'Click “Keep my data” below so the browser won’t evict hosted videos.')
+      : !diag.storage.persisted ? ok('Storage', `${fmtBytes(diag.storage.usage)} used. Not marked persistent; that only matters once you host videos.`)
       : ok('Storage', `${fmtBytes(diag.storage.usage)} used of ${fmtBytes(diag.storage.quota)} available; marked persistent.`));
   }
   // keys

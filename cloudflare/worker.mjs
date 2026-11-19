@@ -102,16 +102,30 @@ export class OpenTubeNode {
     await this.ctx.storage.setAlarm(Date.now() + 10000);
   }
 
+  // Publishes this node's ranking. Never throws: Cloudflare stops retrying alarms that keep failing,
+  // which would silence the ranking for good, so errors are recorded and the next run is always scheduled.
   async alarm() {
     await this.ready;
     const id = this.ranker.genesis?.hash;
-    if (id && this.engine.directory.has(id)) {
-      const r = await this.engine.publishRanking(id, this.engine.rank());
-      this.meta('ranking', r);
-    } else if (id) {
-      this.engine.maybeMine();  // registration still pending (e.g. after an eviction)
+    let next = 30000;
+    try {
+      if (id && this.engine.directory.has(id)) {
+        const r = await this.engine.publishRanking(id, this.engine.rank());
+        this.meta('ranking', r);
+        this.meta('rankingStatus', { at: Date.now(), items: r.items.length, error: null });
+        next = rankEvery(this.env);
+      } else if (id) {
+        this.engine.maybeMine();  // registration still pending (e.g. after an eviction)
+      }
+    } catch (e) {
+      this.meta('rankingStatus', { ...(this.meta('rankingStatus') || {}), errorAt: Date.now(), error: String(e?.message || e) });
+    } finally {
+      await this.ctx.storage.setAlarm(Date.now() + next);
     }
-    await this.ctx.storage.setAlarm(Date.now() + (id && this.engine.directory.has(id) ? rankEvery(this.env) : 30000));
+  }
+  // Self-healing: if the ranking timer is missing for any reason, start it again.
+  async ensureAlarm() {
+    if (this.ranker.genesis && !(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(Date.now() + 5000);
   }
 
   send(msg, to) {
@@ -126,11 +140,13 @@ export class OpenTubeNode {
     await this.ready;
     const E = this.engine, url = new URL(request.url);
     await this.ensureRanker(url.host);
+    await this.ensureAlarm();
     if (url.pathname === '/status') {
       return Response.json({
         network: E.MAIN_ID, height: E.main.best.height, tip: E.main.best.hash, registered: E.directory.size,
         pending: E.mempool.size, chains: E.chains.size, peers: this.ctx.getWebSockets().length,
-        ranker: this.ranker.genesis?.hash || null, tracker: this.tracker.stats(), memberships: E.memberships.size
+        ranker: this.ranker.genesis?.hash || null, ranking: this.meta('rankingStatus'), nextAlarm: await this.ctx.storage.getAlarm(),
+        tracker: this.tracker.stats(), memberships: E.memberships.size
       }, { headers: { 'access-control-allow-origin': '*' } });
     }
     if (request.headers.get('upgrade') !== 'websocket') return new Response('expected a WebSocket', { status: 426 });
