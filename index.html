@@ -26,7 +26,17 @@
   nav a.active { background: var(--panel-2); }
   .status { margin-left: auto; font-size: 12px; color: var(--muted); display: flex; gap: 12px; flex-wrap: wrap; }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 5px; vertical-align: middle; }
-  .dot.on { background: var(--ok); } .dot.busy { background: var(--warn); }
+  .dot.on { background: var(--ok); } .dot.busy { background: var(--warn); } .dot.bad { background: var(--accent); }
+  .pill { display: inline-block; font-size: 12px; font-weight: 700; padding: 2px 10px; border-radius: 999px; white-space: nowrap; }
+  .pill.ok { background: rgba(62,207,142,.15); color: var(--ok); } .pill.warn { background: rgba(245,165,36,.15); color: var(--warn); } .pill.error { background: rgba(255,77,94,.15); color: var(--accent); }
+  .check { display: grid; grid-template-columns: 110px 1fr; gap: 4px 14px; padding: 10px 0; border-top: 1px solid var(--border); }
+  .check:first-child { border-top: 0; }
+  .check .fix { color: var(--muted); font-size: 13px; }
+  table.diag { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.diag th { text-align: left; color: var(--muted); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  table.diag td { padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .tablewrap { overflow-x: auto; }
+  .log { font-family: ui-monospace, monospace; font-size: 12px; max-height: 320px; overflow: auto; }
   button { font: inherit; cursor: pointer; border: 1px solid var(--border); background: var(--panel-2); color: var(--text); padding: 7px 14px; border-radius: 8px; }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
   button.on { border-color: var(--ok); color: var(--ok); }
@@ -87,6 +97,12 @@
   .votes button.mine { color: var(--accent-2); font-weight: 700; }
   .rank-n { position: absolute; top: 8px; left: 8px; background: rgba(0,0,0,.7); color: #fff; font-weight: 700; font-size: 12px; padding: 2px 8px; border-radius: 6px; }
   .thumb { position: relative; }
+  .bal { font-size: 28px; font-weight: 800; letter-spacing: -0.5px; }
+  .meter { height: 8px; background: var(--panel-2); border-radius: 4px; overflow: hidden; margin: 6px 0; }
+  .meter > div { height: 100%; background: var(--ok); }
+  .tx { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; padding: 10px 0; border-top: 1px solid var(--border); font-size: 14px; }
+  .tx:first-child { border-top: 0; }
+  .amt-in { color: var(--ok); font-weight: 700; } .amt-out { color: var(--accent); font-weight: 700; }
   .split { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
   @media (max-width: 800px) { .split { grid-template-columns: 1fr; } }
 </style>
@@ -97,13 +113,16 @@
   <nav>
     <a href="#/" data-nav="home">Feed</a>
     <a href="#/explore" data-nav="explore">Explore</a>
+    <a href="#/wallet" data-nav="wallet">Wallet</a>
     <a href="#/me" data-nav="me">My node</a>
+    <a href="#/network" data-nav="network">Network</a>
   </nav>
-  <div class="status">
+  <a class="status" href="#/network" title="Network & diagnostics" style="color:inherit;text-decoration:none">
+    <span><span class="dot" id="dot-health"></span><span id="st-health">checking…</span></span>
     <span><span class="dot" id="dot-net"></span><span id="st-net">connecting…</span></span>
     <span><span class="dot" id="dot-chain"></span><span id="st-chain">main chain…</span></span>
     <span id="st-p2p"></span>
-  </div>
+  </a>
 </header>
 <main id="app"><div class="empty">Starting node…</div></main>
 <div id="toast"></div>
@@ -188,6 +207,8 @@ class Chain {
     this.heads = new Set([id]);
     this.orphans = new Map();   // blocks waiting for their parents
     this.version = 0;           // bumps on every change; used to cache derived state
+    // Diagnostics: what we've heard about this chain from peers and how syncing is going.
+    this.stats = { announces: 0, lastAnnounce: 0, lastBlock: 0, lastRequest: 0, lastResponse: 0, unknownHeads: [], accepted: 0, rejected: 0, lastReject: '' };
   }
   get owner() { return this.genesis.author; }
   has(hash) { return this.blocks.has(hash); }
@@ -284,6 +305,68 @@ function validRanking(r, listGenesis) {
     && Number.isFinite(i.s) && Number.isSafeInteger(i.up) && Number.isSafeInteger(i.down) && Number.isSafeInteger(i.ts));
 }
 const rankingPreimage = (r) => { const { sig, ...rest } = r; return 'opentube-ranking:' + canon(rest); };
+
+// ---- the token ledger (transactions ride in main-chain blocks)
+// Every identity issues its OWN token. Its "free balance" is LEDGER.cap minus how many of its tokens
+// are out in other people's hands. Spending your own token sends it out; when it comes back to you
+// (someone pays you in it) or someone burns it, your free balance recovers. Tokens of other issuers
+// that you receive are "holdings": spend them, sell them back to their issuer, or burn them.
+// Selling back is how tokens become money: an advertiser buys back tokens its ads put out (paying
+// outside the chain), the tokens die, and the advertiser's free balance recovers for new ads.
+const LEDGER = { cap: 100000, txBits: 10, maxTxs: 200, maxOuts: 100, maxBurns: 20, memo: 140 };
+const holdKey = (holder, token) => holder + '|' + token;
+class Ledger {
+  constructor(src) {
+    this.hold = new Map(src?.hold); this.out = new Map(src?.out); this.seq = new Map(src?.seq);
+    this.burned = src?.burned || 0; this.txCount = src?.txCount || 0;
+  }
+  outstanding(issuer) { return this.out.get(issuer) || 0; }
+  free(k) { return LEDGER.cap - this.outstanding(k); }
+  held(holder, token) { return holder === token ? this.free(holder) : (this.hold.get(holdKey(holder, token)) || 0); }
+  holdings(holder) {
+    const res = []; const pre = holder + '|';
+    for (const [k, v] of this.hold) if (k.startsWith(pre)) res.push({ token: k.slice(pre.length), amt: v });
+    return res.sort((a, b) => b.amt - a.amt);
+  }
+  // Returns null if the transaction applies, or the reason it doesn't. Only mutates on success.
+  check(t) {
+    if (t.seq !== (this.seq.get(t.from) || 0) + 1) return 'out of order (sequence)';
+    const need = new Map();
+    for (const o of t.outs || []) need.set(o.token, (need.get(o.token) || 0) + o.amt);
+    for (const b of t.burns || []) need.set(b.token, (need.get(b.token) || 0) + b.amt);
+    for (const [token, amt] of need) if (this.held(t.from, token) < amt) return token === t.from ? 'not enough free balance' : 'not enough of that token';
+    return null;
+  }
+  apply(t) {
+    const why = this.check(t); if (why) return why;
+    for (const o of t.outs || []) {
+      if (o.token === t.from) this.out.set(t.from, this.outstanding(t.from) + o.amt);   // own token leaves home
+      else this.add(holdKey(t.from, o.token), -o.amt);
+      if (o.to === o.token) { this.out.set(o.token, this.outstanding(o.token) - o.amt); this.burned += o.amt; }   // sold back to its issuer: dead
+      else this.add(holdKey(o.to, o.token), o.amt);
+    }
+    for (const b of t.burns || []) { this.add(holdKey(t.from, b.token), -b.amt); this.out.set(b.token, this.outstanding(b.token) - b.amt); this.burned += b.amt; }
+    this.seq.set(t.from, t.seq); this.txCount++;
+    return null;
+  }
+  add(k, d) { const v = (this.hold.get(k) || 0) + d; if (v) this.hold.set(k, v); else this.hold.delete(k); }
+}
+const amtOk = (a) => Number.isSafeInteger(a) && a > 0 && a <= LEDGER.cap;
+function txShape(t) {
+  if (!t || typeof t !== 'object' || t.v !== 1 || t.kind !== 'tx' || !isKey(t.from) || !Number.isSafeInteger(t.seq) || t.seq < 1) return false;
+  if (!Number.isSafeInteger(t.ts) || t.ts > Date.now() + 10 * 60000 || !isStr(t.memo ?? '', LEDGER.memo)) return false;
+  const outs = t.outs || [], burns = t.burns || [];
+  if (!Array.isArray(outs) || !Array.isArray(burns) || outs.length > LEDGER.maxOuts || burns.length > LEDGER.maxBurns || !(outs.length + burns.length)) return false;
+  if (!outs.every(o => o && isKey(o.to) && isKey(o.token) && amtOk(o.amt) && o.to !== t.from)) return false;
+  if (!burns.every(b => b && isKey(b.token) && b.token !== t.from && amtOk(b.amt))) return false;  // burning your own token means nothing
+  return true;
+}
+// Transactions use the block hashing scheme: hash over everything but hash/sig/nonce, a little proof of work, signed by `from`.
+async function checkTx(t) {
+  if (!txShape(t) || !isHex(t.hash, 64) || typeof t.sig !== 'string' || !Number.isSafeInteger(t.nonce)) return false;
+  if (canon(t).length > 20000 || zeroBits(t.hash) < LEDGER.txBits || await hashBlock(t) !== t.hash) return false;
+  return verify(t.from, t.hash, t.sig);
+}
 
 // ---- memberships: which channels a person has joined (and therefore hosts), signed by their
 // personal key. Latest snapshot only, never on chain. A headless host started with someone's user ID
@@ -448,7 +531,9 @@ function derive(c) {
      trackAll                  keep every registered chain (server nodes)
    Protocol: heads {c,h} | rq {c,w,h} (empty w = "send me your heads") | bk {c,b} | mp {e} */
 async function createEngine(o) {
-  const send = (m, to) => { try { o.send?.(m, to); } catch (e) { console.warn('send', e); } };
+  const stats = { started: Date.now(), msgsIn: 0, msgsOut: 0, lastMsgIn: 0, rejected: {}, events: [] };
+  const logEvent = (kind, text) => { stats.events.unshift({ ts: Date.now(), kind, text }); if (stats.events.length > 200) stats.events.pop(); };
+  const send = (m, to) => { stats.msgsOut++; try { o.send?.(m, to); } catch (e) { console.warn('send', e); } };
   const changed = () => o.onChange?.();
   const MAIN_ID = await hashBlock(MAIN_GENESIS);
   const CFG = MAIN_GENESIS.payload;
@@ -456,12 +541,13 @@ async function createEngine(o) {
   main.best = main.genesis;
   const chains = new Map([[MAIN_ID, main]]);
   const mempool = new Map();  // genesis hash -> genesis block awaiting registration
-  const E = { MAIN_ID, CFG, main, chains, mempool, directory: new Map(), miner: null, minedHashes: 0, rankings: new Map(), memberships: new Map() };
+  const E = { MAIN_ID, CFG, main, chains, mempool, directory: new Map(), miner: null, minedHashes: 0, rankings: new Map(), memberships: new Map(), txpool: new Map(), stats, logEvent };
+  const txpool = E.txpool;
 
   const headsOf = (c) => c === main ? [main.best.hash] : [...c.heads];
   const genesisFor = (id) => chains.get(id)?.genesis || E.directory.get(id)?.genesis || mempool.get(id) || null;
   const announce = (c, to) => send({ t: 'heads', c: c.id, h: headsOf(c) }, to);
-  const requestChain = (c, to) => send({ t: 'rq', c: c.id, w: [], h: headsOf(c) }, to);
+  const requestChain = (c, to) => { c.stats.lastRequest = Date.now(); send({ t: 'rq', c: c.id, w: [], h: headsOf(c) }, to); };
   function openChain(id) {
     if (chains.has(id)) return chains.get(id);
     const g = genesisFor(id); if (!g) return null;
@@ -469,12 +555,30 @@ async function createEngine(o) {
     return c;
   }
 
-  // ---- main chain: proof of work; the highest chain wins (ties: lowest tip hash)
+  // ---- main chain: proof of work; the highest chain wins (ties: lowest tip hash).
+  // Blocks register channels/lists and carry ledger transactions.
+  const ledgerCache = new Map();   // block hash -> Ledger after that block
+  ledgerCache.set(MAIN_ID, new Ledger());
+  function stateAfter(hash) {
+    if (ledgerCache.has(hash)) return ledgerCache.get(hash);
+    const path = []; let h = hash;
+    while (!ledgerCache.has(h)) { const b = main.blocks.get(h); if (!b) return null; path.push(b); h = b.parents[0]; }
+    let st = ledgerCache.get(h);
+    for (const b of path.reverse()) { st = new Ledger(st); for (const t of b.payload.txs || []) st.apply(t); ledgerCache.set(b.hash, st); }
+    while (ledgerCache.size > 300) { const k = ledgerCache.keys().next().value; if (k === MAIN_ID) { ledgerCache.delete(k); ledgerCache.set(k, new Ledger()); } else ledgerCache.delete(k); }
+    return st;
+  }
   async function validMainBlock(b) {
     if (b.parents.length !== 1 || zeroBits(b.hash) < CFG.difficulty) return false;
     const p = b.payload;
-    if (!p || p.type !== 'register' || !Array.isArray(p.entries) || !p.entries.length || p.entries.length > CFG.maxEntries) return false;
+    if (!p || p.type !== 'register' || !Array.isArray(p.entries) || p.entries.length > CFG.maxEntries) return false;
+    const txs = p.txs === undefined ? [] : p.txs;
+    if (!Array.isArray(txs) || txs.length > LEDGER.maxTxs || !(p.entries.length + txs.length)) return false;
     for (const g of p.entries) if (!validGenesis(g) || !(await checkSigned(g))) return false;
+    const before = stateAfter(b.parents[0]); if (!before) return false;
+    const st = new Ledger(before);
+    for (const t of txs) if (!(await checkTx(t)) || st.apply(t)) return false;
+    ledgerCache.set(b.hash, st);
     return true;
   }
   function rebuildDirectory() {
@@ -483,11 +587,18 @@ async function createEngine(o) {
     const d = new Map();
     for (const b of path.reverse()) for (const g of b.payload.entries) if (!d.has(g.hash)) d.set(g.hash, { genesis: g, height: b.height, ts: b.ts });
     E.directory = d;
-    // Registrations knocked out by a reorg go back to the mempool.
-    for (const blk of main.blocks.values()) for (const g of blk.payload?.entries || []) if (!d.has(g.hash)) mempool.set(g.hash, g);
+    E.ledger = stateAfter(main.best.hash);
+    const onPath = new Set(path.map(b => b.hash));
+    // Registrations and transactions knocked out by a reorg go back to the pools.
+    for (const blk of main.blocks.values()) {
+      for (const g of blk.payload?.entries || []) if (!d.has(g.hash)) mempool.set(g.hash, g);
+      if (!onPath.has(blk.hash)) for (const t of blk.payload?.txs || []) if (t.seq > (E.ledger.seq.get(t.from) || 0)) txpool.set(t.hash, t);
+    }
     for (const id of d.keys()) mempool.delete(id);
+    for (const [h, t] of txpool) if (t.seq <= (E.ledger.seq.get(t.from) || 0)) txpool.delete(h);
     if (o.trackAll) for (const id of d.keys()) if (!chains.has(id)) requestChain(openChain(id));
   }
+  E.ledger = new Ledger();
   function onMainBlock(b) {
     const best = main.best;
     if (b.height > best.height || (b.height === best.height && b.hash < best.hash)) {
@@ -497,14 +608,28 @@ async function createEngine(o) {
       maybeMine();
     }
   }
+  // Pending transactions that would apply, in order, on top of `state`.
+  function selectTxs(state) {
+    const st = new Ledger(state), picked = [];
+    const pending = [...txpool.values()].sort((a, b) => a.from < b.from ? -1 : a.from > b.from ? 1 : a.seq - b.seq);
+    let progress = true;
+    while (progress && picked.length < LEDGER.maxTxs) {
+      progress = false;
+      for (const t of pending) if (!picked.includes(t) && !st.check(t)) { st.apply(t); picked.push(t); progress = true; if (picked.length >= LEDGER.maxTxs) break; }
+    }
+    return picked;
+  }
   function maybeMine() {
     if (E.miner || !o.mine) return;
-    const pending = [...mempool.values()].filter(g => !E.directory.has(g.hash));
     const shouldMine = o.shouldMine || ((g) => g.author === o.signer.pub || !!o.keyFor?.(g.author));
-    if (!pending.some(shouldMine)) return;
-    const entries = pending.sort((a, b) => shouldMine(b) - shouldMine(a)).slice(0, CFG.maxEntries);
+    const pending = [...mempool.values()].filter(g => !E.directory.has(g.hash));
     const tip = main.best;
-    const body = { v: 1, chain: MAIN_ID, parents: [tip.hash], height: tip.height + 1, ts: Date.now(), author: o.signer.pub, payload: { type: 'register', entries }, nonce: 0 };
+    const txs = selectTxs(stateAfter(tip.hash));
+    if (!pending.some(shouldMine) && !txs.some(t => shouldMine({ author: t.from }))) return;
+    const entries = pending.sort((a, b) => shouldMine(b) - shouldMine(a)).slice(0, CFG.maxEntries);
+    const payload = { type: 'register', entries };
+    if (txs.length) payload.txs = txs;
+    const body = { v: 1, chain: MAIN_ID, parents: [tip.hash], height: tip.height + 1, ts: Date.now(), author: o.signer.pub, payload, nonce: 0 };
     E.minedHashes = 0;
     const job = o.mine(body, CFG.difficulty, (n) => { E.minedHashes = n; });
     E.miner = { tip: tip.hash, job };
@@ -519,6 +644,42 @@ async function createEngine(o) {
     }).catch((e) => { console.warn('mining', e); if (E.miner?.job === job) E.miner = null; });
   }
 
+  // ---- transactions
+  async function addTx(t) {
+    if (!t || txpool.has(t.hash) || !(await checkTx(t)) || t.seq <= (E.ledger.seq.get(t.from) || 0)) return false;
+    txpool.set(t.hash, t);
+    return true;
+  }
+  // What `from` could still do after its own pending transactions are applied.
+  function pendingState(from) {
+    const st = new Ledger(E.ledger);
+    for (const t of [...txpool.values()].filter(x => x.from === from).sort((a, b) => a.seq - b.seq)) st.apply(t);
+    return st;
+  }
+  async function submitTx({ outs = [], burns = [], memo = '' }, signer = o.signer, onProgress) {
+    const from = signer.pub, st = pendingState(from);
+    const body = { v: 1, kind: 'tx', from, seq: (st.seq.get(from) || 0) + 1, ts: Date.now(), nonce: 0 };
+    if (outs.length) body.outs = outs.map(x => ({ to: x.to, token: x.token || from, amt: x.amt }));
+    if (burns.length) body.burns = burns.map(x => ({ token: x.token, amt: x.amt }));
+    if (memo) body.memo = memo;
+    if (!txShape(body)) throw new Error('invalid transaction');
+    const why = st.check(body); if (why) throw new Error(why);
+    body.nonce = await o.mine(body, LEDGER.txBits, onProgress).promise;
+    body.hash = await hashBlock(body); body.sig = await signer.sign(body.hash);
+    if (!(await addTx(body))) throw new Error('transaction rejected');
+    send({ t: 'tx', x: body });
+    maybeMine(); changed();
+    return body;
+  }
+  // Confirmed and pending transactions touching `key`, newest first.
+  function history(key, limit = 200) {
+    const res = [];
+    for (const t of txpool.values()) if (t.from === key || (t.outs || []).some(x => x.to === key)) res.push({ tx: t, pending: true });
+    for (let b = main.best; b && b.hash !== MAIN_ID && res.length < limit; b = main.blocks.get(b.parents[0]))
+      for (const t of [...(b.payload.txs || [])].reverse()) if (t.from === key || (t.outs || []).some(x => x.to === key)) res.push({ tx: t, height: b.height, ts: b.ts });
+    return res.slice(0, limit);
+  }
+
   // ---- insertion, serialized so validation always sees a consistent store
   let queue = Promise.resolve();
   const insert = (chainId, blocks, from, persist = true) => (queue = queue.then(() => doInsert(chainId, blocks, from, persist)).catch(e => console.warn('insert', e)));
@@ -527,25 +688,32 @@ async function createEngine(o) {
     let added = false;
     const todo = blocks.filter(b => b && typeof b === 'object').sort((a, b) => (a.height ?? 0) - (b.height ?? 0));
     const missing = new Set();
+    const reject = (b, why) => {
+      chain.stats.rejected++; chain.stats.lastReject = why;
+      stats.rejected[why] = (stats.rejected[why] || 0) + 1;
+      logEvent('reject', `${chain === main ? 'main chain' : chainId.slice(0, 8)}: rejected block ${String(b?.hash).slice(0, 10)} (${why})${from ? ' from peer ' + String(from).slice(0, 8) : ''}`);
+    };
     while (todo.length) {
       const b = todo.shift();
-      if (chain.has(b.hash) || b.chain !== chainId || !Array.isArray(b.parents) || !b.parents.length || b.parents.length > LIMITS.parents || !b.parents.every(p => isHex(p, 64))) continue;
+      if (chain.has(b.hash)) continue;
+      if (b.chain !== chainId || !Array.isArray(b.parents) || !b.parents.length || b.parents.length > LIMITS.parents || !b.parents.every(p => isHex(p, 64))) { reject(b, 'malformed'); continue; }
       const absent = b.parents.filter(p => !chain.has(p));
       if (absent.length) {
         if (chain.orphans.size < LIMITS.orphans && isHex(b.hash, 64)) chain.orphans.set(b.hash, b);
         absent.forEach(p => missing.add(p)); continue;
       }
-      if (b.height !== Math.max(...b.parents.map(p => chain.blocks.get(p).height)) + 1) continue;
-      if (!(await checkSigned(b))) continue;
-      if (chain === main ? !(await validMainBlock(b)) : !validPayload(chain, b, CFG)) continue;
+      if (b.height !== Math.max(...b.parents.map(p => chain.blocks.get(p).height)) + 1) { reject(b, 'wrong height'); continue; }
+      if (!(await checkSigned(b))) { reject(b, 'bad hash or signature'); continue; }
+      if (chain === main ? !(await validMainBlock(b)) : !validPayload(chain, b, CFG)) { reject(b, chain === main ? 'breaks main-chain rules' : 'not permitted by channel rules'); continue; }
       chain.add(b); chain.orphans.delete(b.hash); added = true;
+      chain.stats.accepted++; chain.stats.lastBlock = Date.now();
       if (persist) o.persist?.(chainId, b);
       for (const [oh, ob] of chain.orphans) if (ob.parents.includes(b.hash)) { chain.orphans.delete(oh); todo.push(ob); }
       if (chain === main) onMainBlock(b);
       o.onBlock?.(chain, b);
     }
     for (const m of missing) if (chain.has(m)) missing.delete(m);
-    if (missing.size) send({ t: 'rq', c: chainId, w: [...missing].slice(0, 64), h: headsOf(chain) }, from);
+    if (missing.size) { chain.stats.lastRequest = Date.now(); send({ t: 'rq', c: chainId, w: [...missing].slice(0, 64), h: headsOf(chain) }, from); }
     if (added) { announce(chain); changed(); }
   }
 
@@ -557,16 +725,21 @@ async function createEngine(o) {
   // ---- protocol
   async function handle(m, from) {
     if (!m || typeof m !== 'object' || typeof m.t !== 'string') return;
+    stats.msgsIn++; stats.lastMsgIn = Date.now();
     const chain = typeof m.c === 'string' ? chains.get(m.c) : null;
     if (m.t === 'heads' && chain && Array.isArray(m.h)) {
       const w = m.h.filter(x => isHex(x, 64) && !chain.has(x) && !chain.orphans.has(x)).slice(0, 64);
-      if (w.length) send({ t: 'rq', c: chain.id, w, h: headsOf(chain) }, from);
+      chain.stats.announces++; chain.stats.lastAnnounce = Date.now(); chain.stats.unknownHeads = w;
+      if (w.length) { chain.stats.lastRequest = Date.now(); send({ t: 'rq', c: chain.id, w, h: headsOf(chain) }, from); }
     } else if (m.t === 'rq' && chain && Array.isArray(m.w) && Array.isArray(m.h)) {
       if (!m.w.length) return announce(chain, from);
       const blocks = chain.missingFor(m.w.slice(0, 64), m.h.slice(0, 64));
       if (blocks.length) send({ t: 'bk', c: chain.id, b: blocks }, from);
     } else if (m.t === 'bk' && chain && Array.isArray(m.b)) {
+      chain.stats.lastResponse = Date.now();
       await insert(chain.id, m.b.slice(0, 5000), from);
+    } else if (m.t === 'tx') {
+      if (await addTx(m.x)) { maybeMine(); changed(); }
     } else if (m.t === 'mem') {
       await acceptMembership(m.m);
     } else if (m.t === 'memrq' && isKey(m.a)) {
@@ -618,12 +791,14 @@ async function createEngine(o) {
   function peerJoined(peer) {
     for (const r of E.rankings.values()) send({ t: 'rank', r }, peer);
     const mine = E.memberships.get(o.signer.pub); if (mine) send({ t: 'mem', m: mine }, peer);
+    for (const t of txpool.values()) send({ t: 'tx', x: t }, peer);
     for (const c of chains.values()) announce(c, peer);
     if (mempool.size) send({ t: 'mp', e: [...mempool.values()] }, peer);
   }
   function gossip() {
     for (const c of chains.values()) announce(c);
     if (mempool.size) send({ t: 'mp', e: [...mempool.values()] });
+    for (const t of txpool.values()) send({ t: 'tx', x: t });
   }
 
   // ---- writing
@@ -655,8 +830,21 @@ async function createEngine(o) {
     return g;
   }
 
+  // A plain-language verdict on whether a chain is in sync with the network.
+  function syncState(c) {
+    const st = c.stats, now = Date.now();
+    if (c.orphans.size) return { level: 'warn', state: 'syncing', text: `Fetching ${c.orphans.size} block${c.orphans.size === 1 ? '' : 's'} whose parents are still missing.` };
+    const unknown = st.unknownHeads.filter(x => !c.has(x)).length;
+    if (unknown && now - st.lastAnnounce < 30000) return { level: 'warn', state: 'syncing', text: `A peer announced ${unknown} newer block${unknown === 1 ? '' : 's'}; downloading.` };
+    if (st.lastRequest && st.lastRequest > st.lastAnnounce && now - st.lastRequest > 20000)
+      return { level: c === main ? 'error' : 'warn', state: 'no answer', text: 'Asked the network for this chain, but no peer that has it answered. Whoever hosts it may be offline.' };
+    if (!st.lastAnnounce) return { level: 'warn', state: 'unconfirmed', text: 'No peer has mentioned this chain yet, so there is nothing to compare against.' };
+    return { level: 'ok', state: 'synced', text: `Matches what peers announced ${Math.round((now - st.lastAnnounce) / 1000)} s ago.` };
+  }
+
   return Object.assign(E, {
-    acceptRanking, publishRanking, acceptMembership, publishMembership,
+    syncState,
+    acceptRanking, publishRanking, acceptMembership, publishMembership, submitTx, addTx, history, pendingState, LEDGER,
     requestMembership: (author) => send({ t: 'memrq', a: author }), rank: () => rankVideos([...chains.values()].filter(c => c !== main)),
     insert, handle, peerJoined, gossip, announce, requestChain, openChain, genesisFor, headsOf, append, createGenesis, addToMempool, maybeMine,
     derive: (id) => chains.has(id) ? derive(chains.get(id)) : null,
@@ -664,7 +852,7 @@ async function createEngine(o) {
   });
 }
 
-globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos };
+globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx };
 })();
 </script>
 
@@ -840,8 +1028,8 @@ const net = {
 };
 let engine;  // assigned below; the transports only deliver into it once it exists
 const deliver = (m, from) => engine?.handle(m, from);
-const joined = (pid) => { net.peers.add(pid); engine?.peerJoined(pid); scheduleRender(); };
-const left = (pid) => { net.peers.delete(pid); scheduleRender(); };
+const joined = (pid) => { net.peers.add(pid); engine?.peerJoined(pid); engine?.logEvent('net', pid === 'home' ? 'connected to home node' : `peer ${pid.slice(0, 8)} joined`); scheduleRender(); };
+const left = (pid) => { net.peers.delete(pid); engine?.logEvent('net', pid === 'home' ? 'lost the home node connection' : `peer ${pid.slice(0, 8)} left`); scheduleRender(); };
 
 function homeNodeUrl() {
   if (params.get('node')) return params.get('node');
@@ -890,6 +1078,7 @@ let p2pStarted = false;
 async function startP2P() {
   if (p2pStarted) { net.mode = 'p2p'; return; }
   p2pStarted = true; net.mode = 'p2p';
+  engine?.logEvent('net', 'no home node: switched to direct peer-to-peer discovery via public trackers');
   const { joinRoom } = await import('https://cdn.jsdelivr.net/npm/@trystero-p2p/torrent@0.26.0/+esm');
   const room = joinRoom({ appId: 'opentube-' + engine.MAIN_ID.slice(0, 16), relayConfig: { urls: TRACKERS }, maxReceiveBytes: 16 * 1024 ** 2 }, 'opentube/' + engine.MAIN_ID.slice(0, 32));
   const action = room.makeAction('ot', { onMessage: (data, ctx) => deliver(data, ctx.peerId) });
@@ -993,6 +1182,11 @@ E.maybeMine();
 for (const [id, mode] of Object.entries(subs)) if (mode === 'join') hostJoined(id);
 // ---------------------------------------------------------------- UI
 function updateStatus() {
+  try {
+    const level = worst(healthChecks());
+    $('#dot-health').className = 'dot ' + { ok: 'on', warn: 'busy', error: 'bad' }[level];
+    $('#st-health').textContent = { ok: 'healthy', warn: 'degraded', error: 'problem' }[level];
+  } catch {}
   $('#dot-net').className = 'dot' + (net.online() ? ' on' : '');
   $('#st-net').textContent = net.status();
   $('#dot-chain').className = 'dot' + (E.miner ? ' busy' : ' on');
@@ -1070,6 +1264,8 @@ function parseRoute() {
   const p = location.hash.replace(/^#\/?/, '').split('/');
   if (p[0] === 'explore') return { name: 'explore', tab: p[1] || 'trending' };
   if (p[0] === 'me') return { name: 'me' };
+  if (p[0] === 'network') return { name: 'network' };
+  if (p[0] === 'wallet') return { name: 'wallet', key: isKey(p[1]) ? p[1] : null };
   if (p[0] === 'c' && isHex(p[1], 64)) return { name: 'chain', id: p[1], tab: p[2] || 'videos' };
   if (p[0] === 'v' && isHex(p[1], 64) && isHex(p[2], 64)) return { name: 'watch', id: p[1], video: p[2] };
   return { name: 'home' };
@@ -1162,7 +1358,12 @@ views.chain = { render() {
     h('div', { class: 'row' }, avatar(p.avatar, p.name),
       h('div', { style: 'flex:1;min-width:200px' }, h('h1', { style: 'margin:0' }, p.name),
         h('div', { class: 'sub' }, h('span', { class: 'fp' }, 'owner ' + fp(d.owner)), ` · ${d.blockCount} blocks · `, reg ? `registered in main block #${reg.height}` : h('span', { class: 'badge warn' }, 'registration pending'))),
-      subBtn, joinBtn),
+      subBtn, joinBtn,
+      !mine ? h('button', { title: 'Send this channel some of your tokens', onclick: async () => {
+        const n = Number(prompt(`Tip ${p.name} how many of your tokens?`, '10')); if (!Number.isSafeInteger(n) || n <= 0) return;
+        try { await E.submitTx({ outs: [{ to: d.owner, amt: n }], memo: 'tip for ' + p.name.slice(0, 60) }, me); toast(`Tipped ${n}. It confirms in the next main-chain block.`); }
+        catch (e) { toast('Tip failed: ' + e.message); }
+      } }, '🪙 Tip') : null),
     mine && !keyExported(d.owner) ? h('div', { class: 'panel', style: 'margin:14px 0 0;border-color:var(--warn)' },
       h('div', { class: 'row' }, h('span', { style: 'flex:1' }, `⚠ This ${d.kind}'s private key exists only in this browser. If you clear site data or lose this device, you lose the ${d.kind}.`),
         h('button', { class: 'primary', onclick: () => exportChannelKey(id) }, 'Export key now'))) : null,
@@ -1314,6 +1515,7 @@ views.watch = {
     if (!watchState) return;
     clearInterval(watchState.timer);
     const t = getTorrent(watchState.infohash);
+    if (!watchState.everPeers && !t?.done && Date.now() - watchState.started > 20000) E.logEvent('video', `gave up on “${watchState.title}”: no online peer had it (waited ${Math.round((Date.now() - watchState.started) / 1000)} s)`);
     if (t && !hosting.has(watchState.infohash) && !fetching.has(watchState.infohash)) t.destroy();
     watchState = null;
   },
@@ -1352,7 +1554,7 @@ views.watch = {
     box.onkeydown = (e) => { if (e.key === 'Enter') postBtn.click(); };
 
     const t = getTorrent(v.infohash) || wt.add(magnet(v.infohash, v.file), { announce: TRACKERS });
-    watchState = { infohash: v.infohash };
+    watchState = { infohash: v.infohash, started: Date.now(), title: v.title, everPeers: false };
     const play = () => {
       const f = t.files.find(x => /\.(mp4|m4v|webm|mkv|mov|ogv)$/i.test(x.name)) || t.files[0];
       try { f.renderTo(player, { autoplay: true, controls: true }, (err) => { if (err) f.getBlobURL((e2, url) => { if (!e2) player.src = url; }); }); }
@@ -1389,7 +1591,16 @@ views.watch = {
         h('span', {}, `${(t.progress * 100).toFixed(1)}%`), h('span', {}, `${t.numPeers} peer${t.numPeers === 1 ? '' : 's'}`),
         h('span', {}, `↓ ${fmtBytes(t.downloadSpeed)}/s`), h('span', {}, `↑ ${fmtBytes(t.uploadSpeed)}/s`),
         hosting.has(v.infohash) ? h('span', { class: 'badge ok' }, 'you host this') : null,
-        !t.ready ? h('span', {}, 'Looking for a peer that has this video…') : null].filter(Boolean));
+        ...(() => {
+          if (t.numPeers) watchState && (watchState.everPeers = true);
+          if (t.done || t.numPeers) return [];
+          const waited = (Date.now() - (watchState?.started || Date.now())) / 1000;
+          if (waited < 20) return [h('span', {}, 'Looking for a peer that has this video…')];
+          const homeTr = homeTracker && diag.trackers.get(homeTracker);
+          return [h('span', { class: 'pill error' }, '❌ Nobody online has this video right now'),
+            h('span', {}, homeTr?.at && !homeTr.ok ? 'The home node’s video tracker is unreachable, so peers can’t be found. See Network.'
+              : 'The uploader and everyone who joined this channel appear to be offline. It will start when one of them comes back. A headless host for this channel keeps videos online.')];
+        })()].filter(Boolean));
     }, 500);
     views.watch.refresh = refreshComments;
     refreshComments();
@@ -1408,6 +1619,338 @@ views.watch = {
       h('aside', {}, h('h3', { style: 'margin-top:0' }, 'More from this channel'), h('div', { style: 'display:grid;gap:12px' }, others.map(x => videoCard(id, x)))));
   }
 };
+
+// ---- network & diagnostics
+const diag = { trackers: new Map(), stun: null, home: null, storage: null, torrentSeen: new Map() };
+// Probe each video tracker by opening a WebSocket to it.
+function probeTrackers() {
+  for (const url of TRACKERS) {
+    const t0 = performance.now();
+    let ws; try { ws = new WebSocket(url); } catch (e) { diag.trackers.set(url, { ok: false, err: 'invalid URL', at: Date.now() }); continue; }
+    const done = (ok, err) => { if (diag.trackers.get(url)?.pending !== t0) return; diag.trackers.set(url, { ok, err, ms: Math.round(performance.now() - t0), at: Date.now() }); try { ws.close(); } catch {} };
+    diag.trackers.set(url, { ...(diag.trackers.get(url) || {}), pending: t0 });
+    ws.onopen = () => done(true); ws.onerror = () => done(false, 'unreachable');
+    setTimeout(() => done(false, 'timed out'), 8000);
+  }
+}
+// Can this browser learn its public address? Needed for WebRTC across different networks.
+async function probeStun() {
+  diag.stun = { running: true };
+  try {
+    const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+    pc.createDataChannel('probe');
+    const types = new Set();
+    pc.onicecandidate = (e) => { if (e.candidate?.type) types.add(e.candidate.type); };
+    await pc.setLocalDescription(await pc.createOffer());
+    await new Promise(r => { setTimeout(r, 5000); pc.onicegatheringstatechange = () => { if (pc.iceGatheringState === 'complete') r(); }; });
+    pc.close();
+    diag.stun = { types: [...types], at: Date.now() };
+  } catch (e) { diag.stun = { error: e.message, at: Date.now() }; }
+}
+async function probeHome() {
+  const url = homeNodeUrl(); if (!url || params.get('net')) return;
+  const t0 = performance.now();
+  try { const j = await (await fetch(url.replace(/^ws/, 'http').replace(/\/ot$/, '/status'), { cache: 'no-store' })).json(); diag.home = { ...j, ms: Math.round(performance.now() - t0), at: Date.now() }; }
+  catch (e) { diag.home = { error: e.message, at: Date.now() }; }
+}
+async function probeStorage() {
+  try { const est = await navigator.storage.estimate(); diag.storage = { usage: est.usage, quota: est.quota, persisted: await navigator.storage.persisted?.() }; } catch {}
+}
+function runProbes() { probeTrackers(); probeHome(); probeStorage(); }
+setTimeout(() => { runProbes(); probeStun(); }, 2000);
+setInterval(runProbes, 60000);
+
+// Which video does an infohash belong to?
+function videoForInfohash(ih) {
+  for (const c of chains.values()) { if (c === main) continue; const d = derive(c.id); const v = d?.videos.find(x => x.payload.infohash === ih); if (v) return { chain: c.id, block: v, title: v.payload.title, channel: d.profile.name }; }
+  return null;
+}
+const ok = (name, text, fix) => ({ name, level: 'ok', text, fix });
+const warn = (name, text, fix) => ({ name, level: 'warn', text, fix });
+const bad = (name, text, fix) => ({ name, level: 'error', text, fix });
+const secs = (ts) => ts ? Math.round((Date.now() - ts) / 1000) : null;
+
+// Every check, in plain language. Each returns a verdict, an explanation, and what to try.
+function healthChecks() {
+  const checks = [];
+  // connection
+  if (net.mode === 'home') {
+    const quiet = secs(E.stats.lastMsgIn);
+    checks.push(quiet !== null && quiet > 90 ? warn('Connection', `Connected to the home node, but nothing has arrived for ${quiet} s.`, 'The node may be overloaded or restarting. Reload if this persists.')
+      : ok('Connection', `Connected to the home node at ${location.host}.`));
+  } else if (net.mode === 'p2p') {
+    checks.push(net.peers.size ? warn('Connection', `No home node; connected directly to ${net.peers.size} other browser(s).`, 'This works, but chains only sync while those browsers are open. Run server.mjs or the Cloudflare node on the host that serves this page.')
+      : bad('Connection', 'No home node, and no other browsers found through the public trackers.', 'Nobody else may be online, or the trackers are blocked. Open the site from a host that runs a node (server.mjs / Cloudflare).'));
+  } else if (net.mode === 'local') checks.push(warn('Connection', `Local test mode: only tabs of this browser (${net.peers.size}).`, 'Remove ?net=local from the address to join the real network.'));
+  else checks.push(warn('Connection', 'Connecting…', 'If this does not change within 10 s, the home node is unreachable.'));
+  // main chain
+  const ms = E.syncState(main);
+  const nodeH = diag.home?.height;
+  if (nodeH !== undefined && nodeH > main.best.height) checks.push(warn('Main chain', `Behind the home node: you have block #${main.best.height}, it has #${nodeH}.`, 'It should catch up within seconds. If not, reload.'));
+  else checks.push({ name: 'Main chain', level: ms.level, text: `Block #${main.best.height}, ${E.directory.size} registered. ${ms.text}`, fix: ms.level === 'ok' ? '' : 'Stay connected; missing blocks are requested automatically.' });
+  const myPending = [...mempool.values()].filter(g => isMine(g.author));
+  const myTxs = [...E.txpool.values()].filter(t => isMine(t.from));
+  if ((myPending.length || myTxs.length) && !E.miner) checks.push(warn('Mining', `${myPending.length} registration(s) and ${myTxs.length} transaction(s) of yours are waiting, but nothing is mining them.`, 'Keep this tab open; it mines your own items. If it stays stuck, reload.'));
+  else if (E.miner) checks.push(ok('Mining', `Mining a main-chain block (${E.minedHashes.toLocaleString()} hashes so far) to confirm pending items.`));
+  // your chains
+  const followed = [...chains.values()].filter(c => c !== main && (subs[c.id] || isMine(c.owner)));
+  const stuck = followed.filter(c => E.syncState(c).level === 'error'), lag = followed.filter(c => E.syncState(c).level === 'warn' && E.syncState(c).state !== 'unconfirmed');
+  checks.push(stuck.length ? bad('Your chains', `${stuck.length} of ${followed.length} chains are not syncing.`, 'See the chain table below for which ones.')
+    : lag.length ? warn('Your chains', `${lag.length} of ${followed.length} chains are catching up.`, 'Usually resolves within seconds.')
+    : ok('Your chains', followed.length ? `All ${followed.length} chains you follow are in sync.` : 'You don’t follow any chains yet.'));
+  // video
+  if (!WebTorrent.WEBRTC_SUPPORT) checks.push(bad('Video (P2P)', 'This browser has no WebRTC, so it cannot exchange video with peers.', 'Use a current Chrome, Edge, Firefox or Safari.'));
+  else {
+    const tr = [...diag.trackers.values()].filter(x => x.at);
+    const up = tr.filter(x => x.ok).length;
+    const homeTr = homeTracker && diag.trackers.get(homeTracker);
+    if (!tr.length) checks.push(warn('Video (P2P)', 'Testing trackers…'));
+    else if (homeTracker && homeTr?.at && !homeTr.ok) checks.push(bad('Video (P2P)', `The home node’s video tracker is unreachable (${homeTr.err}); ${up} of ${tr.length} trackers work.`, 'The node may be an older version without /tracker. Redeploy it.'));
+    else if (!up) checks.push(bad('Video (P2P)', 'No video tracker is reachable, so viewers can’t find whoever has a video.', 'Check your network/firewall, or run a home node with its own tracker.'));
+    else checks.push(ok('Video (P2P)', `${up} of ${tr.length} trackers reachable${homeTr?.ok ? ', including the home node’s' : ''}.`));
+    if (diag.stun && !diag.stun.running) {
+      if (diag.stun.error) checks.push(warn('Reachability', 'Could not test WebRTC reachability: ' + diag.stun.error));
+      else if (diag.stun.types.includes('srflx')) checks.push(ok('Reachability', 'Your public address was discovered, so peers on other networks can usually connect to you.'));
+      else checks.push(warn('Reachability', 'Your browser could not discover its public address (no STUN reply).', 'Peers on the same network will work; across networks, connections may fail. A TURN relay would fix it.'));
+    }
+    const starving = wt.torrents.filter(t => !t.done && t.numPeers === 0 && Date.now() - (diag.torrentSeen.get(t.infoHash) || Date.now()) > 20000);
+    if (starving.length) checks.push(bad('Video transfers', `${starving.length} video(s) have no peer: nobody online has them.`, 'The uploader and everyone who joined that channel are offline. A headless host for the channel keeps videos online.'));
+  }
+  // storage
+  if (diag.storage?.quota) {
+    const pct = diag.storage.usage / diag.storage.quota;
+    checks.push(pct > 0.9 ? bad('Storage', `Browser storage is ${Math.round(pct * 100)}% full.`, 'Lower the per-channel storage limit on My node, or leave a joined channel.')
+      : !diag.storage.persisted ? warn('Storage', `${fmtBytes(diag.storage.usage)} used. The browser may clear it under storage pressure.`, 'Click “Keep my data” below so the browser won’t evict your chains, keys and hosted videos.')
+      : ok('Storage', `${fmtBytes(diag.storage.usage)} used of ${fmtBytes(diag.storage.quota)} available; marked persistent.`));
+  }
+  // keys
+  const unbacked = [...new Set([me.pub, ...ownedSigners.keys()])].filter(k => !keyExported(k) && (k !== me.pub || [...chains.values()].some(c => c.owner === me.pub)));
+  if (unbacked.length) checks.push(warn('Keys', `${unbacked.length} key(s) controlling your channels are not backed up.`, 'My node → Back up all keys.'));
+  return checks;
+}
+const worst = (checks) => checks.some(c => c.level === 'error') ? 'error' : checks.some(c => c.level === 'warn') ? 'warn' : 'ok';
+const pill = (level, text) => h('span', { class: 'pill ' + level }, text || { ok: '✅ OK', warn: '⚠️ Degraded', error: '❌ Problem' }[level]);
+
+views.network = { render() {
+  const checks = healthChecks();
+  const ago_ = (ts) => ts ? ago(ts) : 'never';
+  const followed = [...chains.values()].filter(c => c !== main).sort((a, b) => (subs[b.id] ? 1 : 0) - (subs[a.id] ? 1 : 0));
+  const role = (c) => isMine(c.owner) ? 'owner' : subs[c.id] === 'join' ? 'joined (hosting)' : subs[c.id] ? 'subscribed' : 'viewed';
+  for (const t of wt.torrents) if (!diag.torrentSeen.has(t.infoHash)) diag.torrentSeen.set(t.infoHash, Date.now());
+  const torrentRow = (t) => {
+    const v = videoForInfohash(t.infoHash);
+    const roleT = hosting.has(t.infoHash) ? 'hosting' : fetching.has(t.infoHash) ? 'downloading to host' : 'watching';
+    const age = Date.now() - (diag.torrentSeen.get(t.infoHash) || Date.now());
+    const st = t.done ? (t.numPeers ? ['ok', `sharing with ${t.numPeers} peer(s)`] : ['ok', 'complete; no one fetching right now'])
+      : t.numPeers ? ['ok', `downloading from ${t.numPeers} peer(s)`]
+      : age > 20000 ? ['error', 'no online peer has this video'] : ['warn', 'looking for peers…'];
+    return h('tr', {}, h('td', {}, v ? h('a', { href: `#/v/${v.chain}/${v.block.hash}` }, v.title) : t.name || t.infoHash.slice(0, 12), h('div', { class: 'sub' }, v?.channel || t.infoHash.slice(0, 16))),
+      h('td', {}, roleT), h('td', {}, (t.progress * 100).toFixed(0) + '%'), h('td', {}, String(t.numPeers)),
+      h('td', {}, `↓${fmtBytes(t.downloadSpeed)}/s ↑${fmtBytes(t.uploadSpeed)}/s`), h('td', {}, pill(st[0], st[1])));
+  };
+  const nodeInfo = diag.home;
+  const rejected = Object.entries(E.stats.rejected);
+  return h('div', {},
+    h('div', { class: 'row', style: 'justify-content:space-between' }, h('h2', { style: 'margin:0' }, 'Network & diagnostics'),
+      h('div', { class: 'row' }, pill(worst(checks), { ok: '✅ Everything working', warn: '⚠️ Partly working', error: '❌ Something is broken' }[worst(checks)]),
+        h('button', { class: 'small', onclick: () => { runProbes(); probeStun(); toast('Re-running network tests…'); } }, 'Re-test'))),
+    h('div', { class: 'panel', style: 'margin-top:14px' }, checks.map(c => h('div', { class: 'check' }, h('div', {}, pill(c.level)),
+      h('div', {}, h('b', {}, c.name), ' — ', c.text, c.fix ? h('div', { class: 'fix' }, '→ ' + c.fix) : null)))),
+
+    h('div', { class: 'split' },
+      h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Connection'),
+        h('div', { class: 'kv' },
+          h('div', {}, 'Mode'), h('div', {}, net.status()),
+          h('div', {}, 'Home node'), h('div', { class: 'mono' }, homeNodeUrl() || '— (no http host)'),
+          h('div', {}, 'Last message in'), h('div', {}, ago_(E.stats.lastMsgIn)),
+          h('div', {}, 'Messages'), h('div', {}, `${E.stats.msgsIn.toLocaleString()} in · ${E.stats.msgsOut.toLocaleString()} out`),
+          h('div', {}, 'Node says'), h('div', {}, nodeInfo?.error ? pill('error', 'status unavailable: ' + nodeInfo.error)
+            : nodeInfo ? `height #${nodeInfo.height} · ${nodeInfo.peers} browsers connected · ${nodeInfo.chains} chains · ${nodeInfo.registered} registered · tracker: ${nodeInfo.tracker?.peers ?? '?'} peers in ${nodeInfo.tracker?.swarms ?? '?'} swarms · ${nodeInfo.ms} ms`
+            : '—'),
+          h('div', {}, 'Network ID'), h('div', { class: 'mono' }, MAIN_ID.slice(0, 32) + '…'))),
+      h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Main chain'),
+        h('div', { class: 'kv' },
+          h('div', {}, 'Sync'), h('div', {}, pill(E.syncState(main).level, E.syncState(main).state), ' ', E.syncState(main).text),
+          h('div', {}, 'Height / tip'), h('div', {}, `#${main.best.height} · `, h('span', { class: 'mono' }, main.best.hash.slice(0, 16) + '…')),
+          h('div', {}, 'Blocks stored'), h('div', {}, `${main.blocks.size} (${main.orphans.size} waiting for parents)`),
+          h('div', {}, 'Last new block'), h('div', {}, ago_(main.stats.lastBlock)),
+          h('div', {}, 'Mining'), h('div', {}, E.miner ? `yes, ${E.minedHashes.toLocaleString()} hashes` : 'idle'),
+          h('div', {}, 'Pending'), h('div', {}, `${mempool.size} registrations · ${E.txpool.size} transactions`),
+          h('div', {}, 'Rejected blocks'), h('div', {}, rejected.length ? rejected.map(([k, v]) => `${v}× ${k}`).join(', ') : 'none')))),
+
+    h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Chains'),
+      followed.length ? h('div', { class: 'tablewrap' }, h('table', { class: 'diag' },
+        h('tr', {}, ['Chain', 'Your role', 'Blocks', 'Missing', 'Last block', 'Last heard from peers', 'Status'].map(t => h('th', {}, t))),
+        followed.map(c => { const st = E.syncState(c); const g = c.genesis.payload;
+          return h('tr', {}, h('td', {}, h('a', { href: `#/c/${c.id}` }, derive(c.id)?.profile.name || g.name), h('div', { class: 'sub' }, g.kind)),
+            h('td', {}, role(c)), h('td', {}, String(c.blocks.size)), h('td', {}, String(c.orphans.size)),
+            h('td', {}, ago_(c.stats.lastBlock)), h('td', {}, ago_(c.stats.lastAnnounce)),
+            h('td', {}, pill(st.level, st.state), h('div', { class: 'sub' }, st.text), c.stats.rejected ? h('div', { class: 'sub' }, `${c.stats.rejected} rejected (last: ${c.stats.lastReject})`) : null)); })))
+        : h('div', { class: 'sub' }, 'You haven’t opened any channels or lists yet.')),
+
+    h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Video peer-to-peer'),
+      h('div', { class: 'kv' },
+        h('div', {}, 'WebRTC'), h('div', {}, WebTorrent.WEBRTC_SUPPORT ? pill('ok', 'supported') : pill('error', 'not supported')),
+        h('div', {}, 'Public address'), h('div', {}, !diag.stun || diag.stun.running ? 'testing…' : diag.stun.error ? pill('warn', diag.stun.error)
+          : [pill(diag.stun.types.includes('srflx') ? 'ok' : 'warn', diag.stun.types.includes('srflx') ? 'discovered' : 'not discovered'), ` candidate types: ${diag.stun.types.join(', ') || 'none'}`]),
+        h('div', {}, 'Totals'), h('div', {}, `${wt.torrents.length} transfers · ↓${fmtBytes(wt.downloadSpeed)}/s ↑${fmtBytes(wt.uploadSpeed)}/s · hosting ${hosting.size} videos (${fmtBytes([...hosting.values()].reduce((a, x) => a + x.size, 0))})`)),
+      h('h4', {}, 'Trackers'),
+      h('div', { class: 'tablewrap' }, h('table', { class: 'diag' }, h('tr', {}, ['Tracker', 'Role', 'Status'].map(t => h('th', {}, t))),
+        TRACKERS.map(u => { const r = diag.trackers.get(u);
+          return h('tr', {}, h('td', { class: 'mono' }, u), h('td', {}, u === homeTracker ? 'home node' : 'public fallback'),
+            h('td', {}, !r?.at ? 'testing…' : r.ok ? pill('ok', `reachable · ${r.ms} ms`) : pill(u === homeTracker ? 'error' : 'warn', r.err))); }))),
+      h('h4', {}, 'Transfers'),
+      wt.torrents.length ? h('div', { class: 'tablewrap' }, h('table', { class: 'diag' },
+        h('tr', {}, ['Video', 'Role', 'Have', 'Peers', 'Speed', 'Status'].map(t => h('th', {}, t))), wt.torrents.map(torrentRow)))
+        : h('div', { class: 'sub' }, 'No video transfers right now.')),
+
+    h('div', { class: 'split' },
+      h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Storage'),
+        h('div', { class: 'kv' },
+          h('div', {}, 'Used'), h('div', {}, diag.storage ? `${fmtBytes(diag.storage.usage)} of ${fmtBytes(diag.storage.quota)}` : '…'),
+          h('div', {}, 'Persistent'), h('div', {}, diag.storage?.persisted ? pill('ok', 'yes') : pill('warn', 'no'))),
+        diag.storage && !diag.storage.persisted ? h('button', { style: 'margin-top:10px', onclick: async () => {
+          const okP = await navigator.storage.persist?.(); await probeStorage(); toast(okP ? 'The browser will keep your data' : 'The browser declined. Bookmarking the site or installing it usually helps.'); scheduleRender(); } }, 'Keep my data') : null),
+      h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Hosting for you elsewhere'),
+        h('div', { class: 'kv' },
+          h('div', {}, 'Joined channels'), h('div', {}, String(joinedList().length)),
+          h('div', {}, 'List published'), h('div', {}, E.memberships.get(me.pub) ? ago(E.memberships.get(me.pub).at) : 'not yet'),
+          h('div', {}, 'Mirror mode'), h('div', {}, MIRROR ? `following ${MIRROR.slice(0, 10)}… (${E.memberships.has(MIRROR) ? 'list found' : 'waiting for their list'})` : 'off')))),
+
+    h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Recent events'),
+      h('div', { class: 'log' }, E.stats.events.length ? E.stats.events.slice(0, 100).map(e =>
+        h('div', {}, `${new Date(e.ts).toLocaleTimeString()}  ${e.kind.padEnd(6)} ${e.text}`)) : h('div', { class: 'sub' }, 'Nothing yet.'))));
+} };
+views.network.refresh = () => $('#app').replaceChildren(views.network.render());
+setInterval(() => { if (route.name === 'network') views.network.refresh(); }, 2000);
+
+// ---- wallet
+const fmtTok = (n) => Number(n).toLocaleString();
+// A human name for any key: you, one of your channels, or a registered channel/list owned by it.
+function keyName(key) {
+  if (key === me.pub) return 'You';
+  for (const g of [...E.directory.values()].map(e => e.genesis).concat([...mempool.values()])) if (g.author === key) return g.payload.name;
+  return 'User ' + fp(key);
+}
+const tokenName = (issuer) => (issuer === me.pub ? 'your' : keyName(issuer) + (issuer === me.pub ? '' : '’s')) + ' token';
+const myAccounts = () => [me.pub, ...ownedSigners.keys()];
+const signerFor = (pub) => pub === me.pub ? me : ownedSigners.get(pub);
+// Accepts a user ID, or a channel/list ID (pays its owner).
+function resolveRecipient(text) {
+  const t = text.trim();
+  if (isKey(t)) return t;
+  if (isHex(t, 64)) return genesisFor(t)?.author || null;
+  return null;
+}
+async function sendTx(fields, from, statusEl) {
+  statusEl.textContent = 'Signing…';
+  try {
+    const t = await E.submitTx(fields, signerFor(from), (n) => { statusEl.textContent = `Signing (anti-spam work: ${n.toLocaleString()} hashes)…`; });
+    statusEl.textContent = 'Sent. Waiting to be mined into a main-chain block…';
+    toast('Transaction sent');
+    return t;
+  } catch (e) { statusEl.textContent = 'Failed: ' + e.message; throw e; }
+}
+function describeTx(entry, key) {
+  const t = entry.tx, mine = t.from === key;
+  const rows = [];
+  for (const o of t.outs || []) if (mine || o.to === key) {
+    const back = o.to === o.token;
+    rows.push(h('div', {}, mine
+      ? [h('span', { class: 'amt-out' }, '−' + fmtTok(o.amt)), ` ${tokenName(o.token)} → `, back ? h('b', {}, 'sold back to issuer') : h('a', { href: `#/wallet/${o.to}` }, keyName(o.to))]
+      : [h('span', { class: 'amt-in' }, '+' + fmtTok(o.amt)), ` ${tokenName(o.token)} from `, h('a', { href: `#/wallet/${t.from}` }, keyName(t.from)), back ? ' (sold back to you: redeemed)' : '']));
+  }
+  for (const b of t.burns || []) if (mine) rows.push(h('div', {}, h('span', { class: 'amt-out' }, '🔥 ' + fmtTok(b.amt)), ` ${tokenName(b.token)} burned`));
+  return h('div', { class: 'tx' }, h('div', {}, rows, t.memo ? h('div', { class: 'sub' }, '“' + t.memo + '”') : null),
+    h('div', { class: 'sub', style: 'text-align:right' }, entry.pending ? h('span', { class: 'badge warn' }, 'pending') : `block #${entry.height}`, h('div', {}, ago(entry.ts || t.ts))));
+}
+function accountCard(key, mineAcct) {
+  const L = mineAcct ? E.pendingState(key) : E.ledger;
+  const free = L.free(key), out = L.outstanding(key), cap = E.LEDGER.cap;
+  const holdings = L.holdings(key);
+  return h('div', { class: 'panel' },
+    h('div', { class: 'row', style: 'justify-content:space-between' },
+      h('div', {}, h('h3', { style: 'margin:0' }, keyName(key)), h('div', { class: 'fp' }, key)),
+      mineAcct ? h('a', { href: `#/wallet/${key}`, class: 'sub' }, 'public view') : null),
+    h('div', { class: 'split', style: 'margin-top:12px' },
+      h('div', {}, h('div', { class: 'sub' }, 'Free balance (own token)'), h('div', { class: 'bal' }, fmtTok(free)),
+        h('div', { class: 'meter' }, h('div', { style: `width:${(free / cap * 100).toFixed(1)}%` })),
+        h('div', { class: 'sub' }, `${fmtTok(out)} of ${fmtTok(cap)} out in other people’s hands. They come back when sold back or burned.`)),
+      h('div', {}, h('div', { class: 'sub' }, 'Holdings (other issuers’ tokens)'),
+        holdings.length ? holdings.map(x => h('div', { class: 'row', style: 'justify-content:space-between;padding:4px 0' },
+          h('span', {}, h('b', {}, fmtTok(x.amt)), ' ', h('a', { href: `#/wallet/${x.token}` }, tokenName(x.token))),
+          mineAcct ? h('span', { class: 'row', style: 'gap:6px' },
+            h('button', { class: 'small', title: 'Give these back to their issuer (after they pay you). They are destroyed and the issuer can advertise again.',
+              onclick: async (e) => { const n = Number(prompt(`Sell how many back to ${keyName(x.token)}? (Arrange payment with them first.)`, x.amt)); if (!amtOk(n)) return;
+                await sendTx({ outs: [{ to: x.token, token: x.token, amt: n }], memo: 'sold back' }, key, walletStatus()).catch(() => {}); } }, 'Sell back'),
+            h('button', { class: 'small', onclick: async () => { const n = Number(prompt(`Burn how many ${tokenName(x.token)}? This destroys them.`, x.amt)); if (!amtOk(n)) return;
+              await sendTx({ burns: [{ token: x.token, amt: n }] }, key, walletStatus()).catch(() => {}); } }, 'Burn')) : null))
+        : h('div', { class: 'sub' }, 'None yet.'))));
+}
+const amtOk = (n) => Number.isSafeInteger(n) && n > 0 && n <= E.LEDGER.cap;
+let walletStatusEl = null;
+const walletStatus = () => walletStatusEl || h('span');
+
+views.wallet = { render() {
+  const viewing = route.key;
+  if (viewing && !myAccounts().includes(viewing)) {
+    return h('div', {}, h('h2', { style: 'margin-top:0' }, 'Account'), accountCard(viewing, false),
+      h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Activity'),
+        (() => { const hist = E.history(viewing); return hist.length ? hist.map(x => describeTx(x, viewing)) : h('div', { class: 'sub' }, 'No transactions yet.'); })()));
+  }
+  // ---- send form (kept across re-renders)
+  const form = keep('send', () => {
+    const fromSel = h('select', {}), tokenSel = h('select', {});
+    const to = h('textarea', { placeholder: 'Recipients: one user ID or channel ID per line. Several lines pay each one the amount.', style: 'min-height:70px' });
+    const amt = h('input', { type: 'number', min: 1, placeholder: 'Amount (each)' });
+    const memo = h('input', { type: 'text', maxLength: 140, placeholder: 'Memo (optional, public)' });
+    const status = h('span', { class: 'sub' });
+    walletStatusEl = status;
+    const fillTokens = () => {
+      const L = E.pendingState(fromSel.value);
+      tokenSel.replaceChildren(h('option', { value: fromSel.value }, `Own token (free ${fmtTok(L.free(fromSel.value))})`),
+        ...L.holdings(fromSel.value).map(x => h('option', { value: x.token }, `${tokenName(x.token)} (${fmtTok(x.amt)})`)));
+    };
+    fromSel.replaceChildren(...myAccounts().map(k => h('option', { value: k }, keyName(k) + ' ·' + fp(k))));
+    fromSel.onchange = fillTokens; fillTokens();
+    const btn = h('button', { class: 'primary', onclick: async () => {
+      const lines = to.value.split('\n').map(x => x.trim()).filter(Boolean);
+      const recips = lines.map(resolveRecipient);
+      if (!lines.length || recips.some(r => !r)) return toast('Every recipient must be a user ID or a known channel ID');
+      if (recips.includes(fromSel.value)) return toast('You cannot pay yourself');
+      const n = Number(amt.value); if (!amtOk(n)) return toast('Enter a whole amount');
+      btn.disabled = true;
+      try { await sendTx({ outs: recips.map(r => ({ to: r, token: tokenSel.value, amt: n })), memo: memo.value.trim() }, fromSel.value, status); to.value = ''; amt.value = ''; memo.value = ''; fillTokens(); }
+      catch {} finally { btn.disabled = false; }
+    } }, 'Send');
+    return h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Send tokens'),
+      h('div', { class: 'split', style: 'gap:10px' }, h('div', {}, h('label', { style: 'margin-top:0' }, 'From'), fromSel), h('div', {}, h('label', { style: 'margin-top:0' }, 'Token'), tokenSel)),
+      h('label', {}, 'To'), to, h('div', { class: 'split', style: 'gap:10px;margin-top:10px' }, amt, memo),
+      h('div', { class: 'row', style: 'margin-top:12px' }, btn, status));
+  });
+  const L = E.ledger;
+  const issuers = [...L.out.values()].filter(v => v > 0);
+  const histKey = keep('histKey', () => ({ key: me.pub }));
+  const histSel = h('select', { style: 'width:auto', onchange: (e) => { histKey.key = e.target.value; $('#app').replaceChildren(views.wallet.render()); } },
+    myAccounts().map(k => h('option', { value: k, selected: k === histKey.key }, keyName(k))));
+  const hist = E.history(histKey.key);
+  return h('div', {},
+    h('h2', { style: 'margin-top:0' }, 'Wallet'),
+    h('p', { class: 'sub' }, `Every identity issues its own token and starts with a free balance of ${fmtTok(E.LEDGER.cap)}. Spending sends your tokens out; when they’re sold back to you or burned, your free balance recovers. Advertisers buy back the tokens their ads put out. That is how tokens become money, and why low-quality ads stop running.`),
+    myAccounts().map(k => accountCard(k, true)),
+    form,
+    h('div', { class: 'panel' }, h('div', { class: 'row', style: 'justify-content:space-between' }, h('h3', { style: 'margin:0' }, 'Activity'), histSel),
+      hist.length ? hist.map(x => describeTx(x, histKey.key)) : h('div', { class: 'sub', style: 'margin-top:8px' }, 'No transactions yet.')),
+    h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Network ledger'),
+      h('div', { class: 'kv' },
+        h('div', {}, 'Tokens in circulation'), h('div', {}, fmtTok(issuers.reduce((a, b) => a + b, 0)) + ` from ${issuers.length} issuer${issuers.length === 1 ? '' : 's'}`),
+        h('div', {}, 'Burned or sold back'), h('div', {}, fmtTok(L.burned)),
+        h('div', {}, 'Confirmed transactions'), h('div', {}, fmtTok(L.txCount)),
+        h('div', {}, 'Pending'), h('div', {}, String(E.txpool.size)),
+        h('div', {}, 'Free balance per identity'), h('div', {}, fmtTok(E.LEDGER.cap)))));
+} };
+// Live updates: rebuild the page but keep the send form (and whatever is typed in it).
+views.wallet.refresh = () => { if (!document.activeElement || !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) $('#app').replaceChildren(views.wallet.render()); };
 
 // ---- my node
 views.me = { render() {

@@ -88,6 +88,29 @@ MAIN CHAIN (proof of work, every node keeps it)
 
   Channel pages warn you until the key controlling that channel has been backed up.
 
+## Tokens (the ledger)
+
+Ledger transactions ride in main-chain blocks, so proof of work orders them and nothing can be spent twice.
+
+- **Every identity issues its own token** and starts with a **free balance** of 100,000 (`LEDGER.cap`). There's no mining reward or central issuer.
+- **Spending your own token sends it out.** Your free balance is the cap minus how many of your tokens are in other people's hands. When they come back, your free balance recovers. They come back when someone **sells them back** to you (pays you in your own token) or **burns** them. Doing things that are a net negative is what drains it.
+- **Holdings** are other identities' tokens you've received. You can pass them on, sell them back to their issuer, or burn them. Selling back or burning destroys them.
+- **This is how tokens become money:** an advertiser's ads put its tokens in viewers' and creators' hands. The advertiser buys them back (payment happens outside the chain), the tokens die, and the advertiser's free balance recovers for new ads. Low-quality ads that nobody sells back leave the advertiser unable to advertise more.
+- **A transaction** pays one or many recipients (for example, a creator paying every member evenly) and/or burns. It carries a sequence number and a little proof of work, and is signed by the sender. Every node replays the ledger from the main chain and gets identical balances.
+- **On the site:** the *Wallet* page shows each of your accounts (your personal key and every channel key), free balance, holdings, sending (one or many recipients), selling back, burning, history, and network totals. Channel pages have a **Tip** button.
+- **Not built yet:** ad slots, watch proofs, paid votes and comment tips, storage proofs, identity verification, and adaptive limits.
+
+## Network & diagnostics
+
+The *Network* page (and the health dot in the header) checks each part of the system and explains it in plain language. Each check gets a verdict (✅ / ⚠️ / ❌), the likely cause, and what to try:
+
+- **Connection:** home node or peer-to-peer, when the network last spoke, and the node's own `/status` compared with yours.
+- **Main chain:** in sync or not, mining, pending registrations and transactions, and rejected blocks with reasons.
+- **Every chain you follow:** synced, catching up, or nobody answering, with missing blocks, last block and last announcement.
+- **Video P2P:** WebRTC support, whether your browser can discover its public address (needed across networks), a live test of each tracker, and every transfer with a verdict like "no online peer has this video".
+- **Storage:** quota, and whether the browser may evict your data, with a button to keep it.
+- **Hosting:** joined channels and your published list. Also a recent-events log.
+
 ## Votes and rankings
 
 - **Votes:** 👍/👎 on any video is a signed `vote` block on that channel's chain (value 1, -1, or 0 to withdraw). The latest vote per key per video counts. Anyone who hasn't been revoked by the channel can vote, even when comments are off. Like comments, votes need a small proof of work.
