@@ -472,7 +472,7 @@ function termsShape(t) {
   return !!t && typeof t === 'object' && t.v === 1 && t.kind === 'adterms' && isKey(t.advertiser) && isHex(t.channel, 64) && isHex(t.infohash, 40)
     && Number.isSafeInteger(t.size) && t.size > 0 && Number.isSafeInteger(t.duration) && t.duration >= 1 && t.duration <= ADS.maxDuration
     && Number.isSafeInteger(t.perView) && t.perView >= 2 && t.perView <= ADS.maxPerView && Number.isSafeInteger(t.maxViews) && t.maxViews >= 1 && t.maxViews <= 1e6
-    && Number.isSafeInteger(t.created) && typeof t.sig === 'string';
+    && Number.isSafeInteger(t.created) && typeof t.sig === 'string' && (t.witnesses === undefined || (Number.isSafeInteger(t.witnesses) && t.witnesses >= 0 && t.witnesses <= ADS.maxWitnesses));
 }
 const checkTerms = async (t) => termsShape(t) && verify(t.advertiser, termsPreimage(t), t.sig);
 function witnessShape(w) {
@@ -482,7 +482,7 @@ function witnessShape(w) {
 const claimTid = new WeakMap();   // claim tx -> verified terms id (set by checkTx)
 function claimShape(c) {
   return !!c && typeof c === 'object' && termsShape(c.terms) && Number.isSafeInteger(c.slot) && isHex(c.video, 64) && isKey(c.creator)
-    && Array.isArray(c.witnesses) && c.witnesses.length >= 1 && c.witnesses.length <= ADS.maxWitnesses && c.witnesses.every(witnessShape);
+    && Array.isArray(c.witnesses) && c.witnesses.length <= ADS.maxWitnesses && c.witnesses.every(witnessShape);
 }
 async function checkClaim(t) {
   const c = t.claim;
@@ -497,7 +497,7 @@ async function checkClaim(t) {
     if (!(await verify(w.witness, witnessPreimage(w), w.sig))) return false;
     witnesses.add(w.witness);
   }
-  if (witnesses.size < ADS.minWitnesses) return false;
+  if (witnesses.size < (c.terms.witnesses ?? 0)) return false;   // the advertiser chose how many other viewers must confirm
   claimTid.set(t, tid);
   return true;
 }
@@ -1548,7 +1548,14 @@ const streaming = (async () => {
     return true;
   } catch (e) { console.warn('video streaming unavailable:', e.message); return false; }
 })();
-const magnet = (infohash, name) => 'magnet:?xt=urn:btih:' + infohash + (name ? '&dn=' + encodeURIComponent(name) : '') + TRACKERS.map(t => '&tr=' + encodeURIComponent(t)).join('');
+// The worker must actually control this page, or the player's requests go to the server and get "not found" (some
+// browsers only hand control over a moment after the worker starts, or on the next load).
+async function swControls() {
+  if (navigator.serviceWorker?.controller) return true;
+  await new Promise((r) => { navigator.serviceWorker?.addEventListener('controllerchange', r, { once: true }); setTimeout(r, 3000); });
+  return !!navigator.serviceWorker?.controller;
+}
+const magnet =(infohash, name) => 'magnet:?xt=urn:btih:' + infohash + (name ? '&dn=' + encodeURIComponent(name) : '') + TRACKERS.map(t => '&tr=' + encodeURIComponent(t)).join('');
 const hosting = new Map();  // infohash -> { chain, size }
 const getTorrent = (ih) => wt.torrents.find(t => t.infoHash === ih) || null;
 
@@ -3041,17 +3048,38 @@ views.watch = {
     const ws = watchState;
     const play = async () => {
       const f = t.files.find(x => /\.(mp4|m4v|webm|mkv|mov|ogv)$/i.test(x.name)) || t.files[0];
-      if (await streaming) { if (watchState === ws) { f.streamTo(player); player.play().catch(() => {}); } return; }
-      // No service worker (e.g. plain http): play once the whole file is here.
-      const go = async () => { const b = await f.blob(); if (watchState === ws) { ws.url = player.src = URL.createObjectURL(b); player.play().catch(() => {}); } };
-      t.done ? go() : t.once('done', go);
+      // Play once the whole file is here (no service worker, or streaming didn't work in this browser). The blob is
+      // collected from a stream (browsers keep big blobs on disk) and left untyped, so the browser sniffs the format.
+      let fell = false;
+      const go = async () => {
+        if (watchState !== ws) return;
+        const b = new Blob([await new Response(f.stream()).blob()]);
+        if (watchState === ws) { player.removeAttribute('src'); ws.url = player.src = URL.createObjectURL(b); player.play().catch(() => {}); }
+      };
+      const fallback = (why) => {
+        if (fell || watchState !== ws) return; fell = true;
+        console.warn('video streaming failed (' + why + '); playing once downloaded');
+        watchState.note = 'Streaming didn’t work in this browser, so the video plays once it has downloaded.';
+        t.done ? go() : t.once('done', go);
+      };
+      if (await streaming && await swControls()) {
+        if (watchState !== ws) return;
+        player.addEventListener('error', () => fallback('player error ' + (player.error?.code || '')), { once: true });
+        f.streamTo(player); player.play().catch(() => {});
+        const check = setInterval(() => {   // nothing loaded although data is flowing: give up on streaming
+          if (watchState !== ws || player.readyState > 0) return clearInterval(check);
+          if (t.downloaded > 4 * 1024 ** 2 || t.done) { clearInterval(check); setTimeout(() => { if (player.readyState === 0) fallback('nothing loaded'); }, 8000); }
+        }, 1000);
+        return;
+      }
+      fallback('no service worker in control');
     };
     const adPanel = h('div', { class: 'panel', style: 'margin:8px 0;display:none' });
     const alive = () => watchState?.infohash === v.infohash && route.video === video;
     // A video in your folder plays straight from the file on disk: instant, seekable, any size.
     const startMain = () => hostedFile(id, v.infohash).then(file => {
       if (!alive()) return;
-      if (file) { ws.url = player.src = URL.createObjectURL(file); player.play().catch(() => {}); }
+      if (file) { ws.url = player.src = URL.createObjectURL(new Blob([file])); player.play().catch(() => {}); }   // untyped: the browser sniffs the format
       else t.ready ? play() : t.once('ready', play);
     });
     (async () => {
@@ -3365,6 +3393,7 @@ function tidOf(block) {
 // Advertisers whose ads run on a channel: its own sponsors plus those of any list that includes it.
 function sponsorsFor(chainId) {
   const ids = new Set();
+  if (derive(chainId)?.ads.length) ids.add(chainId);   // a channel's own ads run on its own videos
   for (const b of derive(chainId)?.sponsors || []) ids.add(b.payload.advertiser);
   for (const c of chains.values()) {
     if (c === main || c.genesis.payload.kind !== 'list') continue;
@@ -3466,11 +3495,12 @@ function runAd(ad, { player, panel, video, creator, alive }) {
     if (!alive()) return finish({ ok: false, text: '' });
     const ws = [...witnesses.values()].slice(0, E.ADS.maxWitnesses);
     if (sent < need) return finish({ ok: false, text: 'Not counted: the ad was not playing (and visible) for enough of the time.' });
-    if (ws.length < E.ADS.minWitnesses) return finish({ ok: false, text: `Not counted: no other viewer watched this ad in sync with you (needs ${E.ADS.minWitnesses}). Views are verified by other viewers.` });
+    const needW = ad.terms.witnesses ?? 0;
+    if (ws.length < needW) return finish({ ok: false, text: `Not counted: this ad pays only views that ${needW} other viewer(s) watched in sync with you, and nobody else was watching it right now.` });
     try {
       await E.submitTx({ claim: { terms: t, slot, video, creator, witnesses: ws } });
       const half = Math.floor(t.perView / 2);
-      finish({ ok: true, text: `✅ View verified by ${ws.length} other viewer(s). You earn ${half} ${ad.name} tokens and the video’s creator earns ${t.perView - half} once the claim is mined.` });
+      finish({ ok: true, text: `✅ ${ws.length ? `View confirmed by ${ws.length} other viewer(s). ` : ''}You earn ${fmtCoin(half)} coins and the video’s creator earns ${fmtCoin(t.perView - half)} once the next main-chain block confirms it.` });
     } catch (e) { finish({ ok: false, text: 'Claim rejected: ' + e.message }); }
   });
 }
@@ -3484,6 +3514,7 @@ chainTab.advertise = (id, d) => {
     const url = h('input', { type: 'text', maxLength: 300, placeholder: 'https://… (optional link)' });
     const per = h('input', { type: 'text', inputMode: 'decimal', value: '0.20' });
     const max = h('input', { type: 'number', min: 1, max: 1000000, value: 100 });
+    const confirm = h('input', { type: 'checkbox' });
     const status = h('span', { class: 'sub' });
     input.onchange = () => {
       file = input.files[0]; if (!file) return;
@@ -3506,7 +3537,7 @@ chainTab.advertise = (id, d) => {
             await idb('files', 'readwrite', s => s.put({ infohash: t.infoHash, chain: id, name: file.name, type: file.type, size: file.size, blob: file, ts: Date.now() }));
             hosting.set(t.infoHash, { chain: id, size: file.size }); res(t);
           }));
-        const terms = await E.signTerms({ v: 1, kind: 'adterms', advertiser: d.owner, channel: id, infohash: tor.infoHash, size: file.size, duration, perView, maxViews, created: Date.now() }, signerFor(d.owner));
+        const terms = await E.signTerms({ v: 1, kind: 'adterms', advertiser: d.owner, channel: id, infohash: tor.infoHash, size: file.size, duration, perView, maxViews, created: Date.now(), witnesses: confirm.checked ? 1 : 0 }, signerFor(d.owner));
         await append(id, { type: 'ad', title: title.value.trim(), file: file.name.slice(0, 200), thumb: thumb || makeThumb(prev), url: url.value.trim(), terms });
         toast('Ad published. Channels and lists that sponsor you will start running it.');
         kept.delete('adform'); scheduleRender();
@@ -3516,6 +3547,7 @@ chainTab.advertise = (id, d) => {
       h('p', { class: 'sub' }, `Ads are paid from this channel’s coins. Each verified view pays the price per view: half to the viewer, half to the creator of the video it ran with. Add coins to this channel from the Wallet (send to its ID).`),
       input, prev, h('label', {}, 'Title'), title, h('label', {}, 'Link'), url,
       h('div', { class: 'split', style: 'gap:10px' }, h('div', {}, h('label', {}, 'Coins per verified view'), per), h('div', {}, h('label', {}, 'Maximum views'), max)),
+      h('label', { style: 'display:flex;gap:8px;align-items:center;font-weight:400' }, confirm, 'Pay a view only when another viewer watched it in sync and confirms it (safer against bots, but on a small network most views won’t pay)'),
       h('div', { class: 'row', style: 'margin-top:12px' }, btn, status));
   });
   const running = whereAdsRun(id);
@@ -3542,7 +3574,7 @@ function sponsorPanel(id, d) {
   sel.onchange = () => { input.value = sel.value; };
   return h('div', { class: 'panel', style: 'grid-column:1/-1' }, h('h3', { style: 'margin-top:0' }, d.kind === 'list' ? 'Ads on channels in this list' : 'Ads on this channel'),
     h('p', { class: 'sub' }, d.kind === 'list' ? 'Sponsoring an advertiser runs its ads before videos on every channel in this list. Creators earn half of each verified view.'
-      : 'Sponsoring an advertiser runs its ads before your videos. You earn half of every verified view, in coins.'),
+      : 'Your own ads always run before your videos. Sponsoring another channel runs its ads too, and you earn half of every paid view, in coins.'),
     d.sponsors.length ? d.sponsors.map(b => h('div', { class: 'row' }, h('div', { style: 'flex:1' }, chanRow(b.payload.advertiser) || h('span', { class: 'mono' }, b.payload.advertiser)),
       h('button', { class: 'small', onclick: async () => { await append(id, { type: 'hide', target: b.hash }); kept.delete('manage'); scheduleRender(); } }, 'Stop'))) : h('div', { class: 'sub' }, 'No sponsors yet.'),
     h('div', { class: 'row', style: 'margin-top:10px' }, h('div', { style: 'flex:1;min-width:240px' }, input), sel,
