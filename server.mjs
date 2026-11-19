@@ -78,8 +78,14 @@ const rankerSigner = await core.signer(ranker.key);
 let rankTimer = null;
 function soonRank() { if (!rankTimer) rankTimer = setTimeout(() => { rankTimer = null; publishRanking(); }, 20000); }
 
+// Everyone's latest joined-channel list, so headless hosts can follow their owner while the owner is offline.
+const memFile = path.join(DATA, 'memberships.json');
+let memTimer = null;
+const saveMemberships = () => { memTimer ||= setTimeout(() => { memTimer = null; fs.writeFileSync(memFile, JSON.stringify([...engine.memberships.values()])); }, 2000); };
+
 const engine = await core.createEngine({
   signer, send,
+  onMembership: () => saveMemberships(),
   keyFor: (pub) => pub === rankerSigner.pub ? rankerSigner : null,
   mine: MINE ? mine : null,
   shouldMine: () => true,          // a home node confirms everyone's registrations
@@ -101,6 +107,7 @@ if (fs.existsSync(blocksFile)) {
   await engine.insert(engine.MAIN_ID, byChain.get(engine.MAIN_ID) || [], null, false);
   for (const [c, blocks] of byChain) if (c !== engine.MAIN_ID && engine.openChain(c)) await engine.insert(c, blocks, null, false);
 }
+if (fs.existsSync(memFile)) for (const m of JSON.parse(fs.readFileSync(memFile, 'utf8'))) await engine.acceptMembership(m);
 log(`network ${engine.MAIN_ID.slice(0, 16)}… · main height ${engine.main.best.height} · ${engine.directory.size} registered · ${engine.chains.size} chains loaded`);
 setInterval(() => engine.gossip(), 15000);
 
@@ -200,7 +207,7 @@ const server = http.createServer((req, res) => {
   }
   if (url.pathname === '/status') {
     res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
-    return res.end(JSON.stringify({ network: engine.MAIN_ID, height: engine.main.best.height, tip: engine.main.best.hash, registered: engine.directory.size, pending: engine.mempool.size, chains: engine.chains.size, peers: peers.size, mining: !!engine.miner, node: signer.pub, ranker: RANKER_ID, tracker: tracker.stats() }));
+    return res.end(JSON.stringify({ network: engine.MAIN_ID, height: engine.main.best.height, tip: engine.main.best.hash, registered: engine.directory.size, pending: engine.mempool.size, chains: engine.chains.size, peers: peers.size, mining: !!engine.miner, node: signer.pub, ranker: RANKER_ID, tracker: tracker.stats(), memberships: engine.memberships.size }));
   }
   res.writeHead(404); res.end('not found');
 });

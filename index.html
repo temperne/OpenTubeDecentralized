@@ -284,6 +284,13 @@ function validRanking(r, listGenesis) {
     && Number.isFinite(i.s) && Number.isSafeInteger(i.up) && Number.isSafeInteger(i.down) && Number.isSafeInteger(i.ts));
 }
 const rankingPreimage = (r) => { const { sig, ...rest } = r; return 'opentube-ranking:' + canon(rest); };
+
+// ---- memberships: which channels a person has joined (and therefore hosts), signed by their
+// personal key. Latest snapshot only, never on chain. A headless host started with someone's user ID
+// follows their snapshot and joins exactly the same channels.
+const membershipPreimage = (m) => { const { sig, ...rest } = m; return 'opentube-membership:' + canon(rest); };
+const validMembership = (m) => !!m && typeof m === 'object' && m.v === 1 && isKey(m.author) && Number.isSafeInteger(m.at) && m.at <= Date.now() + 10 * 60000
+  && typeof m.sig === 'string' && Array.isArray(m.joined) && m.joined.length <= 1000 && m.joined.every(x => isHex(x, 64)) && new Set(m.joined).size === m.joined.length;
 // "hot-v1": net votes with time decay (Hacker News style), so new videos get a chance.
 function rankVideos(chainList, now = Date.now()) {
   const all = [];
@@ -449,7 +456,7 @@ async function createEngine(o) {
   main.best = main.genesis;
   const chains = new Map([[MAIN_ID, main]]);
   const mempool = new Map();  // genesis hash -> genesis block awaiting registration
-  const E = { MAIN_ID, CFG, main, chains, mempool, directory: new Map(), miner: null, minedHashes: 0, rankings: new Map() };
+  const E = { MAIN_ID, CFG, main, chains, mempool, directory: new Map(), miner: null, minedHashes: 0, rankings: new Map(), memberships: new Map() };
 
   const headsOf = (c) => c === main ? [main.best.hash] : [...c.heads];
   const genesisFor = (id) => chains.get(id)?.genesis || E.directory.get(id)?.genesis || mempool.get(id) || null;
@@ -560,6 +567,11 @@ async function createEngine(o) {
       if (blocks.length) send({ t: 'bk', c: chain.id, b: blocks }, from);
     } else if (m.t === 'bk' && chain && Array.isArray(m.b)) {
       await insert(chain.id, m.b.slice(0, 5000), from);
+    } else if (m.t === 'mem') {
+      await acceptMembership(m.m);
+    } else if (m.t === 'memrq' && isKey(m.a)) {
+      const mm = E.memberships.get(m.a);
+      if (mm) send({ t: 'mem', m: mm }, from);
     } else if (m.t === 'rank' && m.r && typeof m.r === 'object') {
       await acceptRanking(m.r, true);
     } else if (m.t === 'mp' && Array.isArray(m.e)) {
@@ -586,8 +598,26 @@ async function createEngine(o) {
     await acceptRanking(r, true);
     return r;
   }
+  async function acceptMembership(m) {
+    if (!validMembership(m)) return false;
+    const cur = E.memberships.get(m.author);
+    if (cur && cur.at >= m.at) return false;
+    if (!(await verify(m.author, membershipPreimage(m), m.sig))) return false;
+    E.memberships.set(m.author, m);
+    o.onMembership?.(m);
+    changed();
+    return true;
+  }
+  async function publishMembership(joined) {
+    const m = { v: 1, author: o.signer.pub, at: Date.now(), joined: [...new Set(joined)] };
+    m.sig = await o.signer.sign(membershipPreimage(m));
+    await acceptMembership(m);
+    send({ t: 'mem', m });
+    return m;
+  }
   function peerJoined(peer) {
     for (const r of E.rankings.values()) send({ t: 'rank', r }, peer);
+    const mine = E.memberships.get(o.signer.pub); if (mine) send({ t: 'mem', m: mine }, peer);
     for (const c of chains.values()) announce(c, peer);
     if (mempool.size) send({ t: 'mp', e: [...mempool.values()] }, peer);
   }
@@ -626,7 +656,8 @@ async function createEngine(o) {
   }
 
   return Object.assign(E, {
-    acceptRanking, publishRanking, rank: () => rankVideos([...chains.values()].filter(c => c !== main)),
+    acceptRanking, publishRanking, acceptMembership, publishMembership,
+    requestMembership: (author) => send({ t: 'memrq', a: author }), rank: () => rankVideos([...chains.values()].filter(c => c !== main)),
     insert, handle, peerJoined, gossip, announce, requestChain, openChain, genesisFor, headsOf, append, createGenesis, addToMempool, maybeMine,
     derive: (id) => chains.has(id) ? derive(chains.get(id)) : null,
     send
@@ -878,6 +909,7 @@ engine = await createEngine({
   persist: (chainId, b) => idb('blocks', 'readwrite', s => s.put({ hash: b.hash, chainId, block: b })).catch(() => {}),
   onBlock: (chain, b) => { if (subs[chain.id] === 'join' && b.payload.type === 'video' && b.author === chain.owner) hostVideo(chain.id, b.payload); },
   onChange: () => scheduleRender(),
+  onMembership: (m) => { if (m.author === me.pub) kv.set('membership', m); },
   onRanking: () => { clearTimeout(saveRankings.t); saveRankings.t = setTimeout(saveRankings, 2000); }
 });
 const E = engine;
@@ -887,6 +919,7 @@ const derive = (id) => E.derive(id);
 const homeTracker = params.get('net') ? null : homeNodeUrl()?.replace(/\/ot$/, '/tracker');
 const TRACKERS = params.get('trackers') ? params.get('trackers').split(',') : [homeTracker, ...CFG.trackers].filter(Boolean);
 let homeRanker = null;  // the ranking list run by the node that served this page
+const MIRROR = isKey(params.get('mirror')) ? params.get('mirror') : null;  // see "mirror mode" at the end
 
 // ---------------------------------------------------------------- video transport (WebTorrent)
 const wt = new WebTorrent();
@@ -951,6 +984,7 @@ function hostJoined(chainId) { const d = derive(chainId); if (d) for (const v of
   for (const [id, blocks] of byChain) if (id !== MAIN_ID && openChain(id)) await E.insert(id, blocks, null, false);
   for (const id of Object.keys(subs)) openChain(id);
   for (const r of (await kv.get('rankings')) || []) await E.acceptRanking(r, false);
+  const myMem = await kv.get('membership'); if (myMem) await E.acceptMembership(myMem);
 }
 setInterval(() => kv.set('pending', [...mempool.values()].filter(g => isMine(g.author))), 5000);
 setInterval(() => E.gossip(), 15000);
@@ -1014,9 +1048,16 @@ function chanRow(id) {
     subs[id] ? h('span', { class: 'badge ok' }, subs[id] === 'join' ? 'joined' : 'subscribed') : null);
 }
 
+const joinedList = () => Object.keys(subs).filter(id => subs[id] === 'join');
+function publishMyMembership() {
+  clearTimeout(publishMyMembership.t);
+  publishMyMembership.t = setTimeout(() => { if (!MIRROR) E.publishMembership(joinedList()).catch(() => {}); }, 1000);
+}
 function setSub(id, mode) {
+  const wasJoined = subs[id] === 'join';
   if (mode) subs[id] = mode; else delete subs[id];
   saveSubs();
+  if (wasJoined !== (mode === 'join')) publishMyMembership();
   const c = openChain(id);
   if (c) E.requestChain(c);
   if (mode === 'join') hostJoined(id);
@@ -1415,11 +1456,15 @@ views.me = { render() {
         h('button', { class: 'small', onclick: () => exportChannelKey(id) }, keyExported(owner) ? 'Export key' : 'Export key ⚠')); })
         : h('div', { class: 'sub' }, 'None yet. Create one below, or import a key.')),
     h('div', { class: 'split' },
-      h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Personal key'),
-        h('p', { class: 'sub' }, 'Identifies you when you comment on other people’s channels. It is included in “Back up all keys”.'),
+      h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Your user ID'),
+        h('p', { class: 'sub' }, 'Your personal public key. It identifies you when you comment, and it’s what you give a server to host for you. The private half is included in “Back up all keys”.'),
         h('div', { class: 'mono', style: 'padding:8px;background:var(--panel-2);border-radius:6px' }, me.pub),
         h('div', { class: 'row', style: 'margin-top:10px' },
-          h('button', { onclick: () => navigator.clipboard?.writeText(me.pub).then(() => toast('Public key copied')) }, 'Copy public key')),
+          h('button', { onclick: () => navigator.clipboard?.writeText(me.pub).then(() => toast('User ID copied')) }, 'Copy user ID')),
+        h('h4', { style: 'margin-bottom:4px' }, 'Host from a server, around the clock'),
+        h('p', { class: 'sub', style: 'margin-top:0' }, `A server running this page headless can act as you: it joins every channel you join (${joinedList().length} now) and keeps their videos online when your browser is closed. Run:`),
+        h('div', { class: 'mono', style: 'padding:8px;background:var(--panel-2);border-radius:6px' }, `node headless.mjs ${location.origin}${location.pathname} ${me.pub}`),
+        h('p', { class: 'sub' }, E.memberships.get(me.pub) ? `Your joined-channel list was last published ${ago(E.memberships.get(me.pub).at)}. Note: this list is public.` : 'You haven’t joined any channels yet.'),
         h('label', {}, 'Display name for comments'), nameIn,
         h('label', {}, 'Storage limit per joined channel (GB)'), cap,
         h('button', { style: 'margin-top:10px', onclick: () => { settings.name = nameIn.value.trim().slice(0, LIMITS.name) || settings.name; settings.hostCapGB = Math.max(1, Number(cap.value) || 5); saveSettings(); toast('Saved'); } }, 'Save')),
@@ -1452,24 +1497,41 @@ else {
   if (!(url && await connectHome(url))) startP2P();
 }
 
-// ---------------------------------------------------------------- host mode
-// ?host=all turns this page into an always-on hosting node (e.g. headless Chromium on a server,
-// see headless.mjs): it joins every registered channel, so it downloads and seeds every video.
+// ---------------------------------------------------------------- mirror mode
+// ?mirror=<user ID> turns this page into that person's always-on host (e.g. headless Chromium on a
+// server, see headless.mjs). It follows the person's signed membership list and joins exactly the
+// channels they joined; when they leave a channel it leaves too and frees the space.
 // ?cap=<GB> sets the storage limit per channel.
 if (params.get('cap')) settings.hostCapGB = Math.max(1, Number(params.get('cap')) || settings.hostCapGB);
-if (params.get('host') === 'all') {
-  const joinEverything = () => {
-    for (const [id, e] of E.directory) if (e.genesis.payload.kind === 'channel' && subs[id] !== 'join') setSub(id, 'join');
+if (MIRROR) {
+  let applied = 0;
+  const apply = async () => {
+    const m = E.memberships.get(MIRROR);
+    if (!m || m.at === applied) return;
+    applied = m.at;
+    const want = new Set(m.joined);
+    for (const id of want) if (subs[id] !== 'join' && (genesisFor(id) || E.directory.has(id))) setSub(id, 'join');
+    for (const id of joinedList()) if (!want.has(id)) {
+      setSub(id, null);
+      // Free the space: drop the videos we were hosting for that channel.
+      const files = (await idb('files', 'readonly', st => st.getAll())).filter(f => f.chain === id);
+      for (const f of files) { await idb('files', 'readwrite', st => st.delete(f.infohash)); hosting.delete(f.infohash); getTorrent(f.infohash)?.destroy(); }
+    }
+    console.log(`opentube-mirror following ${MIRROR.slice(0, 8)}… : ${want.size} channel(s) joined`);
   };
   const report = () => console.log('opentube-status ' + JSON.stringify({
-    net: net.status(), height: main.best.height, channels: Object.values(subs).filter(m => m === 'join').length,
+    net: net.status(), height: main.best.height, mirror: MIRROR, found: E.memberships.has(MIRROR), channels: joinedList().length,
     hosting: hosting.size, hostedBytes: [...hosting.values()].reduce((s, x) => s + x.size, 0), downloading: fetching.size,
     peers: wt.torrents.reduce((n, t) => n + t.numPeers, 0), up: Math.round(wt.uploadSpeed), down: Math.round(wt.downloadSpeed)
   }));
-  joinEverything();
-  setInterval(joinEverything, 15000);
+  const tick = () => { E.requestMembership(MIRROR); apply(); };
+  tick();
+  setInterval(tick, 15000);
+  setInterval(apply, 2000);
   setInterval(report, 30000);
   setTimeout(report, 3000);
+} else if (joinedList().length || E.memberships.has(me.pub)) {
+  publishMyMembership();   // make sure the network has my current list
 }
 </script>
 </body>

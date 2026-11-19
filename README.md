@@ -34,16 +34,18 @@ npx wrangler deploy
 
 `wrangler.jsonc` builds the page (`cloudflare/build.mjs`) and deploys `cloudflare/worker.mjs`. The Worker serves `index.html` and routes `/ot` and `/status` to a single Durable Object, which runs the full node. It stores every chain in its built-in SQLite storage and uses WebSocket hibernation, so idle connections cost nothing. Durable Objects with SQLite storage are available on the Workers free plan. If you deploy through Cloudflare's Git integration, pushing this repository is enough: the build step runs automatically.
 
-### Always-on hosting: the page itself, headless
+### Always-on hosting: the page itself, headless, acting as you
 
-Browsers host videos only while their tabs are open. To keep videos available around the clock, run **the same page** on a server in headless Chromium:
+Browsers host videos only while their tabs are open. To keep your joined channels online around the clock, run **the same page** on a server in headless Chromium and give it your user ID (My node → *Your user ID*):
 
 ```sh
 npm install && npx playwright install --with-deps chromium   # once
-node headless.mjs https://your-site.example/
+node headless.mjs https://your-site.example/ <your user ID>
 ```
 
-It opens the site in host mode (`?host=all`): it joins every channel, downloads and seeds every video over WebRTC like any viewer, and keeps everything in a persistent browser profile (`PROFILE_DIR`, default `./browser-profile`). `CAP_GB` sets the storage limit per channel, and `JOIN_ALL=0` hosts only channels you've joined. It logs a status line every 30 seconds and restarts the page if it crashes. Any VPS, home PC or Raspberry Pi works. Cloudflare can't keep a browser running, so on a Cloudflare deployment the Worker handles chains, tracker and rankings, and headless hosts handle video.
+It mirrors you: your browser publishes a signed list of the channels you've joined (latest version only, stored by home nodes), and the headless page follows it. When you join a channel it joins and starts hosting; when you leave, it leaves and deletes those videos. It never needs your private key. Data lives in a persistent browser profile (`PROFILE_DIR`, default `./browser-profile`), and `CAP_GB` sets the storage limit per channel. It logs a status line every 30 seconds and restarts the page if it crashes. Any VPS, home PC or Raspberry Pi works. Cloudflare can't keep a browser running, so on a Cloudflare deployment the Worker handles chains, tracker and rankings, and headless hosts handle video.
+
+Note: the joined-channel list is public, so anyone with your user ID can see which channels you host.
 
 ## How browsers connect
 

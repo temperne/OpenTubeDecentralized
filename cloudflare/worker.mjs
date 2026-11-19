@@ -53,6 +53,7 @@ export class OpenTubeNode {
     const sql = this.ctx.storage.sql;
     sql.exec('CREATE TABLE IF NOT EXISTS blocks (hash TEXT PRIMARY KEY, chain TEXT NOT NULL, body TEXT NOT NULL)');
     sql.exec('CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)');
+    sql.exec('CREATE TABLE IF NOT EXISTS memberships (author TEXT PRIMARY KEY, body TEXT NOT NULL)');
     let identity = this.meta('identity');
     if (!identity) { identity = await core.newIdentity(); this.meta('identity', identity); }
     let ranker = this.meta('ranker');
@@ -65,6 +66,8 @@ export class OpenTubeNode {
       send: (msg, to) => this.send(msg, to),
       mine,                // shouldMine defaults to this node's own keys: only its ranking list
       trackAll: true,      // keep every channel chain, not just the main chain
+      // Keep everyone's latest joined-channel list so headless hosts can follow their owner.
+      onMembership: (m) => sql.exec('INSERT OR REPLACE INTO memberships (author, body) VALUES (?, ?)', m.author, JSON.stringify(m)),
       persist: (chain, b) => sql.exec('INSERT OR IGNORE INTO blocks (hash, chain, body) VALUES (?, ?, ?)', b.hash, chain, JSON.stringify(b)),
       // New videos/votes: rerank in ~20 s instead of waiting for the periodic alarm.
       onBlock: (chain, b) => { if (this.loaded && chain !== this.engine?.main && ['video', 'vote', 'hide'].includes(b.payload.type)) this.soonRank(); }
@@ -77,6 +80,7 @@ export class OpenTubeNode {
     const E = this.engine;
     await E.insert(E.MAIN_ID, byChain.get(E.MAIN_ID) || [], null, false);
     for (const [chain, blocks] of byChain) if (chain !== E.MAIN_ID && E.openChain(chain)) await E.insert(chain, blocks, null, false);
+    for (const row of sql.exec('SELECT body FROM memberships')) await E.acceptMembership(JSON.parse(row.body));
     if (ranker.genesis) {
       if (!E.directory.has(ranker.genesis.hash)) { await E.addToMempool(ranker.genesis); E.openChain(ranker.genesis.hash); E.maybeMine(); }
       const last = this.meta('ranking'); if (last) await E.acceptRanking(last, false);
@@ -126,7 +130,7 @@ export class OpenTubeNode {
       return Response.json({
         network: E.MAIN_ID, height: E.main.best.height, tip: E.main.best.hash, registered: E.directory.size,
         pending: E.mempool.size, chains: E.chains.size, peers: this.ctx.getWebSockets().length,
-        ranker: this.ranker.genesis?.hash || null, tracker: this.tracker.stats()
+        ranker: this.ranker.genesis?.hash || null, tracker: this.tracker.stats(), memberships: E.memberships.size
       }, { headers: { 'access-control-allow-origin': '*' } });
     }
     if (request.headers.get('upgrade') !== 'websocket') return new Response('expected a WebSocket', { status: 426 });
