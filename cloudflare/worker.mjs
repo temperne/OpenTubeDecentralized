@@ -155,7 +155,7 @@ export class OpenTubeNode {
         network: E.MAIN_ID, now: Date.now(), height: E.main.best.height, tip: E.main.best.hash, registered: E.directory.size,
         pending: E.mempool.size, chains: E.chains.size, peers: this.ctx.getWebSockets().length,
         ranker: this.ranker.genesis?.hash || null, ranking: this.meta('rankingStatus'), nextAlarm: await this.ctx.storage.getAlarm(),
-        tracker: this.tracker.stats(), live: this.liveHub.stats(), memberships: E.memberships.size
+        tracker: this.tracker.stats(), live: this.liveHub.stats(), liveStreams: this.liveHub.live().slice(0, 50), memberships: E.memberships.size
       }, { headers: { 'access-control-allow-origin': '*' } });
     }
     if (request.headers.get('upgrade') !== 'websocket') return new Response('expected a WebSocket', { status: 426 });

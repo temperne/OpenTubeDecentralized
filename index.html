@@ -24,6 +24,12 @@
   nav { display: flex; gap: 6px; flex-wrap: wrap; }
   nav a { padding: 6px 12px; border-radius: 8px; color: var(--text); }
   nav a.active { background: var(--panel-2); }
+  .actions { display: flex; gap: 6px; }
+  .act { padding: 6px 12px; border-radius: 8px; border: 1px solid var(--border); color: var(--text); font-weight: 600; text-decoration: none; white-space: nowrap; }
+  .act:hover { background: var(--panel-2); text-decoration: none; }
+  .act.live, .act.live:hover { color: #fff; background: #e5293b; border-color: #e5293b; }
+  .act.live:hover { filter: brightness(1.08); }
+  .quick { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
   .status { margin-left: auto; font-size: 12px; color: var(--muted); display: flex; gap: 12px; flex-wrap: wrap; }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 5px; vertical-align: middle; }
   .dot.on { background: var(--ok); } .dot.busy { background: var(--warn); } .dot.bad { background: var(--accent); }
@@ -118,9 +124,11 @@
     <a href="#/" data-nav="home">Feed</a>
     <a href="#/explore" data-nav="explore">Explore</a>
     <a href="#/wallet" data-nav="wallet">Wallet</a>
+    <a href="#/mine" data-nav="mine" id="nav-mine">My channel</a>
     <a href="#/me" data-nav="me">My node</a>
     <a href="#/network" data-nav="network">Network</a>
   </nav>
+  <span class="actions"><a class="act" href="#/new/video">＋ Add video</a><a class="act live" href="#/new/live">● Go live</a></span>
   <a class="status" href="#/network" title="Network & diagnostics" style="color:inherit;text-decoration:none">
     <span><span class="dot" id="dot-health"></span><span id="st-health">checking…</span></span>
     <span><span class="dot" id="dot-net"></span><span id="st-net">connecting…</span></span>
@@ -2140,6 +2148,11 @@ setInterval(() => E.gossip(), 15000);
 E.maybeMine();
 initFolder();
 // ---------------------------------------------------------------- UI
+function updateMineNav() {
+  const a = $('#nav-mine'); if (!a) return;
+  const n = myChannels().length, label = n > 1 ? 'My channels' : 'My channel';
+  if (a.textContent !== label) a.textContent = label;
+}
 function updateFolderBar() {
   const bar = $('#folderbar'); if (!bar) return;
   const need = folder.state === 'needs-permission' && (hosting.size || joinedList().length || folder.root);
@@ -2148,7 +2161,7 @@ function updateFolderBar() {
   if (!need) bar.replaceChildren();
 }
 function updateStatus() {
-  updateFolderBar();
+  updateFolderBar(); updateMineNav();
   try {
     const level = worst(healthChecks());
     $('#dot-health').className = 'dot ' + { ok: 'on', warn: 'busy', error: 'bad' }[level];
@@ -2251,6 +2264,8 @@ function parseRoute() {
   }
   if (p[0] === 'explore') return { name: 'explore', tab: p[1] || 'trending' };
   if (p[0] === 'me') return { name: 'me' };
+  if (p[0] === 'mine') return { name: 'mine' };
+  if (p[0] === 'new' && ['video', 'live'].includes(p[1])) return { name: 'new', what: p[1] };
   if (p[0] === 'network') return { name: 'network' };
   if (p[0] === 'wallet') return { name: 'wallet', key: isKey(p[1]) ? p[1] : null };
   if (p[0] === 'c' && isHex(p[1], 64)) return { name: 'chain', id: p[1], tab: p[2] || 'videos' };
@@ -2276,6 +2291,37 @@ function render(force) {
 }
 
 const views = {};
+// Your channels (not lists), and quick ways to the things people look for.
+const myChannels = () => [...new Set([...E.directory.keys(), ...mempool.keys(), ...chains.keys()])].filter(id => id !== MAIN_ID && genesisFor(id)?.payload.kind === 'channel' && isMine(genesisFor(id).author));
+function channelQuick(id) {
+  const g = genesisFor(id), p = (chains.has(id) ? derive(id)?.profile : null) || g.payload;
+  const live = chains.has(id) && derive(id)?.liveNow.length;
+  return h('div', { class: 'panel' }, h('div', { class: 'row' }, avatar(p.avatar, p.name),
+    h('div', { style: 'flex:1;min-width:180px' }, h('h3', { style: 'margin:0' }, h('a', { href: `#/c/${id}` }, p.name), live ? [' ', h('span', { class: 'badge live' }, 'LIVE')] : null),
+      h('div', { class: 'sub' }, nameOf(id) ? h('a', { href: nameLink(nameOf(id)) }, nameOf(id)) : h('a', { href: `#/c/${id}/manage` }, 'Claim an @name for a short link'), E.directory.has(id) ? '' : ' · registration pending'),
+      h('div', { class: 'quick' }, h('a', { class: 'act', href: `#/c/${id}/upload` }, '＋ Add video'), h('a', { class: 'act live', href: `#/c/${id}/golive` }, '● Go live'),
+        h('a', { class: 'act', href: `#/c/${id}` }, 'Videos'), h('a', { class: 'act', href: `#/c/${id}/manage` }, 'Manage'),
+        nameOf(id) ? h('a', { class: 'act', href: nameLink(nameOf(id)), onclick: (e) => { e.preventDefault(); copyText(nameLink(nameOf(id))); } }, 'Copy link') : null))));
+}
+function noChannelYet(what) {
+  return h('div', { class: 'panel' }, h('h2', { style: 'margin-top:0' }, 'Create your channel first'),
+    h('p', {}, `To ${what}, you need a channel. It takes a few seconds.`), h('a', { class: 'act live', href: '#/me' }, 'Create a channel'));
+}
+views.new = { render() {
+  const mine = myChannels(), what = route.what;
+  if (mine.length === 1) { location.replace(`#/c/${mine[0]}/${what === 'live' ? 'golive' : 'upload'}`); return h('div', { class: 'empty' }, 'Opening your channel…'); }
+  if (!mine.length) return noChannelYet(what === 'live' ? 'go live' : 'add a video');
+  return h('div', {}, h('h2', { style: 'margin-top:0' }, what === 'live' ? 'Go live on which channel?' : 'Add a video to which channel?'),
+    mine.map(id => { const p = derive(id)?.profile || genesisFor(id).payload;
+      return h('a', { class: 'chan-row', href: `#/c/${id}/${what === 'live' ? 'golive' : 'upload'}` }, avatar(p.avatar, p.name, 'sm'), h('b', { style: 'flex:1' }, p.name), h('span', { class: 'act' + (what === 'live' ? ' live' : '') }, what === 'live' ? '● Go live here' : '＋ Add here')); }));
+} };
+views.mine = { render() {
+  const mine = myChannels();
+  if (mine.length === 1) { location.replace(`#/c/${mine[0]}`); return h('div', { class: 'empty' }, 'Opening your channel…'); }
+  if (!mine.length) return noChannelYet('upload videos or go live');
+  return h('div', {}, h('div', { class: 'row', style: 'justify-content:space-between' }, h('h2', { style: 'margin:0' }, 'My channels'), h('a', { class: 'act', href: '#/me' }, '＋ New channel')),
+    h('div', { style: 'margin-top:12px' }, mine.map(channelQuick)));
+} };
 views.named = { render() {
   const id = resolveName(route.full);
   if (id) { route = { name: 'chain', id, tab: route.full[0] === '@' ? 'videos' : 'channels' }; queueMicrotask(() => render(true)); return h('div', { class: 'empty' }, 'Opening ' + route.full + '…'); }
@@ -2301,6 +2347,13 @@ views.home = { render() {
 } };
 
 // ---- explore (directory from main chain + pending mempool)
+// Live streams this browser knows about: loaded channels, plus what the home node's live hub reports.
+function liveEverywhere() {
+  for (const x of diag.home?.liveStreams || []) if (!chains.has(x.chain) && genesisFor(x.chain)) { const c = openChain(x.chain); if (c) E.requestChain(c); }
+  const out = [];
+  for (const c of chains.values()) { if (c === main) continue; const d = derive(c.id); if (d?.kind === 'channel') for (const lb of d.liveNow) out.push([c.id, lb]); }
+  return out.sort((a, b) => b[1].ts - a[1].ts);
+}
 views.explore = { render() {
   const tab = ['trending', 'new', 'channels', 'lists'].includes(route.tab) ? route.tab : 'trending';
   const q = keep('q', () => h('input', { type: 'search', placeholder: 'Search videos, channels and lists…', oninput: () => views.explore.fill?.() }));
@@ -2315,8 +2368,10 @@ views.explore = { render() {
     pickRanker.classList.toggle('hidden', tab === 'channels' || tab === 'lists');
     if (tab === 'trending' || tab === 'new') {
       let items = r.items.filter(i => match(i.t + ' ' + i.n));
+      const live = liveEverywhere().filter(([id, lb]) => match(lb.payload.title + ' ' + (derive(id)?.profile.name || '')));
       if (tab === 'new') items = [...items].sort((a, b) => b.ts - a.ts);
       body.replaceChildren(
+        live.length ? h('div', {}, h('h3', { style: 'margin-top:0' }, 'Live now'), live.map(([id, lb]) => liveBanner(id, lb))) : '',
         h('p', { class: 'sub', style: 'margin-top:0' }, r.local ? `No ranking list has published yet, so this browser ranked all ${[...E.directory.values()].filter(e => e.genesis.payload.kind === 'channel').length} registered channels itself.` : `Ranking published ${ago(r.at)} and signed by the list's key.`),
         items.length ? h('div', { class: 'grid' }, items.slice(0, 60).map((i, n) => rankCard(i, tab === 'trending' ? n + 1 : 0)))
           : h('div', { class: 'empty' }, q.value ? 'No videos match.' : 'No videos yet.'));
@@ -2350,7 +2405,7 @@ views.chain = { render() {
   const reg = E.directory.get(id);
   const subBtn = h('button', { class: subs[id] === 'sub' ? 'on' : '', onclick: () => setSub(id, subs[id] === 'sub' ? null : 'sub') }, subs[id] === 'sub' ? 'Subscribed ✓' : 'Subscribe');
   const joinBtn = d.kind === 'channel' ? h('button', { class: subs[id] === 'join' ? 'on' : 'primary', title: 'Joining downloads every video this channel posts and shares it with other viewers.', onclick: () => setSub(id, subs[id] === 'join' ? 'sub' : 'join') }, subs[id] === 'join' ? (canHost() ? 'Joined · hosting ✓' : 'Joined · not hosting (no folder)') : canHost() ? 'Join (host videos)' : folder.state === 'unsupported' ? 'Join (needs Chrome/Edge)' : 'Join (needs video folder)') : null;
-  const tabs = d.kind === 'channel' ? ['videos', 'posts', 'about'].concat(mine ? ['advertise', 'manage'] : [])
+  const tabs = d.kind === 'channel' ? (mine ? ['videos', 'upload', 'golive', 'posts', 'about', 'advertise', 'manage'] : ['videos', 'posts', 'about'])
     : (c.genesis.payload.ranking ? ['ranking', 'about'] : ['channels', 'about']).concat(mine ? ['manage'] : []);
   const tab = tabs.includes(route.tab) ? route.tab : tabs[0];
   return h('div', {},
@@ -2368,7 +2423,7 @@ views.chain = { render() {
     mine && !keyExported(d.owner) ? h('div', { class: 'panel', style: 'margin:14px 0 0;border-color:var(--warn)' },
       h('div', { class: 'row' }, h('span', { style: 'flex:1' }, `⚠ This ${d.kind}'s private key exists only in this browser. If you clear site data or lose this device, you lose the ${d.kind}.`),
         h('button', { class: 'primary', onclick: () => exportChannelKey(id) }, 'Export key now'))) : null,
-    h('div', { class: 'tabs' }, tabs.map(t => h('a', { href: `#/c/${id}/${t}`, class: t === tab ? 'active' : '' }, t[0].toUpperCase() + t.slice(1)))),
+    h('div', { class: 'tabs', style: 'flex-wrap:wrap' }, tabs.map(t => h('a', { href: `#/c/${id}/${t}`, class: t === tab ? 'active' : '' }, TAB_LABEL[t] || t[0].toUpperCase() + t.slice(1)))),
     chainTab[tab](id, d));
 } };
 function namePanel(id, d) {
@@ -2582,11 +2637,13 @@ views.livewatch = {
       h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Chat'), chat, h('div', { class: 'row', style: 'margin-top:8px' }, box, send)));
   }
 };
+const TAB_LABEL = { golive: '● Go live', upload: '＋ Upload' };
 const chainTab = {
+  upload(id) { const f = keep('upload:' + id, () => uploadForm(id)); f.open = true; return f; },
+  golive(id) { return keep('studio:' + id, () => liveStudio(id)); },
   videos(id, d) {
     return h('div', {}, d.liveNow.map(lb => liveBanner(id, lb)),
-      isMine(d.owner) ? keep('studio:' + id, () => liveStudio(id)) : null,
-      isMine(d.owner) ? keep('upload:' + id, () => uploadForm(id)) : null,
+      isMine(d.owner) ? h('div', { class: 'quick', style: 'margin:0 0 14px' }, h('a', { class: 'act', href: `#/c/${id}/upload` }, '＋ Add video'), h('a', { class: 'act live', href: `#/c/${id}/golive` }, '● Go live')) : null,
       d.videos.length ? h('div', { class: 'grid' }, d.videos.map(b => videoCard(id, b))) : h('div', { class: 'empty' }, 'No videos yet.'));
   },
   posts(id, d) {
