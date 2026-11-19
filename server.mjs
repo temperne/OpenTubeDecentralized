@@ -90,6 +90,7 @@ const engine = await core.createEngine({
   mine: MINE ? mine : null,
   shouldMine: () => true,          // a home node confirms everyone's registrations
   trackAll: !MAIN_ONLY,
+  relayWatch: true,                // pass ad watch-group messages between browsers
   persist: (c, b) => blockLog.write(JSON.stringify({ c, b }) + '\n'),
   onBlock: (chain, b) => {
     if (chain === engine.main) log(`main #${b.height} ${b.hash.slice(0, 12)} (${b.payload.entries.length} registration(s))`);
@@ -207,7 +208,7 @@ const server = http.createServer((req, res) => {
   }
   if (url.pathname === '/status') {
     res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
-    return res.end(JSON.stringify({ network: engine.MAIN_ID, height: engine.main.best.height, tip: engine.main.best.hash, registered: engine.directory.size, pending: engine.mempool.size, chains: engine.chains.size, peers: peers.size, mining: !!engine.miner, node: signer.pub, ranker: RANKER_ID, tracker: tracker.stats(), memberships: engine.memberships.size }));
+    return res.end(JSON.stringify({ network: engine.MAIN_ID, height: engine.main.best.height, tip: engine.main.best.hash, registered: engine.directory.size, pending: engine.mempool.size, chains: engine.chains.size, peers: peers.size, mining: !!engine.miner, node: signer.pub, now: Date.now(), ranker: RANKER_ID, tracker: tracker.stats(), memberships: engine.memberships.size }));
   }
   res.writeHead(404); res.end('not found');
 });

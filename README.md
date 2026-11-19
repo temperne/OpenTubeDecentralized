@@ -100,6 +100,19 @@ Ledger transactions ride in main-chain blocks, so proof of work orders them and 
 - **On the site:** the *Wallet* page shows each of your accounts (your personal key and every channel key), free balance, holdings, sending (one or many recipients), selling back, burning, history, and network totals. Channel pages have a **Tip** button.
 - **Not built yet:** ad slots, watch proofs, paid votes and comment tips, storage proofs, identity verification, and adaptive limits.
 
+## Ads: creating, syndicating, and proving views
+
+- **Create an ad** (channel → *Advertise*): upload a short video (up to 120 s) and set a title, an optional `https://` link, **tokens per verified view** and **maximum views**. The ad is an `ad` block on your channel. Its **terms** are signed separately by the channel key so viewers can carry them to the main chain. Ads are paid in **that channel's own token**, so its free balance is the ad budget. *Stop ad* appends a hide record.
+- **Syndication** (channel or list → *Manage → Ads*): a `sponsor` record names an advertiser channel. Its ads then run before videos on that channel, and, for a list, before videos on **every channel in the list**. The advertiser's *Advertise* tab shows where its ads run.
+- **Proof of watching:**
+  1. Ads start on shared 10-second slots (`ADS.slotMs`), and clocks are synced to the home node. Everyone starting the same ad in the same slot forms a group.
+  2. Every second, each viewer broadcasts a hash of that second's ad-file bytes, mixed with the group's ID. Others check it against their own hash and that it arrived on time. Ticks are only sent while the ad is playing and the tab is visible.
+  3. At the end, each viewer signs a **witness statement** listing who stayed in sync for at least 80% of the ad.
+  4. A viewer with witnesses from at least `ADS.minWitnesses` *other* keys submits a **claim** transaction. Watch traffic is relayed by the home node and never stored.
+- **The ledger checks every claim:** the advertiser's signature on the terms, each witness signature, and that the witnesses named the viewer. It then enforces one claim per viewer per ad, one ad per viewer per slot, the maximum views, and the advertiser's free balance.
+- **Payout:** the price per view leaves the advertiser's free balance, half to the viewer and half to the creator of the video the ad ran with. When they sell those tokens back, the advertiser's budget recovers.
+- **Known weakness:** keys are free, so one person can run several "viewers" that vouch for each other. `ADS.minWitnesses` is 1 so the demo works with two viewers; the intended value is around 10, together with identity verification.
+
 ## Network & diagnostics
 
 The *Network* page (and the health dot in the header) checks each part of the system and explains it in plain language. Each check gets a verdict (✅ / ⚠️ / ❌), the likely cause, and what to try:
