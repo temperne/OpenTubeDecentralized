@@ -103,6 +103,8 @@
   .tx { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; padding: 10px 0; border-top: 1px solid var(--border); font-size: 14px; }
   .tx:first-child { border-top: 0; }
   .amt-in { color: var(--ok); font-weight: 700; } .amt-out { color: var(--accent); font-weight: 700; }
+  #folderbar { display: flex; gap: 12px; align-items: center; justify-content: center; flex-wrap: wrap; padding: 10px 16px; background: var(--panel-2); border-bottom: 1px solid var(--warn); font-size: 14px; }
+  #folderbar.hidden { display: none; }
   .split { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
   @media (max-width: 800px) { .split { grid-template-columns: 1fr; } }
 </style>
@@ -124,6 +126,7 @@
     <span id="st-p2p"></span>
   </a>
 </header>
+<div id="folderbar" class="hidden"></div>
 <main id="app"><div class="empty">Starting node…</div></main>
 <div id="toast"></div>
 <!--
@@ -1090,6 +1093,7 @@ async function startP2P() {
 // ---------------------------------------------------------------- engine
 function saveRankings() { kv.set('rankings', [...engine.rankings.values()]); }
 const fetching = new Set();
+let watchState = null;  // the video being watched (see the watch view)
 engine = await createEngine({
   signer: me,
   keyFor: (pub) => ownedSigners.get(pub) || null,
@@ -1117,50 +1121,314 @@ const magnet = (infohash, name) => 'magnet:?xt=urn:btih:' + infohash + (name ? '
 const hosting = new Map();  // infohash -> { chain, size }
 const getTorrent = (ih) => wt.torrents.find(t => t.infoHash === ih) || null;
 
-function seedBlob(blob, name) {
-  return new Promise((res) => {
-    const file = blob instanceof File ? blob : new File([blob], name, { type: blob.type });
-    const existing = wt.torrents.find(t => t.name === name && t.length === file.size && t.done);
-    if (existing) return res(existing);
-    wt.seed(file, { announce: TRACKERS, name }, res);
-  });
+// ---------------------------------------------------------------- video folder (real files on your disk)
+// Hosting needs a folder you choose once (File System Access API: Chrome and Edge on a computer).
+// Layout:  <your folder>/<Channel name>/channel.json        which channel this is (chain ID, owner key)
+//                                       /<video files>       the real files, playable by any player
+//                                       /.opentube/<infohash>.torrent   piece hashes, so reopening never re-hashes
+// Without a folder (Firefox, Safari, phones, or not chosen yet) you can still watch, but not join or upload.
+// Mirror mode (headless.mjs) and ?folder=browser use the browser's private disk area (OPFS) with the same layout.
+const FOLDER_API = typeof window.showDirectoryPicker === 'function';
+const folder = { root: null, kind: null, state: 'none', error: '', channels: new Map() };  // state: none | needs-permission | ready | unsupported
+const FLUSH_MIN = 256 * 1024 ** 2, CACHE_MAX = 64 * 1024 ** 2;
+const openStores = new Set();
+
+// A WebTorrent chunk store backed by one real file. Reads come straight from the file. Downloads are written in
+// place through one open writer; the browser only makes the file visible when the writer closes, so we close it
+// whenever the unsaved part reaches max(256 MB, what's already saved). That bounds the extra disk copying to about
+// one file's worth, and a closed tab loses at most that unsaved part. Recently written pieces stay readable from a
+// small memory cache; any other unsaved piece triggers a save first.
+function fileStore(source, complete, ref = {}) {
+  return class FileStore {
+    constructor(chunkLength, opts = {}) {
+      Object.assign(this, { chunkLength, length: opts.length, complete, file: null, writer: null, q: Promise.resolve(),
+        unsaved: new Set(), cache: new Map(), cacheBytes: 0, saved: 0, pending: 0, closed: false });
+      ref.store = this;
+      if (!complete) openStores.add(this);
+    }
+    run(fn) { const p = this.q.then(fn); this.q = p.catch(() => {}); return p; }
+    remember(i, buf) {
+      const old = this.cache.get(i); if (old) { this.cache.delete(i); this.cacheBytes -= old.length; }
+      this.cache.set(i, buf); this.cacheBytes += buf.length;
+      for (const [k, v] of this.cache) { if (this.cacheBytes <= CACHE_MAX) break; this.cache.delete(k); this.cacheBytes -= v.length; }
+    }
+    async save() {
+      if (!this.writer) return;
+      const w = this.writer; this.writer = null; this.file = null;
+      await w.close();
+      this.saved += this.pending; this.pending = 0; this.unsaved.clear();
+    }
+    put(index, buf, cb) {
+      if (this.complete || this.closed) return queueMicrotask(() => cb(null));
+      this.run(async () => {
+        this.writer ||= await source.createWritable({ keepExistingData: true });
+        await this.writer.write({ type: 'write', position: index * this.chunkLength, data: buf });
+        this.unsaved.add(index); this.remember(index, buf); this.pending += buf.length;
+        if (this.pending >= Math.max(FLUSH_MIN, this.saved)) await this.save();
+      }).then(() => cb(null), (e) => cb(e));
+    }
+    async read(start, len) {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          this.file ||= await source.getFile();
+          const ab = await this.file.slice(start, start + len).arrayBuffer();
+          if (ab.byteLength < len) throw new Error('piece not on disk yet');
+          return new Uint8Array(ab);
+        } catch (e) { this.file = null; if (attempt || /not on disk/.test(e.message)) throw e; }  // a stale File after a save: retry once
+      }
+    }
+    get(index, opts, cb) {
+      if (typeof opts === 'function') { cb = opts; opts = null; }
+      const off = opts?.offset || 0;
+      const full = Math.min(this.chunkLength, this.length - index * this.chunkLength);
+      const len = opts?.length ?? full - off;
+      const hit = this.cache.get(index);
+      if (hit) return queueMicrotask(() => cb(null, hit.subarray(off, off + len)));
+      const start = index * this.chunkLength + off;
+      const p = this.complete && !this.writer ? this.read(start, len)
+        : this.run(async () => { if (this.unsaved.has(index)) await this.save(); return this.read(start, len); });
+      p.then(b => cb(null, b), cb);
+    }
+    finish() { return this.run(() => this.save()).then(() => { this.complete = true; openStores.delete(this); }); }
+    close(cb) { this.run(() => this.save()).then(() => { this.closed = true; openStores.delete(this); cb?.(null); }, (e) => cb?.(e)); }
+    destroy(cb) { this.close(cb); }
+  };
 }
-async function storeFile(infohash, chain, name, type, blob) {
-  await idb('files', 'readwrite', s => s.put({ infohash, chain, name, type, size: blob.size, blob, ts: Date.now() }));
-  hosting.set(infohash, { chain, size: blob.size });
-  await enforceCap(chain);
+// Save what we can if the tab goes away.
+window.addEventListener('pagehide', () => { for (const s of openStores) s.run(() => s.save()); });
+
+const cleanName = (s, fallback = 'Untitled') => String(s || '').replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().replace(/^\.+/, '').slice(0, 100).trim() || fallback;
+async function hasEntry(dir, name) {
+  try { await dir.getFileHandle(name); return true; } catch {}
+  try { await dir.getDirectoryHandle(name); return true; } catch {}
+  return false;
 }
-async function enforceCap(chain) {
-  if (isMine(chains.get(chain)?.owner)) return;  // never evict your own uploads
-  const files = (await idb('files', 'readonly', s => s.getAll())).filter(f => f.chain === chain).sort((a, b) => b.ts - a.ts);
-  let total = 0;
-  for (const f of files) {
-    total += f.size;
-    if (total > settings.hostCapGB * 1024 ** 3) {
-      await idb('files', 'readwrite', s => s.delete(f.infohash));
-      hosting.delete(f.infohash); getTorrent(f.infohash)?.destroy();
+async function readJson(dir, name) { try { return JSON.parse(await (await (await dir.getFileHandle(name)).getFile()).text()); } catch { return null; } }
+async function writeData(dir, name, data) { const w = await (await dir.getFileHandle(name, { create: true })).createWritable(); await w.write(data); await w.close(); }
+const metaDir = (ch) => ch.dir.getDirectoryHandle('.opentube', { create: true });
+async function saveTorrentFile(ch, ih, buf) { try { await writeData(await metaDir(ch), ih + '.torrent', buf); } catch (e) { console.warn('saving torrent metadata', e); } }
+async function readTorrentFile(ch, ih) { try { return await (await (await metaDir(ch)).getFileHandle(ih + '.torrent')).getFile(); } catch { return null; } }  // a Blob: WebTorrent accepts that as a torrent
+function saveMeta(ch) {
+  ch.saving = (ch.saving || Promise.resolve()).then(() => writeData(ch.dir, 'channel.json', JSON.stringify(ch.meta, null, 2))).catch(e => console.warn('saving channel.json', e));
+  return ch.saving;
+}
+const channelTitle = (id) => derive(id)?.profile?.name || genesisFor(id)?.payload?.name || ('Channel ' + id.slice(0, 8));
+
+async function scanFolder() {
+  folder.channels.clear();
+  for await (const [name, handle] of folder.root.entries()) {
+    if (handle.kind !== 'directory') continue;
+    const meta = await readJson(handle, 'channel.json');
+    if (meta?.app === 'OpenTube' && meta.network === MAIN_ID && isHex(meta.chain, 64)) {
+      meta.videos ||= {};
+      folder.channels.set(meta.chain, { dir: handle, folderName: name, meta });
     }
   }
 }
-async function reseedAll() {
-  const files = await idb('files', 'readonly', s => s.getAll());
-  for (const f of files) { hosting.set(f.infohash, { chain: f.chain, size: f.size }); seedBlob(new File([f.blob], f.name, { type: f.type }), f.name); }
+// The channel's folder, created on first use with a readable name.
+async function channelFolder(id) {
+  let ch = folder.channels.get(id);
+  if (ch) return ch;
+  const base = cleanName(channelTitle(id), 'Channel');
+  let name = base;
+  if (await hasEntry(folder.root, name)) name = `${base} (${id.slice(0, 8)})`;
+  const dir = await folder.root.getDirectoryHandle(name, { create: true });
+  ch = { dir, folderName: name, meta: { app: 'OpenTube', note: 'Videos of this OpenTube channel, kept and shared by your browser. Deleting a video file stops sharing it.',
+    network: MAIN_ID, chain: id, key: genesisFor(id)?.author || null, name: channelTitle(id), videos: {} } };
+  folder.channels.set(id, ch);
+  await saveMeta(ch);
+  return ch;
 }
-// Join = host: download every video a joined channel posts, then seed it.
-function hostVideo(chainId, v) {
-  if (hosting.has(v.infohash) || fetching.has(v.infohash)) return;
-  fetching.add(v.infohash);
-  const go = (t) => {
-    const done = () => t.files[0].getBlob((err, blob) => {
-      fetching.delete(v.infohash);
-      if (!err) storeFile(v.infohash, chainId, v.file, blob.type || 'video/mp4', blob).then(scheduleRender);
+async function uniqueFileName(ch, wanted) {
+  const clean = cleanName(wanted, 'video');
+  const dot = clean.lastIndexOf('.'), stem = dot > 0 ? clean.slice(0, dot) : clean, ext = dot > 0 ? clean.slice(dot) : '';
+  const used = new Set(Object.values(ch.meta.videos).map(v => v.file));
+  for (let n = 1; ; n++) {
+    const name = n === 1 ? clean : `${stem} (${n})${ext}`;
+    if (!used.has(name) && !(await hasEntry(ch.dir, name))) return name;
+  }
+}
+
+// Seed a file that's already complete on disk. With saved piece hashes this starts instantly; otherwise the file
+// is hashed once (read in slices, never loaded whole into memory) and the hashes are saved for next time.
+async function seedFile(chainId, ih, source, entry, saveTo) {
+  const ref = {};
+  if (saveTo) {
+    const tb = await readTorrentFile(saveTo, ih);
+    if (tb) {
+      const t = wt.add(tb, { store: fileStore(source, true, ref), skipVerify: true, announce: TRACKERS });
+      hosting.set(ih, { chain: chainId, size: entry.size });
+      return t;
+    }
+  }
+  const file = await source.getFile();
+  const store = new (fileStore(source, true, ref))(0, { length: file.size });
+  return new Promise((res, rej) => {
+    const t = wt.seed(new File([file], entry.name || file.name, { type: entry.type || file.type }), { preloadedStore: store, announce: TRACKERS, name: entry.name || file.name }, (t2) => {
+      if (ih && t2.infoHash !== ih) console.warn(`“${entry.name}” hashed to ${t2.infoHash}, expected ${ih}: the file was changed`);
+      hosting.set(t2.infoHash, { chain: chainId, size: file.size });
+      if (saveTo) saveTorrentFile(saveTo, t2.infoHash, t2.torrentFile);
+      res(t2);
     });
-    t.done ? done() : t.once('done', done);
-  };
-  const t = getTorrent(v.infohash) || wt.add(magnet(v.infohash, v.file), { announce: TRACKERS });
-  t.ready ? go(t) : t.once('ready', () => go(t));
+    t.once('metadata', () => { store.chunkLength = t.pieceLength; store.length = t.length; });
+    t.once('error', rej);
+  });
+}
+async function shareFromFolder(chainId, ih) {
+  const ch = folder.channels.get(chainId), entry = ch?.meta.videos[ih];
+  if (!entry || hosting.has(ih) || fetching.has(ih)) return;
+  let fh;
+  try { fh = await ch.dir.getFileHandle(entry.file); }
+  catch {  // you deleted the file: forget it
+    delete ch.meta.videos[ih]; saveMeta(ch); return;
+  }
+  if (!entry.complete) return downloadToFolder(chainId, { infohash: ih, file: entry.name, size: entry.size, title: entry.title });
+  const t = getTorrent(ih);
+  if (t) t.destroy();  // a watch-only copy in memory: replace it with the file
+  try { await seedFile(chainId, ih, fh, entry, ch); } catch (e) { console.warn('sharing', entry.file, e); }
+}
+// Join = host: download a video straight into the channel's folder.
+async function downloadToFolder(chainId, v) {
+  const ih = v.infohash;
+  if (fetching.has(ih) || hosting.has(ih)) return;
+  fetching.add(ih);
+  try {
+    const ch = await channelFolder(chainId);
+    let entry = ch.meta.videos[ih];
+    if (!entry) { entry = ch.meta.videos[ih] = { file: await uniqueFileName(ch, v.file), name: v.file, title: v.title, size: v.size, complete: false, ts: Date.now() }; saveMeta(ch); }
+    const fh = await ch.dir.getFileHandle(entry.file, { create: true });
+    const old = getTorrent(ih);
+    if (old) old.destroy();
+    const ref = {};
+    const tb = await readTorrentFile(ch, ih);
+    const t = wt.add(tb || magnet(ih, v.file), { store: fileStore(fh, false, ref), announce: TRACKERS });
+    t.once('metadata', () => { if (!tb) saveTorrentFile(ch, ih, t.torrentFile); });
+    t.once('done', async () => {
+      try { await ref.store?.finish(); } catch (e) { console.warn('saving', entry.file, e); }
+      fetching.delete(ih);
+      entry.complete = true; entry.size = t.length; entry.ts = Date.now(); saveMeta(ch);
+      hosting.set(ih, { chain: chainId, size: t.length });
+      E.logEvent?.('video', `saved “${v.title || entry.file}” to ${ch.folderName}/`);
+      enforceCap(chainId); scheduleRender();
+    });
+    t.once('error', () => fetching.delete(ih));
+  } catch (e) { fetching.delete(ih); console.warn('download to folder', e); }
+}
+async function removeVideo(chainId, ih) {
+  getTorrent(ih)?.destroy(); hosting.delete(ih); fetching.delete(ih);
+  const ch = folder.channels.get(chainId), entry = ch?.meta.videos[ih];
+  if (!entry) return;
+  setTimeout(async () => {  // after the writer has closed
+    try { await ch.dir.removeEntry(entry.file); } catch {}
+    try { await (await metaDir(ch)).removeEntry(ih + '.torrent'); } catch {}
+  }, 500);
+  delete ch.meta.videos[ih]; saveMeta(ch);
+}
+async function enforceCap(chainId) {
+  if (isMine(chains.get(chainId)?.owner || genesisFor(chainId)?.author)) return;  // never evict your own uploads
+  const ch = folder.channels.get(chainId); if (!ch) return;
+  let total = 0;
+  for (const [ih, e] of Object.entries(ch.meta.videos).sort((a, z) => z[1].ts - a[1].ts)) {
+    total += e.size || 0;
+    if (total > settings.hostCapGB * 1024 ** 3) await removeVideo(chainId, ih);
+  }
+}
+const canHost = () => folder.state === 'ready';
+async function hostedFile(chainId, ih) {
+  const ch = folder.channels.get(chainId), e = ch?.meta.videos[ih];
+  if (!canHost() || !e?.complete) return null;
+  try { return await (await ch.dir.getFileHandle(e.file)).getFile(); } catch { return null; }
+}
+function hostVideo(chainId, v) {
+  if (!canHost() || hosting.has(v.infohash) || fetching.has(v.infohash)) return;
+  if (watchState?.infohash === v.infohash && !watchState.done) return;  // being watched from memory right now; picked up when you leave
+  const entry = folder.channels.get(chainId)?.meta.videos[v.infohash];
+  if (entry) shareFromFolder(chainId, v.infohash); else downloadToFolder(chainId, v);
 }
 function hostJoined(chainId) { const d = derive(chainId); if (d) for (const v of d.videos) hostVideo(chainId, v.payload); }
+
+// Upload: copy the file into the channel's folder, hash it once, and share it from there.
+async function addUpload(chainId, file, onStatus) {
+  const ch = await channelFolder(chainId);
+  const name = await uniqueFileName(ch, file.name);
+  const fh = await ch.dir.getFileHandle(name, { create: true });
+  onStatus(`Copying into ${ch.folderName}/…`);
+  await file.stream().pipeTo(await fh.createWritable());
+  onStatus('Hashing…');
+  const entry = { file: name, name: file.name, type: file.type, size: file.size, complete: true, own: true, ts: Date.now() };
+  const t = await seedFile(chainId, null, fh, entry, ch);
+  ch.meta.videos[t.infoHash] = entry; saveMeta(ch);
+  return t;
+}
+
+// Videos stored inside the browser by older versions: share them from there until a folder is chosen, then move them.
+async function legacyFiles() { try { return await idb('files', 'readonly', s => s.getAll()); } catch { return []; } }
+async function seedLegacy() {
+  for (const f of await legacyFiles()) {
+    if (hosting.has(f.infohash)) continue;
+    try { await seedFile(f.chain, f.infohash, { getFile: async () => f.blob }, { name: f.name, type: f.type, size: f.size }, null); } catch (e) { console.warn('legacy video', e); }
+  }
+}
+async function migrateLegacy() {
+  for (const f of await legacyFiles()) {
+    try {
+      const ch = await channelFolder(f.chain);
+      if (!ch.meta.videos[f.infohash]) {
+        const name = await uniqueFileName(ch, f.name);
+        await f.blob.stream().pipeTo(await (await ch.dir.getFileHandle(name, { create: true })).createWritable());
+        ch.meta.videos[f.infohash] = { file: name, name: f.name, type: f.type, size: f.size, complete: true, own: isMine(genesisFor(f.chain)?.author), ts: f.ts || Date.now() };
+        const old = getTorrent(f.infohash);
+        if (old?.torrentFile) await saveTorrentFile(ch, f.infohash, old.torrentFile);
+        old?.destroy(); hosting.delete(f.infohash);
+        await saveMeta(ch);
+      }
+      await idb('files', 'readwrite', s => s.delete(f.infohash));
+    } catch (e) { console.warn('moving a stored video into the folder', e); }
+  }
+}
+
+async function folderReady() {
+  folder.state = 'ready'; folder.error = '';
+  await scanFolder();
+  await migrateLegacy();
+  for (const [chainId, ch] of folder.channels)
+    for (const [ih, e] of Object.entries(ch.meta.videos)) if (e.complete || subs[chainId] === 'join') shareFromFolder(chainId, ih);
+  for (const id of joinedList()) hostJoined(id);
+  scheduleRender();
+}
+async function initFolder() {
+  try {
+    if (MIRROR || params.get('folder') === 'browser') { folder.root = await navigator.storage.getDirectory(); folder.kind = 'browser'; }
+    else if (!FOLDER_API) { folder.state = 'unsupported'; await seedLegacy(); return scheduleRender(); }
+    else {
+      folder.root = await kv.get('videoDir'); folder.kind = 'disk';
+      if (!folder.root) { folder.state = 'none'; await seedLegacy(); return scheduleRender(); }
+      if (await folder.root.queryPermission({ mode: 'readwrite' }) !== 'granted') { folder.state = 'needs-permission'; await seedLegacy(); return scheduleRender(); }
+    }
+    await folderReady();
+  } catch (e) { folder.state = 'none'; folder.error = e.message; console.warn('video folder', e); scheduleRender(); }
+}
+async function chooseFolder() {
+  if (!FOLDER_API) return toast('Hosting videos needs Chrome or Edge on a computer. You can still watch here.');
+  let dir;
+  try { dir = await window.showDirectoryPicker({ id: 'opentube', mode: 'readwrite', startIn: 'videos' }); } catch { return; }  // cancelled
+  for (const t of [...wt.torrents]) if (hosting.has(t.infoHash) || fetching.has(t.infoHash)) t.destroy();
+  hosting.clear(); fetching.clear();
+  folder.root = dir; folder.kind = 'disk';
+  await kv.set('videoDir', dir);
+  await folderReady();
+  toast(`Videos now live in “${dir.name}”. Each channel gets its own folder.`);
+}
+async function reconnectFolder() {
+  try { if (await folder.root.requestPermission({ mode: 'readwrite' }) === 'granted') { await folderReady(); toast('Video folder reconnected. Sharing again.'); } }
+  catch (e) { toast('Could not open the folder: ' + e.message); }
+}
+// What the UI shows when hosting isn't possible yet.
+function folderPrompt(what) {
+  if (folder.state === 'unsupported') return h('div', { class: 'sub' }, `${what} needs a folder on your computer, which this browser can’t give a web page. Use Chrome or Edge on a computer. You can still watch videos here.`);
+  if (folder.state === 'needs-permission') return h('div', { class: 'row' }, h('span', { class: 'sub' }, `${what}: the browser needs your OK to use “${folder.root.name}” again.`), h('button', { class: 'primary', onclick: reconnectFolder }, 'Reconnect folder'));
+  return h('div', { class: 'row' }, h('span', { class: 'sub' }, `${what} needs a folder on your computer where OpenTube keeps each channel’s videos.`), h('button', { class: 'primary', onclick: chooseFolder }, 'Choose video folder'));
+}
 
 // ---------------------------------------------------------------- startup: load stored blocks, then connect
 {
@@ -1177,11 +1445,18 @@ function hostJoined(chainId) { const d = derive(chainId); if (d) for (const v of
 }
 setInterval(() => kv.set('pending', [...mempool.values()].filter(g => isMine(g.author))), 5000);
 setInterval(() => E.gossip(), 15000);
-reseedAll();
 E.maybeMine();
-for (const [id, mode] of Object.entries(subs)) if (mode === 'join') hostJoined(id);
+initFolder();
 // ---------------------------------------------------------------- UI
+function updateFolderBar() {
+  const bar = $('#folderbar'); if (!bar) return;
+  const need = folder.state === 'needs-permission' && (hosting.size || joinedList().length || folder.root);
+  bar.classList.toggle('hidden', !need);
+  if (need && !bar.childElementCount) bar.replaceChildren(h('span', {}, `Your videos in “${folder.root.name}” aren’t being shared until you allow access again.`), h('button', { class: 'primary small', onclick: () => reconnectFolder().then(updateFolderBar) }, 'Allow access'));
+  if (!need) bar.replaceChildren();
+}
 function updateStatus() {
+  updateFolderBar();
   try {
     const level = worst(healthChecks());
     $('#dot-health').className = 'dot ' + { ok: 'on', warn: 'busy', error: 'bad' }[level];
@@ -1251,6 +1526,7 @@ function publishMyMembership() {
   publishMyMembership.t = setTimeout(() => { if (!MIRROR) E.publishMembership(joinedList()).catch(() => {}); }, 1000);
 }
 function setSub(id, mode) {
+  if (mode === 'join' && !canHost() && !MIRROR) { toast(folder.state === 'unsupported' ? 'Joining means hosting videos, which needs Chrome or Edge on a computer. You can still subscribe and watch.' : 'Choose a video folder first (My node → Video folder). Joined channels download into it.'); return; }
   const wasJoined = subs[id] === 'join';
   if (mode) subs[id] = mode; else delete subs[id];
   saveSubs();
@@ -1353,7 +1629,7 @@ views.chain = { render() {
   const d = derive(id), p = d.profile, mine = isMine(d.owner);
   const reg = E.directory.get(id);
   const subBtn = h('button', { class: subs[id] === 'sub' ? 'on' : '', onclick: () => setSub(id, subs[id] === 'sub' ? null : 'sub') }, subs[id] === 'sub' ? 'Subscribed ✓' : 'Subscribe');
-  const joinBtn = d.kind === 'channel' ? h('button', { class: subs[id] === 'join' ? 'on' : 'primary', title: 'Joining downloads every video this channel posts and shares it with other viewers.', onclick: () => setSub(id, subs[id] === 'join' ? 'sub' : 'join') }, subs[id] === 'join' ? 'Joined · hosting ✓' : 'Join (host videos)') : null;
+  const joinBtn = d.kind === 'channel' ? h('button', { class: subs[id] === 'join' ? 'on' : 'primary', title: 'Joining downloads every video this channel posts and shares it with other viewers.', onclick: () => setSub(id, subs[id] === 'join' ? 'sub' : 'join') }, subs[id] === 'join' ? (canHost() ? 'Joined · hosting ✓' : 'Joined · not hosting (no folder)') : canHost() ? 'Join (host videos)' : folder.state === 'unsupported' ? 'Join (needs Chrome/Edge)' : 'Join (needs video folder)') : null;
   const tabs = d.kind === 'channel' ? ['videos', 'posts', 'about'].concat(mine ? ['manage'] : [])
     : (c.genesis.payload.ranking ? ['ranking', 'about'] : ['channels', 'about']).concat(mine ? ['manage'] : []);
   const tab = tabs.includes(route.tab) ? route.tab : tabs[0];
@@ -1477,17 +1753,18 @@ function uploadForm(chainId) {
   drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); pick(e.dataTransfer.files[0]); };
   btn.onclick = async () => {
     if (!file || !title.value.trim()) return toast('Choose a file and add a title');
-    btn.disabled = true; status.textContent = 'Hashing and seeding…';
+    btn.disabled = true;
     try {
-      const t = await seedBlob(file, file.name);
-      await storeFile(t.infoHash, chainId, file.name, file.type, file);
+      const t = await addUpload(chainId, file, (m) => { status.textContent = m; });
       const b = await append(chainId, { type: 'video', title: title.value.trim(), desc: desc.value.trim(), infohash: t.infoHash, file: file.name.slice(0, 200), size: file.size, mime: file.type.slice(0, 60), thumb: thumb || makeThumb(prev), comments: vpol.value || undefined });
       toast('Published. Members of your channel will start hosting it.');
       location.hash = `#/v/${chainId}/${b.hash}`;
     } catch (e) { console.error(e); status.textContent = 'Failed: ' + (e.message || e); btn.disabled = false; }
   };
+  if (!canHost()) return h('details', { class: 'panel' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Upload a video'),
+    h('div', { style: 'margin-top:12px' }, folderPrompt('Uploading')));
   return h('details', { class: 'panel' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Upload a video'),
-    h('div', { style: 'margin-top:12px' }, drop, input, prev, h('label', {}, 'Title'), title, h('label', {}, 'Description'), desc, h('label', {}, 'Comments on this video'), vpol,
+    h('div', { style: 'margin-top:12px' }, h('p', { class: 'sub', style: 'margin-top:0' }, `The file is copied into “${folder.kind === 'disk' ? folder.root.name + '/' : ''}${folder.channels.get(chainId)?.folderName || cleanName(channelTitle(chainId), 'Channel')}/” and shared from there.`), drop, input, prev, h('label', {}, 'Title'), title, h('label', {}, 'Description'), desc, h('label', {}, 'Comments on this video'), vpol,
       h('div', { class: 'row', style: 'margin-top:12px' }, btn, status)));
 }
 function makeThumb(video, W = 320, H = 180) {
@@ -1512,15 +1789,16 @@ function imageFileToDataUrl(file, size = 128) {
 }
 
 // ---- watch
-let watchState = null;
 views.watch = {
   leave() {
     if (!watchState) return;
     clearInterval(watchState.timer);
     const t = getTorrent(watchState.infohash);
     if (!watchState.everPeers && !t?.done && Date.now() - watchState.started > 20000) E.logEvent('video', `gave up on “${watchState.title}”: no online peer had it (waited ${Math.round((Date.now() - watchState.started) / 1000)} s)`);
-    if (t && !hosting.has(watchState.infohash) && !fetching.has(watchState.infohash)) t.destroy();
-    watchState = null;
+    const ws = watchState; watchState = null;
+    if (ws.url) setTimeout(() => URL.revokeObjectURL(ws.url), 1000);
+    if (t && !hosting.has(ws.infohash) && !fetching.has(ws.infohash)) t.destroy();
+    if (subs[ws.chain] === 'join') { const v = derive(ws.chain)?.videos.find(x => x.payload.infohash === ws.infohash); if (v) hostVideo(ws.chain, v.payload); }
   },
   render() {
     const { id, video } = route;
@@ -1557,13 +1835,30 @@ views.watch = {
     box.onkeydown = (e) => { if (e.key === 'Enter') postBtn.click(); };
 
     const t = getTorrent(v.infohash) || wt.add(magnet(v.infohash, v.file), { announce: TRACKERS });
-    watchState = { infohash: v.infohash, started: Date.now(), title: v.title, everPeers: false };
+    watchState = { infohash: v.infohash, chain: id, started: Date.now(), title: v.title, everPeers: false };
+    const ws = watchState;
     const play = () => {
       const f = t.files.find(x => /\.(mp4|m4v|webm|mkv|mov|ogv)$/i.test(x.name)) || t.files[0];
-      try { f.renderTo(player, { autoplay: true, controls: true }, (err) => { if (err) f.getBlobURL((e2, url) => { if (!e2) player.src = url; }); }); }
-      catch { f.getBlobURL((e2, url) => { if (!e2) player.src = url; }); }
+      // Streaming MP4 through WebTorrent 1.x stalls in current Chromium (WebM is fine). If the player hasn't started
+      // once data is flowing, play the video when the download completes instead.
+      let fellBack = false;
+      const fallback = () => {
+        if (fellBack || watchState !== ws) return; fellBack = true;
+        const go = () => f.getBlobURL((e2, url) => { if (!e2 && watchState === ws) { ws.url = url; player.src = url; } });
+        t.done ? go() : t.once('done', go);
+      };
+      try { f.renderTo(player, { autoplay: true, controls: true }, (err) => { if (err) fallback(); }); } catch { fallback(); }
+      const check = setInterval(() => {
+        if (watchState !== ws || player.readyState >= 2) return clearInterval(check);
+        if (t.done || t.downloaded > 8 * 1024 ** 2) { clearInterval(check); setTimeout(() => { if (player.readyState < 2) fallback(); }, 4000); }
+      }, 1000);
     };
-    t.ready ? play() : t.once('ready', play);
+    // A video in your folder plays straight from the file on disk: instant, seekable, any size.
+    hostedFile(id, v.infohash).then(file => {
+      if (watchState !== ws) return;
+      if (file) { ws.url = player.src = URL.createObjectURL(file); player.play().catch(() => {}); }
+      else t.ready ? play() : t.once('ready', play);
+    });
     const refreshComments = () => {
       const dd = derive(id);
       const t = dd.votes.get(video) || { up: 0, down: 0, by: new Map() };
@@ -1730,10 +2025,15 @@ function healthChecks() {
   if (diag.storage?.quota) {
     const pct = diag.storage.usage / diag.storage.quota;
     checks.push(pct > 0.9 ? bad('Storage', `Browser storage is ${Math.round(pct * 100)}% full.`, 'Lower the per-channel storage limit on My node, or leave a joined channel.')
-      : !diag.storage.persisted && hosting.size ? warn('Storage', `Hosting ${hosting.size} video(s), but the browser may clear its storage under pressure.`, 'Click “Keep my data” below so the browser won’t evict hosted videos.')
+      : !diag.storage.persisted && hosting.size && folder.kind !== 'disk' ? warn('Storage', `Hosting ${hosting.size} video(s), but the browser may clear its storage under pressure.`, 'Click “Keep my data” below so the browser won’t evict hosted videos.')
       : !diag.storage.persisted ? ok('Storage', `${fmtBytes(diag.storage.usage)} used. Not marked persistent; that only matters once you host videos.`)
       : ok('Storage', `${fmtBytes(diag.storage.usage)} used of ${fmtBytes(diag.storage.quota)} available; marked persistent.`));
   }
+  // video folder
+  checks.push(folder.state === 'ready' ? ok('Video folder', folder.kind === 'browser' ? `Using the browser’s private storage; ${folder.channels.size} channel folder(s).` : `“${folder.root.name}”: ${folder.channels.size} channel folder(s), hosting ${hosting.size} video(s).`)
+    : folder.state === 'needs-permission' ? warn('Video folder', `The browser needs your OK to use “${folder.root.name}” again, so nothing is being shared.`, 'My node → Video folder → Reconnect folder.')
+    : folder.state === 'unsupported' ? (joinedList().length ? warn('Video folder', 'This browser can’t give a page a folder, so joined channels aren’t hosted here.', 'Use Chrome or Edge on a computer to host. Watching works anywhere.') : ok('Video folder', 'Not available in this browser. Watching works; hosting needs Chrome or Edge on a computer.'))
+    : joinedList().length ? warn('Video folder', 'No video folder chosen, so joined channels aren’t hosted.', 'My node → Video folder → Choose video folder.') : ok('Video folder', 'Not chosen yet. Needed only to upload or join.'));
   // keys
   const unbacked = [...new Set([me.pub, ...ownedSigners.keys()])].filter(k => !keyExported(k) && (k !== me.pub || [...chains.values()].some(c => c.owner === me.pub)));
   if (unbacked.length) checks.push(warn('Keys', `${unbacked.length} key(s) controlling your channels are not backed up.`, 'My node → Back up all keys.'));
@@ -1964,6 +2264,23 @@ views.wallet = { render() {
 views.wallet.refresh = () => { if (!document.activeElement || !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) $('#app').replaceChildren(views.wallet.render()); };
 
 // ---- my node
+function folderPanel() {
+  const chans = [...folder.channels.entries()].map(([id, ch]) => {
+    const vids = Object.values(ch.meta.videos), done = vids.filter(v => v.complete);
+    return h('div', { class: 'row' }, h('span', { style: 'flex:1' }, '📁 ', h('b', {}, ch.folderName + '/'), ' ', h('a', { href: `#/c/${id}` }, 'open channel')),
+      h('span', { class: 'sub' }, `${done.length} video${done.length === 1 ? '' : 's'} · ${fmtBytes(done.reduce((s, v) => s + (v.size || 0), 0))}` + (vids.length > done.length ? ` · ${vids.length - done.length} downloading` : '')));
+  });
+  return h('div', { class: 'panel', style: folder.state === 'ready' ? '' : 'border-color:var(--warn)' },
+    h('div', { class: 'row', style: 'justify-content:space-between' }, h('h3', { style: 'margin:0' }, 'Video folder'),
+      folder.state === 'ready' ? h('span', { class: 'badge ok' }, folder.kind === 'browser' ? 'browser storage' : 'connected') : h('span', { class: 'badge warn' }, { none: 'not chosen', 'needs-permission': 'needs permission', unsupported: 'not available here' }[folder.state])),
+    h('p', { class: 'sub' }, 'Uploads and joined channels are kept as real files in this folder, one subfolder per channel (with a channel.json saying which channel it is). Reopening the page shares them again right away. Your own uploads are never deleted; other channels are trimmed to the storage limit below.'),
+    folder.state === 'ready'
+      ? [h('div', { class: 'row' }, h('span', {}, folder.kind === 'browser' ? 'The browser’s private storage (mirror/test mode)' : h('b', {}, folder.root.name + '/')),
+          folder.kind === 'disk' ? h('button', { class: 'small', onclick: chooseFolder }, 'Change folder') : null),
+        ...(chans.length ? chans : [h('div', { class: 'sub' }, 'No channel folders yet. Upload a video or join a channel.')])]
+      : folderPrompt('Hosting'),
+    folder.error ? h('div', { class: 'sub' }, 'Error: ' + folder.error) : null);
+}
 views.me = { render() {
   const owned = [...new Set([...E.directory.keys(), ...mempool.keys(), ...chains.keys()])].filter(id => id !== MAIN_ID && isMine(genesisFor(id)?.author));
   const kind = h('select', {}, h('option', { value: 'channel' }, 'Channel'), h('option', { value: 'list' }, 'List (curated channels)'));
@@ -2004,6 +2321,7 @@ views.me = { render() {
       h('div', { class: 'row' },
         h('button', { class: 'primary', onclick: backupAllKeys }, 'Back up all keys'),
         h('button', { onclick: () => importIn.click() }, 'Import keys'), importIn)),
+    folderPanel(),
     h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Your channels & lists'),
       owned.length ? owned.map(id => { const owner = genesisFor(id).author; return h('div', { class: 'row' }, h('div', { style: 'flex:1;min-width:220px' }, chanRow(id)),
         h('span', { class: 'sub' }, owner === me.pub ? 'personal key' : 'own key'),
@@ -2068,8 +2386,8 @@ if (MIRROR) {
     for (const id of joinedList()) if (!want.has(id)) {
       setSub(id, null);
       // Free the space: drop the videos we were hosting for that channel.
-      const files = (await idb('files', 'readonly', st => st.getAll())).filter(f => f.chain === id);
-      for (const f of files) { await idb('files', 'readwrite', st => st.delete(f.infohash)); hosting.delete(f.infohash); getTorrent(f.infohash)?.destroy(); }
+      const ch = folder.channels.get(id);
+      if (ch) { for (const ih of Object.keys(ch.meta.videos)) await removeVideo(id, ih); setTimeout(() => folder.root.removeEntry(ch.folderName, { recursive: true }).catch(() => {}), 1000); folder.channels.delete(id); }
     }
     console.log(`opentube-mirror following ${MIRROR.slice(0, 8)}… : ${want.size} channel(s) joined`);
   };

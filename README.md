@@ -126,12 +126,33 @@ The *Network* page (and the health dot in the header) checks each part of the sy
 
 Video files travel via WebTorrent. The chains carry only the infohash, title and thumbnail.
 
+## The video folder (hosting uses real files on your disk)
+
+To upload or join, you choose a folder once (*My node → Video folder*). OpenTube manages it like this:
+
+```
+<your folder>/
+  Cooking With Sam/              one readable folder per channel
+    channel.json                 which channel this is: chain ID, owner public key, network, and its videos
+    pasta night.mp4              the real video files, playable in any player
+    .opentube/<infohash>.torrent piece hashes, so reopening the page never re-hashes anything
+```
+
+- **Upload** copies your file into the channel's folder, hashes it once and shares it from there.
+- **Join** creates the channel's folder and downloads each video straight into it. Nothing is held in memory: pieces are written to the file as they arrive, and the file is saved in steps, so a closed tab loses little.
+- **Reopening the page** shares everything in the folder again within a second. Videos you host also play straight from the file on disk.
+- **Browser support:** the folder uses the File System Access API, which Chrome and Edge on a computer provide. Firefox, Safari and phones can still **watch**, but not upload or join. After a restart Chrome may ask you to allow the folder again; a bar at the top of the page has the button. Choose "Allow on every visit" to stop the question.
+- **Headless hosts** (`headless.mjs`, mirror mode) can't click a folder dialog, so they use the browser's private storage with the same layout. `?folder=browser` does the same in a normal browser, for testing.
+- Videos stored inside the browser by older versions keep being shared, and they move into the folder when you choose one.
+
 ## One source of rules
 
 The blockchain rules live in the `<script id="opentube-core">` block of `index.html`. `server.mjs` extracts and runs that exact block, so browser and server nodes always validate identically. If you change anything in `MAIN_GENESIS`, you start a different network.
 
 ## Limitations
 - A browser hosts only while its tab is open. Home nodes keep chains available, but they don't store video files.
+- Streaming MP4 through WebTorrent 1.x stalls in current Chromium, so a video that isn't in your folder may start only once it's fully downloaded (WebM streams fine). Moving to WebTorrent 2's service-worker streaming would fix this.
+- Browsers can't connect to each other on some networks (mobile data, strict NATs) because there's no TURN relay yet.
 - Proof of work on a small network is weak: someone with much more CPU than everyone else could rewrite main-chain history. Difficulty is fixed in the genesis block and doesn't adjust.
 - Browsers limit storage per site, typically to a share of free disk.
 - Sync gossips every chain to every peer, which is fine for thousands of channels but needs per-chain rooms to go much further.
