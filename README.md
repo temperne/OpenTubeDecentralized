@@ -44,10 +44,10 @@ Browsers host videos only while their tabs are open. To keep your joined channel
 
 ```sh
 npm install && npx playwright install --with-deps chromium   # once
-node headless.mjs https://your-site.example/ <your user ID>
+node headless.mjs https://your-site.example/ <your user ID> <video folder>
 ```
 
-It mirrors you: your browser publishes a signed list of the channels you've joined (latest version only, stored by home nodes), and the headless page follows it. When you join a channel it joins and starts hosting; when you leave, it leaves and deletes those videos. It never needs your private key. Data lives in a persistent browser profile (`PROFILE_DIR`, default `./browser-profile`), and `CAP_GB` sets the storage limit per channel. It logs a status line every 30 seconds and restarts the page if it crashes. Any VPS, home PC or Raspberry Pi works. Cloudflare can't keep a browser running, so on a Cloudflare deployment the Worker handles chains, tracker and rankings, and headless hosts handle video.
+It mirrors you: your browser publishes a signed list of the channels you've joined (latest version only, stored by home nodes), and the headless page follows it. When you join a channel it joins and starts hosting; when you leave, it leaves and deletes those videos. It never needs your private key. Videos go into the `<video folder>` you give it (or `VIDEO_DIR`, default `./videos`), as real files in the same channel-folder layout a browser uses (see *The video folder* below). Chains and settings live in a persistent browser profile (`PROFILE_DIR`, default `./browser-profile`), and `CAP_GB` sets the storage limit per channel. It logs a status line every 30 seconds and restarts the page if it crashes. Any VPS, home PC or Raspberry Pi works. Cloudflare can't keep a browser running, so on a Cloudflare deployment the Worker handles chains, tracker and rankings, and headless hosts handle video.
 
 Note: the joined-channel list is public, so anyone with your user ID can see which channels you host.
 
@@ -137,7 +137,9 @@ The *Network* page (and the health dot in the header) checks each part of the sy
 - **Subscribe:** your node keeps that channel's chain in sync and shows its videos in your feed. Videos download only when you watch them.
 - **Join:** subscribe **and** host. Every new video the channel posts downloads automatically and is shared with other viewers. Each joined channel has a storage limit (default 5 GB, oldest evicted first).
 
-Video files travel via WebTorrent. The chains carry only the infohash, title and thumbnail.
+Video files travel via WebTorrent (v3). The chains carry only the infohash, title and thumbnail.
+
+**Playback while downloading:** a small service worker (`sw.js`, served next to the page) answers the video player's range requests from the torrent, so videos start within seconds and can be seeked, MP4 included. It needs https or localhost; elsewhere a video plays once it's fully downloaded. Videos you host play straight from the file in your folder. Watch-only copies are kept in the browser's private storage while you watch and deleted when you leave the page.
 
 ## The video folder (hosting uses real files on your disk)
 
@@ -155,7 +157,7 @@ To upload or join, you choose a folder once (*My node → Video folder*). OpenTu
 - **Join** creates the channel's folder and downloads each video straight into it. Nothing is held in memory: pieces are written to the file as they arrive, and the file is saved in steps, so a closed tab loses little.
 - **Reopening the page** shares everything in the folder again within a second. Videos you host also play straight from the file on disk.
 - **Browser support:** the folder uses the File System Access API, which Chrome and Edge on a computer provide. Firefox, Safari and phones can still **watch**, but not upload or join. After a restart Chrome may ask you to allow the folder again; a bar at the top of the page has the button. Choose "Allow on every visit" to stop the question.
-- **Headless hosts** (`headless.mjs`, mirror mode) can't click a folder dialog, so they use the browser's private storage with the same layout. `?folder=browser` does the same in a normal browser, for testing.
+- **Headless hosts** (`headless.mjs`) use the folder given on the command line: Node does the file access and hands it to the page, so the files are real files on that machine. `?folder=browser` uses the browser's private storage with the same layout, for testing.
 - Videos stored inside the browser by older versions keep being shared, and they move into the folder when you choose one.
 
 ## One source of rules
@@ -164,7 +166,6 @@ The blockchain rules live in the `<script id="opentube-core">` block of `index.h
 
 ## Limitations
 - A browser hosts only while its tab is open. Home nodes keep chains available, but they don't store video files.
-- Streaming MP4 through WebTorrent 1.x stalls in current Chromium, so a video that isn't in your folder may start only once it's fully downloaded (WebM streams fine). Moving to WebTorrent 2's service-worker streaming would fix this.
 - Browsers can't connect to each other on some networks (mobile data, strict NATs) because there's no TURN relay yet.
 - Proof of work on a small network is weak: someone with much more CPU than everyone else could rewrite main-chain history. Difficulty is fixed in the genesis block and doesn't adjust.
 - Browsers limit storage per site, typically to a share of free disk.

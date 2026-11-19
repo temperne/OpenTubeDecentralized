@@ -964,8 +964,8 @@ globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, canon, sha256hex, zeroBits, is
 })();
 </script>
 
-<script src="https://cdn.jsdelivr.net/npm/webtorrent@1.9.7/webtorrent.min.js"></script>
 <script type="module">
+import WebTorrent from 'https://cdn.jsdelivr.net/npm/webtorrent@3.0.21/dist/webtorrent.min.js';
 // ===================================================================== BROWSER NODE
 const { LIMITS, isHex, isKey, b64u, preimage, newIdentity, signer: makeSigner, createEngine } = globalThis.OpenTubeCore;
 
@@ -1223,6 +1223,17 @@ const MIRROR = isKey(params.get('mirror')) ? params.get('mirror') : null;  // se
 // ---------------------------------------------------------------- video transport (WebTorrent)
 const wt = new WebTorrent();
 wt.on('error', (e) => console.warn('webtorrent', e));
+// Streaming: a service worker (sw.js) answers the video player's range requests from the torrent, so a video plays
+// while it downloads and can be seeked. Needs https or localhost; without it, videos play once fully downloaded.
+const streaming = (async () => {
+  if (!('serviceWorker' in navigator) || !isSecureContext) return false;
+  try {
+    await navigator.serviceWorker.register('sw.js', { scope: './' });
+    const reg = await Promise.race([navigator.serviceWorker.ready, new Promise((_, rej) => setTimeout(() => rej(new Error('service worker did not start')), 10000))]);
+    wt.createServer({ controller: reg });
+    return true;
+  } catch (e) { console.warn('video streaming unavailable:', e.message); return false; }
+})();
 const magnet = (infohash, name) => 'magnet:?xt=urn:btih:' + infohash + (name ? '&dn=' + encodeURIComponent(name) : '') + TRACKERS.map(t => '&tr=' + encodeURIComponent(t)).join('');
 const hosting = new Map();  // infohash -> { chain, size }
 const getTorrent = (ih) => wt.torrents.find(t => t.infoHash === ih) || null;
@@ -1331,10 +1342,16 @@ async function scanFolder() {
     }
   }
 }
-// The channel's folder, created on first use with a readable name.
-async function channelFolder(id) {
-  let ch = folder.channels.get(id);
-  if (ch) return ch;
+// The channel's folder, created on first use with a readable name. Concurrent callers share one creation.
+const creatingFolder = new Map();
+function channelFolder(id) {
+  const ch = folder.channels.get(id);
+  if (ch) return Promise.resolve(ch);
+  if (!creatingFolder.has(id)) creatingFolder.set(id, makeChannelFolder(id).finally(() => creatingFolder.delete(id)));
+  return creatingFolder.get(id);
+}
+async function makeChannelFolder(id) {
+  let ch;
   const base = cleanName(channelTitle(id), 'Channel');
   let name = base;
   if (await hasEntry(folder.root, name)) name = `${base} (${id.slice(0, 8)})`;
@@ -1390,7 +1407,7 @@ async function shareFromFolder(chainId, ih) {
   }
   if (!entry.complete) return downloadToFolder(chainId, { infohash: ih, file: entry.name, size: entry.size, title: entry.title });
   const t = getTorrent(ih);
-  if (t) t.destroy();  // a watch-only copy in memory: replace it with the file
+  if (t) t.destroy({ destroyStore: true });  // a watch-only temporary copy: replace it with the file
   try { await seedFile(chainId, ih, fh, entry, ch); } catch (e) { console.warn('sharing', entry.file, e); }
 }
 // Join = host: download a video straight into the channel's folder.
@@ -1404,7 +1421,7 @@ async function downloadToFolder(chainId, v) {
     if (!entry) { entry = ch.meta.videos[ih] = { file: await uniqueFileName(ch, v.file), name: v.file, title: v.title, size: v.size, complete: false, ts: Date.now() }; saveMeta(ch); }
     const fh = await ch.dir.getFileHandle(entry.file, { create: true });
     const old = getTorrent(ih);
-    if (old) old.destroy();
+    if (old) old.destroy({ destroyStore: true });
     const ref = {};
     const tb = await readTorrentFile(ch, ih);
     const t = wt.add(tb || magnet(ih, v.file), { store: fileStore(fh, false, ref), announce: TRACKERS });
@@ -1504,7 +1521,8 @@ async function folderReady() {
 }
 async function initFolder() {
   try {
-    if (MIRROR || params.get('folder') === 'browser') { folder.root = await navigator.storage.getDirectory(); folder.kind = 'browser'; }
+    if (window.__openTubeFolder) { folder.root = window.__openTubeFolder; folder.kind = 'disk'; }  // headless.mjs: a real folder on the server
+    else if (MIRROR || params.get('folder') === 'browser') { folder.root = await navigator.storage.getDirectory(); folder.kind = 'browser'; }
     else if (!FOLDER_API) { folder.state = 'unsupported'; await seedLegacy(); return scheduleRender(); }
     else {
       folder.root = await kv.get('videoDir'); folder.kind = 'disk';
@@ -1905,7 +1923,7 @@ views.watch = {
     if (!watchState.everPeers && !t?.done && Date.now() - watchState.started > 20000) E.logEvent('video', `gave up on “${watchState.title}”: no online peer had it (waited ${Math.round((Date.now() - watchState.started) / 1000)} s)`);
     const ws = watchState; watchState = null;
     if (ws.url) setTimeout(() => URL.revokeObjectURL(ws.url), 1000);
-    if (t && !hosting.has(ws.infohash) && !fetching.has(ws.infohash)) t.destroy();
+    if (t && !hosting.has(ws.infohash) && !fetching.has(ws.infohash)) t.destroy({ destroyStore: true });  // drop the temporary copy
     if (subs[ws.chain] === 'join') { const v = derive(ws.chain)?.videos.find(x => x.payload.infohash === ws.infohash); if (v) hostVideo(ws.chain, v.payload); }
   },
   render() {
@@ -1947,21 +1965,12 @@ views.watch = {
     const t = getTorrent(v.infohash) || wt.add(magnet(v.infohash, v.file), { announce: TRACKERS });
     watchState = { infohash: v.infohash, chain: id, started: Date.now(), title: v.title, everPeers: false };
     const ws = watchState;
-    const play = () => {
+    const play = async () => {
       const f = t.files.find(x => /\.(mp4|m4v|webm|mkv|mov|ogv)$/i.test(x.name)) || t.files[0];
-      // Streaming MP4 through WebTorrent 1.x stalls in current Chromium (WebM is fine). If the player hasn't started
-      // once data is flowing, play the video when the download completes instead.
-      let fellBack = false;
-      const fallback = () => {
-        if (fellBack || watchState !== ws) return; fellBack = true;
-        const go = () => f.getBlobURL((e2, url) => { if (!e2 && watchState === ws) { ws.url = url; player.src = url; } });
-        t.done ? go() : t.once('done', go);
-      };
-      try { f.renderTo(player, { autoplay: true, controls: true }, (err) => { if (err) fallback(); }); } catch { fallback(); }
-      const check = setInterval(() => {
-        if (watchState !== ws || player.readyState >= 2) return clearInterval(check);
-        if (t.done || t.downloaded > 8 * 1024 ** 2) { clearInterval(check); setTimeout(() => { if (player.readyState < 2) fallback(); }, 4000); }
-      }, 1000);
+      if (await streaming) { if (watchState === ws) { f.streamTo(player); player.play().catch(() => {}); } return; }
+      // No service worker (e.g. plain http): play once the whole file is here.
+      const go = async () => { const b = await f.blob(); if (watchState === ws) { ws.url = player.src = URL.createObjectURL(b); player.play().catch(() => {}); } };
+      t.done ? go() : t.once('done', go);
     };
     const adPanel = h('div', { class: 'panel', style: 'margin:8px 0;display:none' });
     const alive = () => watchState?.infohash === v.infohash && route.video === video;
@@ -2330,7 +2339,7 @@ function runAd(ad, { player, panel, video, creator, alive }) {
     // 1. The ad file itself (it's small); we need its bytes to prove we're playing it.
     const tor = getTorrent(t.infohash) || wt.add(magnet(t.infohash, p.file), { announce: TRACKERS });
     const blob = await new Promise((res) => {
-      const go = () => { const f = tor.files[0]; const done = () => f.getBlob((e, b) => res(e ? null : b)); tor.done ? done() : tor.once('done', done); };
+      const go = () => { const f = tor.files[0]; const done = () => f.blob().then(res, () => res(null)); tor.done ? done() : tor.once('done', done); };
       tor.ready ? go() : tor.once('ready', go);
       setTimeout(() => res(null), 20000);
     });

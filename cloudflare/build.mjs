@@ -14,4 +14,5 @@ if (!core) throw new Error('index.html has no opentube-core script');
 fs.writeFileSync(path.join(here, 'core.gen.mjs'), '// GENERATED from index.html by build.mjs. Do not edit.\n' + core + '\nexport default globalThis.OpenTubeCore;\n');
 fs.mkdirSync(path.join(here, 'dist'), { recursive: true });
 fs.writeFileSync(path.join(here, 'dist', 'index.html'), html);
-console.log('opentube: built cloudflare/core.gen.mjs and cloudflare/dist/index.html');
+fs.copyFileSync(path.join(here, '..', 'sw.js'), path.join(here, 'dist', 'sw.js'));  // streaming service worker
+console.log('opentube: built cloudflare/core.gen.mjs, cloudflare/dist/index.html and cloudflare/dist/sw.js');
