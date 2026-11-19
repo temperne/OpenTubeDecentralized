@@ -136,8 +136,43 @@ const tracker = core.createTracker();
 const liveHub = core.createLiveHub({
   ownerOf: (c) => engine.directory.get(c)?.genesis.author || engine.chains.get(c)?.owner || null,
   signerOf: (c, s) => engine.chains.has(c) ? engine.derive(c)?.streams.find(b => b.payload.stream === s)?.payload.relay || null : null,
-  isJoined: (k, c) => !!engine.memberships.get(k)?.joined?.includes(c)
+  isJoined: (k, c) => !!engine.memberships.get(k)?.joined?.includes(c),
+  ingest: { ticket: (t) => { const key = crypto.randomBytes(18).toString('base64url'); ingestTickets.set(key, { ...t, exp: Date.now() + 12 * 3600000 }); return key; } }
 });
+
+// ---- OBS ingest: OBS (Recording → Custom Output (FFmpeg) → Output to URL, WebM) sends the stream to
+// http(s)://this-node/ingest/<stream key>. The owner's browser got that key from the live hub and named this node as
+// the stream's `relay` in its signed live block, so this node cuts the bytes into ~1 s chunks, signs them with its
+// own key and feeds them to the hub like any broadcaster's segments. Members (and the owner's browser) save them.
+const ingestTickets = new Map();   // stream key -> { stream, chain, mime, exp }
+function ingest(req, res, key) {
+  const t = ingestTickets.get(key);
+  if (!t || t.exp < Date.now()) { res.writeHead(403); return res.end('unknown or expired stream key'); }
+  ingestTickets.delete(key);   // one stream per key
+  const src = liveHub.local(t.stream, t.chain, t.mime);
+  log(`live: OBS stream started (${t.stream.slice(0, 8)}…)`);
+  let n = 0, o = 0, parts = [], size = 0, last = Date.now(), queue = Promise.resolve(), done = false;
+  const flush = async () => {
+    if (!size) return;
+    const bytes = Buffer.concat(parts); parts = []; size = 0;
+    const g = { stream: t.stream, n: n++, o, h: crypto.createHash('sha256').update(bytes).digest('hex') };
+    o += bytes.length;
+    g.sig = await signer.sign(core.liveSegPreimage(g));
+    g.d = bytes.toString('base64');
+    src.seg(g);
+  };
+  const tick = setInterval(() => { if (Date.now() - last >= 1000) { last = Date.now(); queue = queue.then(flush); } }, 250);
+  req.on('data', (chunk) => {
+    parts.push(chunk); size += chunk.length;
+    if (size >= 512 * 1024) { last = Date.now(); queue = queue.then(flush); }
+  });
+  const end = () => {
+    if (done) return; done = true; clearInterval(tick);
+    queue.then(flush).then(() => setTimeout(() => { src.end(); log(`live: OBS stream ended (${(o / 1e6).toFixed(1)} MB)`); }, 2000));
+    if (!res.headersSent) { res.writeHead(200); res.end('ok'); }
+  };
+  req.on('end', end); req.on('close', end); req.on('error', end);
+}
 
 // ---- minimal WebSocket server (RFC 6455: text frames, ping/pong, close), so no dependencies
 const MAX_MSG = 16 * 1024 * 1024;
@@ -217,9 +252,10 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-cache' });
     return res.end(fs.readFileSync(path.join(DIR, 'sw.js')));
   }
+  if (url.pathname.startsWith('/ingest/') && (req.method === 'POST' || req.method === 'PUT')) return ingest(req, res, url.pathname.slice(8));
   if (url.pathname === '/status') {
     res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
-    return res.end(JSON.stringify({ network: engine.MAIN_ID, height: engine.main.best.height, tip: engine.main.best.hash, registered: engine.directory.size, pending: engine.mempool.size, chains: engine.chains.size, peers: peers.size, mining: !!engine.miner, node: signer.pub, now: Date.now(), ranker: RANKER_ID, tracker: tracker.stats(), live: liveHub.stats(), memberships: engine.memberships.size }));
+    return res.end(JSON.stringify({ network: engine.MAIN_ID, height: engine.main.best.height, tip: engine.main.best.hash, registered: engine.directory.size, pending: engine.mempool.size, chains: engine.chains.size, peers: peers.size, mining: !!engine.miner, node: signer.pub, now: Date.now(), ranker: RANKER_ID, tracker: tracker.stats(), live: liveHub.stats(), ingest: true, memberships: engine.memberships.size }));
   }
   res.writeHead(404); res.end('not found');
 });

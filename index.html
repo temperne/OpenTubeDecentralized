@@ -573,7 +573,7 @@ function createLiveHub(o) {   // o: { ownerOf(chain) -> key|null, signerOf(chain
   const streams = new Map();   // stream -> { chain, src, mime, seg0, segs, nodes: Map(sid -> node) }
   const out = (sid, m) => { try { sockets.get(sid)?.send(JSON.stringify(m)); } catch {} };
   const hex = (n) => [...crypto.getRandomValues(new Uint8Array(n))].map(b => b.toString(16).padStart(2, '0')).join('');
-  const member = (sid, chain) => [...(sockets.get(sid)?.keys || [])].some(k => o.isJoined(k, chain));
+  const member = (sid, chain) => [...(sockets.get(sid)?.keys || [])].some(k => k === o.ownerOf(chain) || o.isJoined(k, chain));
   function counts(st) {
     let members = 0, rtc = 0, seg = 0;
     for (const [sid, n] of st.nodes) if (sid !== st.src) { if (n.member) members++; if (n.mode === 'rtc') rtc++; else if (n.mode === 'seg') seg++; }
@@ -619,7 +619,21 @@ function createLiveHub(o) {   // o: { ownerOf(chain) -> key|null, signerOf(chain
     for (const c of orphans) { const x = st.nodes.get(c); if (x) { x.parent = null; out(c, { t: 'unparent', stream: st.id, peer: sid }); assign(st, c); } }
     report(st);
   }
+  function relaySeg(st, g) {
+    g.at = Date.now();
+    if (g.n === 0) st.seg0 = g;
+    st.segs.push(g);
+    while (st.segs.length && st.segs[0].at < g.at - LIVE.keepMs) st.segs.shift();
+    for (const [id, n] of st.nodes) if (id !== st.src && (n.mode === 'seg' || n.member)) out(id, { t: 'seg', seg: g });
+  }
   return {
+    // A stream whose segments come from this node itself (OBS ingest on server.mjs). Viewers get segments.
+    local(stream, chain, mime) {
+      const src = 'local:' + stream;
+      const st = { id: stream, chain, src, mime, seg0: null, segs: [], nodes: new Map([[src, { parent: null, children: new Set(), slots: 0, member: true, depth: 0, mode: 'src' }]]) };
+      streams.set(stream, st);
+      return { seg: (g) => streams.get(stream) === st && relaySeg(st, g), end: () => streams.get(stream) === st && leave(st, src) };
+    },
     attach(sid, send) { const nonce = hex(16); sockets.set(sid, { send, nonce, keys: new Set(), watching: new Set() }); out(sid, { t: 'hi', nonce }); },
     detach(sid) {
       const s = sockets.get(sid); if (!s) return;
@@ -653,16 +667,18 @@ function createLiveHub(o) {   // o: { ownerOf(chain) -> key|null, signerOf(chain
         streams.set(m.stream, fresh); s.watching.add(m.stream);
         return out(sid, { t: 'broadcasting', stream: m.stream });
       }
+      if (m.t === 'ingest') {   // the owner asks for a stream key so OBS can send this stream to the node
+        if (!o.ingest) return out(sid, { t: 'error', stream: m.stream, error: 'This home node can’t receive OBS streams (only server.mjs can).' });
+        if (!isHex(m.stream, 64) || !isHex(m.chain, 64) || !isStr(m.mime, 80) || streams.has(m.stream)) return;
+        const owner = o.ownerOf(m.chain);
+        if (!owner || !s.keys.has(owner)) return out(sid, { t: 'error', stream: m.stream, error: 'not the owner of this channel' });
+        return out(sid, { t: 'ingestkey', stream: m.stream, key: o.ingest.ticket({ stream: m.stream, chain: m.chain, mime: m.mime }), path: '/ingest/' });
+      }
       if (!st) return m.t === 'watch' ? out(sid, { t: 'nostream', stream: m.stream }) : undefined;
       if (m.t === 'seg') {
         const g = m.seg;
         if (sid !== st.src || !g || g.stream !== st.id || !Number.isSafeInteger(g.n) || !Number.isSafeInteger(g.o) || typeof g.d !== 'string' || g.d.length > LIVE.maxSeg * 1.4) return;
-        g.at = Date.now();
-        if (g.n === 0) st.seg0 = g;
-        st.segs.push(g);
-        while (st.segs.length && st.segs[0].at < g.at - LIVE.keepMs) st.segs.shift();
-        for (const [id, n] of st.nodes) if (id !== sid && (n.mode === 'seg' || n.member)) out(id, { t: 'seg', seg: g });
-        return;
+        return relaySeg(st, g);
       }
       if (m.t === 'watch') {
         if (st.nodes.has(sid) || s.watching.size >= 20) return;
@@ -1875,6 +1891,31 @@ async function stopLive(chainId) {
   for (const t of sess.media.getTracks()) t.stop();
   scheduleRender();
 }
+// OBS with a stream key (server.mjs home nodes): OBS sends WebM to the node, which signs and relays it. This browser
+// records it (the owner gets every segment) so the publish-or-discard step works the same.
+const OBS_MIME = 'video/webm;codecs="vp8,vorbis"';   // Vorbis, not Opus: browsers can't stream ffmpeg's Opus-in-WebM interleaving
+async function startObsLive(chainId, title) {
+  if (!canHost()) throw new Error('Going live needs a video folder (the stream is recorded there).');
+  if (!(await liveNet.connect())) throw new Error('No home node to stream through.');
+  if (!diag.home?.node) { await probeHome(); if (!diag.home?.node) throw new Error('Couldn’t reach the home node.'); }
+  const d = derive(chainId), signer = signerFor(d.owner);
+  await liveNet.auth(signer);
+  const stream = toHex(crypto.getRandomValues(new Uint8Array(32)));
+  const k = await new Promise((res, rej) => {
+    const timer = setTimeout(() => rej(new Error('The home node didn’t answer.')), 10000);
+    liveNet.on(stream, (m) => { if (m.t === 'ingestkey') { clearTimeout(timer); res(m); } else if (m.t === 'error') { clearTimeout(timer); rej(new Error(m.error)); } });
+    liveNet.send({ t: 'ingest', stream, chain: chainId, mime: OBS_MIME });
+  }).finally(() => liveNet.off(stream));
+  const ch = await channelFolder(chainId);
+  const file = await uniqueFileName(ch, cleanName(title, 'Live') + '.webm');
+  (ch.meta.lives ||= {})[stream] = { file, title, own: true, started: Date.now(), obs: true }; saveMeta(ch);
+  const block = await append(chainId, { type: 'live', title, stream, mime: OBS_MIME, relay: diag.home.node });
+  const sess = { chainId, stream, title, obs: true, url: new URL(k.path + k.key, location.href).href, started: Date.now(), ended: false, block, kids: new Map(), o: 0, viewers: null, bytes: 0, lastSeg: 0 };
+  broadcasts.set(chainId, sess);
+  sess.view = await joinLive(chainId, block, null);
+  return sess;
+}
+
 // The streamer's choice when it's over: publish the recording as a video, or discard it.
 async function finishLive(chainId, stream, publish, fields = {}) {
   const ch = await channelFolder(chainId), rec = ch.meta.lives?.[stream];
@@ -1931,7 +1972,7 @@ async function onLiveMsg(sess, m) {
       if (m.member && canHost() && !sess.capture) await openCapture(sess);
       return;
     case 'nostream':   // not started yet, or already over: try again for a little while
-      if (++sess.tries < 10 && !sess.ended) setTimeout(() => viewing.get(sess.stream) === sess && sendWatch(sess), 3000);
+      if ((++sess.tries < 10 || broadcasts.get(sess.chainId)?.stream === sess.stream) && !sess.ended) setTimeout(() => viewing.get(sess.stream) === sess && sendWatch(sess), 3000);   // the owner waits for OBS as long as it takes
       else { sess.ended = true; sess.ui?.ended('This stream isn’t live right now.'); }
       return;
     case 'parent':
@@ -1980,12 +2021,15 @@ async function onLiveMsg(sess, m) {
       if (!ok) { if (params.get('debug')) console.log('live seg bad signature', g.n, sess.keys); return; }
       if (sess.capture) sess.capture.store.put(g.o, u8, () => {});
       if (g.n === 0) { const c = clusterAt(u8); sess.init = c > 0 ? u8.slice(0, c) : null; }
+      const own = broadcasts.get(sess.chainId);
+      if (own?.obs && own.stream === sess.stream) { own.bytes = g.o + u8.length; own.lastSeg = Date.now(); own.preview?.(g, u8); }
       sess.ui?.segment(g, u8);
       return;
     }
     case 'ended':
       sess.ended = true; sess.ui?.ended('The stream has ended.');
       if (sess.capture) await sess.capture.store.finish().catch(() => {});
+      { const own = broadcasts.get(sess.chainId); if (own?.obs && own.stream === sess.stream) { own.ended = true; scheduleRender(); } }
       liveNet.off(sess.stream); viewing.delete(sess.stream);
       return;
     case 'disconnected': sess.ui?.status('Lost the connection to the home node; reconnecting…'); return;
@@ -2364,7 +2408,7 @@ function liveStudio(chainId) {
     clearInterval(timer);
     const sess = broadcasts.get(chainId), ch = folder.channels.get(chainId);
     const pending = Object.entries(ch?.meta.lives || {}).find(([s, r]) => r.own && !(sess && !sess.ended && sess.stream === s));
-    if (sess && !sess.ended) return box.replaceChildren(...onAir(sess));
+    if (sess && !sess.ended) return box.replaceChildren(...(sess.obs ? obsAir(sess) : onAir(sess)));
     if (pending) return box.replaceChildren(...decide(pending[0], pending[1], sess));
     box.replaceChildren(...setup());
   };
@@ -2411,10 +2455,41 @@ function liveStudio(chainId) {
       catch (e) { status.textContent = e.message; go.disabled = false; }
     };
     fill().catch(() => {});
+    const obsTitle = h('input', { type: 'text', placeholder: 'Stream title', maxLength: LIMITS.title });
+    const obsStatus = h('span', { class: 'sub' });
+    const obsGo = h('button', { onclick: async () => {
+      if (!obsTitle.value.trim()) return toast('Give the stream a title');
+      obsGo.disabled = true; obsStatus.textContent = 'Getting a stream key…';
+      try { await startObsLive(chainId, obsTitle.value.trim()); stopPreview(); ui(); } catch (e) { obsStatus.textContent = e.message; obsGo.disabled = false; }
+    } }, 'Get a stream key');
+    if (!diag.home && !box.probed) { box.probed = true; probeHome().then(() => { if (diag.home?.ingest && !broadcasts.get(chainId) && !title.value && !obsTitle.value) ui(); }); }
+    const obs = diag.home?.ingest ? h('details', { style: 'margin-top:14px' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Or send the stream from OBS with a stream key'),
+      h('p', { class: 'sub' }, 'OBS sends the video straight to this site’s server, which relays it. Viewers watch a few seconds behind. Your browser records it, so keep this page open.'),
+      h('label', {}, 'Title'), obsTitle, h('div', { class: 'row', style: 'margin-top:8px' }, obsGo, obsStatus)) : null;
     return [head,
       h('p', { class: 'sub', style: 'margin-top:0' }, 'Using OBS Studio? Click “Start Virtual Camera” in OBS, then pick “OBS Virtual Camera” below. Your stream is recorded into this channel’s folder; when you end it you choose whether to publish the recording.'),
       ask, h('div', { class: 'split', style: 'margin-top:8px' }, h('div', {}, h('label', {}, 'Video'), source), h('div', {}, h('label', {}, 'Audio'), mic)),
-      h('label', {}, 'Title'), title, preview, h('div', { class: 'row', style: 'margin-top:10px' }, go, status)];
+      h('label', {}, 'Title'), title, preview, h('div', { class: 'row', style: 'margin-top:10px' }, go, status), obs];
+  }
+  function obsAir(sess) {
+    const video = h('video', { muted: true, playsInline: true, autoplay: true, controls: true, style: 'width:100%;max-width:480px;border-radius:8px;background:#000' });
+    let player = null;
+    sess.preview = (g, u8) => { if (!player) player = segmentPlayer(video, OBS_MIME, viewing.get(sess.stream)?.init); player?.push(g, u8); };
+    const state = h('div', { class: 'sub' });
+    const tick = () => {
+      if (sess.ended) return ui();
+      const on = Date.now() - sess.lastSeg < 5000;
+      state.textContent = (on ? `🔴 Receiving from OBS · recorded ${fmtBytes(sess.bytes)}` : sess.bytes ? 'OBS paused or disconnected…' : 'Waiting for OBS to start…') + (sess.viewers ? ` · ${sess.viewers.viewers} watching` : '');
+    };
+    tick(); timer = setInterval(() => { if (!box.isConnected) return clearInterval(timer); tick(); }, 1000);
+    const row = (label, value) => h('div', { class: 'row', style: 'gap:8px' }, h('span', { style: 'min-width:150px' }, label), h('code', { class: 'mono', style: 'flex:1;word-break:break-all' }, value));
+    return [h('h3', { style: 'margin-top:0' }, h('span', { class: 'badge live' }, 'LIVE'), ' ', sess.title, h('span', { class: 'sub' }, ' · from OBS')),
+      h('p', { class: 'sub', style: 'margin-top:0' }, 'In OBS: Settings → Output → Output Mode “Advanced” → Recording tab, then set:'),
+      row('Type', 'Custom Output (FFmpeg)'), row('FFmpeg Output Type', 'Output to URL'),
+      h('div', { class: 'row', style: 'gap:8px' }, h('span', { style: 'min-width:150px' }, 'File path or URL'), h('code', { class: 'mono', style: 'flex:1;word-break:break-all' }, sess.url), h('button', { class: 'small', onclick: () => copyText(sess.url, 'Stream URL') }, 'Copy')),
+      row('Container Format', 'webm'), row('Video Encoder', 'libvpx (VP8), 2500 Kbps, keyframe interval 60 frames'), row('Audio Encoder', 'libvorbis, 128 Kbps (not Opus)'),
+      h('p', { class: 'sub' }, 'Then click “Start Recording” in OBS. Stop recording to end the stream. The URL works once and is secret: anyone with it can stream to your channel until you start.'),
+      video, state];
   }
   function onAir(sess) {
     const preview = sess.preview && sess.preview.srcObject === sess.media ? sess.preview : h('video', { muted: true, playsInline: true, autoplay: true, style: 'width:100%;max-width:480px;border-radius:8px;background:#000' });
@@ -2484,7 +2559,7 @@ views.livewatch = {
     const ui = {
       attach(sess) { ui.sess = sess; if (sess.media) ui.media(sess.media); else if (sess.mode === 'seg') ui.segmentMode(); },
       media(ms) { segp = null; player.srcObject = ms; player.play().catch(() => {}); how = ui.sess?.parent && ui.sess.parent === ui.sess.parentHint ? '' : ''; status.textContent = 'Live · by WebRTC (about a second behind)'; },
-      segmentMode() { player.srcObject = null; segp = segmentPlayer(player, lb.payload.mime, ui.sess?.init); status.textContent = segp ? 'Live · by segments through the home node (a few seconds behind)' : 'This browser can’t play this stream format.'; },
+      segmentMode() { if (segp) return; player.srcObject = null; segp = segmentPlayer(player, lb.payload.mime, ui.sess?.init); status.textContent = segp ? 'Live · by segments through the home node (a few seconds behind)' : 'This browser can’t play this stream format.'; },
       segment(g, u8) { if (ui.sess?.mode === 'seg') segp?.push(g, u8); },
       status(t) { status.textContent = t; },
       ended(t) { status.textContent = t + (d.recordings.get(lb.payload.stream) ? '' : ' If the streamer publishes the recording, it appears with the channel’s videos.'); }
