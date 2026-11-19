@@ -597,6 +597,7 @@ async function createEngine(o) {
     for (const id of d.keys()) mempool.delete(id);
     for (const [h, t] of txpool) if (t.seq <= (E.ledger.seq.get(t.from) || 0)) txpool.delete(h);
     if (o.trackAll) for (const id of d.keys()) if (!chains.has(id)) requestChain(openChain(id));
+    if (waitingRankings?.size) retryWaitingRankings();
   }
   E.ledger = new Ledger();
   function onMainBlock(b) {
@@ -753,9 +754,20 @@ async function createEngine(o) {
       if (any) { maybeMine(); changed(); }
     }
   }
+  // Rankings can arrive before the main-chain blocks that register their list. Those wait here and are
+  // retried whenever the directory changes, instead of being thrown away.
+  const waitingRankings = new Map();
+  async function retryWaitingRankings() {
+    for (const [list, r] of waitingRankings) if (genesisFor(list)) { waitingRankings.delete(list); await acceptRanking(r, false); }
+  }
   async function acceptRanking(r, relay) {
     const cur = E.rankings.get(r?.list);
     if (cur && cur.at >= r.at) return false;
+    if (r && isHex(r.list, 64) && !genesisFor(r.list)) {
+      const w = waitingRankings.get(r.list);
+      if ((!w || w.at < r.at) && waitingRankings.size < 100) waitingRankings.set(r.list, r);
+      return false;
+    }
     if (!validRanking(r, genesisFor(r.list)) || !(await verify(r.author, rankingPreimage(r), r.sig))) return false;
     E.rankings.set(r.list, r);
     o.onRanking?.(r);
