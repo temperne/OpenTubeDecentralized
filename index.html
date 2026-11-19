@@ -749,7 +749,7 @@ function createLiveHub(o) {   // o: { ownerOf(chain) -> key|null, signerOf(chain
         if (st && st.chain !== m.chain) return;
         if (st && st.src !== sid) leave(st, st.src);   // a reconnecting broadcaster replaces the old connection
         const fresh = { id: m.stream, chain: m.chain, src: sid, mime: m.mime, seg0: st?.seg0 || null, segs: st?.segs || [], nodes: new Map() };
-        fresh.nodes.set(sid, { parent: null, children: new Set(), slots: Math.min(Math.max(m.slots | 0, 0), LIVE.maxSlots) || LIVE.srcSlots, member: true, depth: 0, mode: 'src' });
+        fresh.nodes.set(sid, { parent: null, children: new Set(), slots: m.rtc === false ? 0 : Math.min(Math.max(m.slots | 0, 0), LIVE.maxSlots) || LIVE.srcSlots, member: true, depth: 0, mode: 'src' });
         streams.set(m.stream, fresh); s.watching.add(m.stream);
         return out(sid, { t: 'broadcasting', stream: m.stream });
       }
@@ -2043,6 +2043,23 @@ async function startObsLive(chainId, title) {
   return sess;
 }
 
+// OBS "Start Streaming" through one of your computers (opentube.mjs): the live block names that computer's node key
+// as the stream's relay; the computer waits for OBS on rtmp://localhost/live and relays it to the site's hub.
+async function startNodeObsLive(chainId, title, nodeKey) {
+  if (!canHost()) throw new Error('Going live needs a video folder (the stream is recorded there).');
+  if (!(await liveNet.connect())) throw new Error('No home node to stream through.');
+  const d = derive(chainId); await liveNet.auth(signerFor(d.owner));
+  const stream = toHex(crypto.getRandomValues(new Uint8Array(32)));
+  const ch = await channelFolder(chainId);
+  const file = await uniqueFileName(ch, cleanName(title, 'Live') + '.mp4');
+  (ch.meta.lives ||= {})[stream] = { file, title, own: true, started: Date.now(), obs: true }; saveMeta(ch);
+  const block = await append(chainId, { type: 'live', title, stream, mime: MP4_MIME, relay: nodeKey });
+  const sess = { chainId, stream, title, obs: true, rtmp: true, node: nodeKey, mime: MP4_MIME, started: Date.now(), ended: false, block, kids: new Map(), o: 0, viewers: null, bytes: 0, lastSeg: 0 };
+  broadcasts.set(chainId, sess);
+  sess.view = await joinLive(chainId, block, null);
+  return sess;
+}
+
 // The streamer's choice when it's over: publish the recording as a video, or discard it.
 async function finishLive(chainId, stream, publish, fields = {}) {
   const ch = await channelFolder(chainId), rec = ch.meta.lives?.[stream];
@@ -2050,10 +2067,11 @@ async function finishLive(chainId, stream, publish, fields = {}) {
   if (publish) {
     const fh = await ch.dir.getFileHandle(rec.file);
     const file = await fh.getFile();
-    const entry = { file: rec.file, name: rec.file, type: 'video/webm', size: file.size, complete: true, own: true, ts: Date.now() };
+    const type = /\.mp4$/i.test(rec.file) ? 'video/mp4' : 'video/webm';
+    const entry = { file: rec.file, name: rec.file, type, size: file.size, complete: true, own: true, ts: Date.now() };
     const t = await seedFile(chainId, null, fh, entry, ch);
     ch.meta.videos[t.infoHash] = entry;
-    const vb = await append(chainId, { type: 'video', title: (fields.title || rec.title).slice(0, LIMITS.title), desc: (fields.desc || '').slice(0, LIMITS.text), infohash: t.infoHash, file: rec.file.slice(0, 200), size: file.size, mime: 'video/webm', thumb: fields.thumb || '', stream });
+    const vb = await append(chainId, { type: 'video', title: (fields.title || rec.title).slice(0, LIMITS.title), desc: (fields.desc || '').slice(0, LIMITS.text), infohash: t.infoHash, file: rec.file.slice(0, 200), size: file.size, mime: type, thumb: fields.thumb || '', stream });
     try { await payPost(chainId, vb, file.size); } catch (e) { toast(`Recording posted, but not published yet: ${e.message}. Pay from your channel's Videos tab.`); }
     await append(chainId, { type: 'liveend', stream, outcome: 'published' });
   } else {
@@ -2148,7 +2166,7 @@ async function onLiveMsg(sess, m) {
       let ok = false; for (const k of sess.keys) if (await coreVerify(k, liveSegPreimage(g), g.sig)) { ok = true; break; }
       if (!ok) { if (params.get('debug')) console.log('live seg bad signature', g.n, sess.keys); return; }
       if (sess.capture) sess.capture.store.put(g.o, u8, () => {});
-      if (g.n === 0) { const c = clusterAt(u8); sess.init = c > 0 ? u8.slice(0, c) : null; }
+      if (g.n === 0) { const c = clusterAt(u8); sess.init = isMp4(sess.mime) ? u8 : c > 0 ? u8.slice(0, c) : null; }
       const own = broadcasts.get(sess.chainId);
       if (own?.obs && own.stream === sess.stream) { own.bytes = g.o + u8.length; own.lastSeg = Date.now(); own.preview?.(g, u8); }
       sess.ui?.segment(g, u8);
@@ -2169,7 +2187,7 @@ async function openCapture(sess) {
   const ch = await channelFolder(sess.chainId);
   ch.meta.lives ||= {};
   let rec = ch.meta.lives[sess.stream];
-  if (!rec) { rec = ch.meta.lives[sess.stream] = { file: await uniqueFileName(ch, cleanName(sess.title, 'Live') + '.webm'), title: sess.title, own: false, started: Date.now() }; saveMeta(ch); }
+  if (!rec) { rec = ch.meta.lives[sess.stream] = { file: await uniqueFileName(ch, cleanName(sess.title, 'Live') + (isMp4(sess.mime) ? '.mp4' : '.webm')), title: sess.title, own: false, started: Date.now() }; saveMeta(ch); }
   const fh = await ch.dir.getFileHandle(rec.file, { create: true });
   sess.capture = { file: rec.file, store: new (fileStore(fh, false))(1, { length: Number.MAX_SAFE_INTEGER }) };
 }
@@ -2213,6 +2231,8 @@ liveHooks = {
 setInterval(liveForJoined, 20000);
 
 // Segment playback (when WebRTC isn't possible): Media Source Extensions fed with the signed chunks.
+const isMp4 = (mime) => /^video\/mp4/.test(mime || '');
+const MP4_MIME = 'video/mp4; codecs="avc1.640028,mp4a.40.2"';   // OBS through your computer: H.264 + AAC
 function segmentPlayer(video, mime, header = null) {
   if (!window.MediaSource?.isTypeSupported?.(mime)) return null;
   const ms = new MediaSource(); video.src = URL.createObjectURL(ms);
@@ -2237,6 +2257,15 @@ function segmentPlayer(video, mime, header = null) {
   }, 1000);
   return {
     push(g, u8) {
+      if (isMp4(mime)) {   // segment 0 is the MP4 header; every later one is a fragment, g.k when it starts with a keyframe
+        if (g.n === 0) { init = u8; return; }
+        if (synced && g.n === next) { next++; q.push(u8); return pump(); }
+        if (synced && g.n < next) return;
+        if (!init || !g.k) return;
+        q.push(...(synced ? [] : [init]), u8); synced = true; next = g.n + 1; pump();
+        video.play().catch(() => {});
+        return;
+      }
       if (g.n === 0) { const c = clusterAt(u8); init = c > 0 ? u8.slice(0, c) : null; }
       if (synced && g.n === next) { next++; q.push(u8); return pump(); }
       if (synced && g.n < next) return;
@@ -2665,18 +2694,31 @@ function liveStudio(chainId) {
       try { await startObsLive(chainId, obsTitle.value.trim()); stopPreview(); ui(); } catch (e) { obsStatus.textContent = e.message; obsGo.disabled = false; }
     } }, 'Get a stream key');
     if (!diag.home && !box.probed) { box.probed = true; probeHome().then(() => { if (diag.home?.ingest && !broadcasts.get(chainId) && !title.value && !obsTitle.value) ui(); }); }
+    const comps = myNodes().filter(n => n.roles.includes('obs') && Date.now() - n.at < 120000);
+    const nodeSel = h('select', {}, comps.map(n => h('option', { value: n.node }, (n.info?.name || n.grant.label || 'computer') + (n.info?.obs?.live ? ' (busy)' : ''))));
+    const nodeTitle = h('input', { type: 'text', placeholder: 'Stream title', maxLength: LIMITS.title });
+    const nodeStatus = h('span', { class: 'sub' });
+    const nodeGo = h('button', { class: 'primary', onclick: async () => {
+      if (!nodeTitle.value.trim()) return toast('Give the stream a title');
+      nodeGo.disabled = true; nodeStatus.textContent = 'Starting…';
+      try { await startNodeObsLive(chainId, nodeTitle.value.trim(), nodeSel.value); stopPreview(); ui(); } catch (e) { nodeStatus.textContent = e.message; nodeGo.disabled = false; }
+    } }, 'Go live with OBS');
+    const viaComputer = h('div', { class: 'panel', style: 'margin:0 0 14px;background:var(--panel-2)' }, h('h4', { style: 'margin:0 0 6px' }, 'Stream from OBS (Start Streaming)'),
+      comps.length ? [h('p', { class: 'sub', style: 'margin-top:0' }, 'OBS sends to OpenTube running on your computer, which relays it here. Pick the computer OBS runs on:'),
+        h('div', { class: 'split', style: 'gap:10px' }, nodeSel, nodeTitle), h('div', { class: 'row', style: 'margin-top:8px' }, nodeGo, nodeStatus)]
+        : h('p', { class: 'sub', style: 'margin:0' }, 'Run OpenTube on the computer where OBS is (My node → Your computers → Run OpenTube on a computer). It then appears here, and OBS’s normal Start Streaming button goes live on your channel.'));
     const obs = diag.home?.ingest ? h('details', { style: 'margin-top:14px' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Or send the stream from OBS with a stream key'),
       h('p', { class: 'sub' }, 'OBS sends the video straight to this site’s server, which relays it. Viewers watch a few seconds behind. Your browser records it, so keep this page open.'),
       h('label', {}, 'Title'), obsTitle, h('div', { class: 'row', style: 'margin-top:8px' }, obsGo, obsStatus)) : null;
-    return [head,
-      h('p', { class: 'sub', style: 'margin-top:0' }, 'Using OBS Studio? Click “Start Virtual Camera” in OBS, then pick “OBS Virtual Camera” below. Your stream is recorded into this channel’s folder; when you end it you choose whether to publish the recording.'),
+    return [head, viaComputer,
+      h('p', { class: 'sub', style: 'margin-top:0' }, 'Or stream from this browser: a camera, your screen, or OBS’s “Start Virtual Camera” (pick “OBS Virtual Camera” below). Your stream is recorded into this channel’s folder; when you end it you choose whether to publish the recording.'),
       ask, h('div', { class: 'split', style: 'margin-top:8px' }, h('div', {}, h('label', {}, 'Video'), source), h('div', {}, h('label', {}, 'Audio'), mic)),
       h('label', {}, 'Title'), title, preview, h('div', { class: 'row', style: 'margin-top:10px' }, go, status), obs];
   }
   function obsAir(sess) {
     const video = h('video', { muted: true, playsInline: true, autoplay: true, controls: true, style: 'width:100%;max-width:480px;border-radius:8px;background:#000' });
     let player = null;
-    sess.preview = (g, u8) => { if (!player) player = segmentPlayer(video, OBS_MIME, viewing.get(sess.stream)?.init); player?.push(g, u8); };
+    sess.preview = (g, u8) => { if (!player) player = segmentPlayer(video, sess.mime || OBS_MIME, viewing.get(sess.stream)?.init); player?.push(g, u8); };
     const state = h('div', { class: 'sub' });
     const tick = () => {
       if (sess.ended) return ui();
@@ -2685,6 +2727,15 @@ function liveStudio(chainId) {
     };
     tick(); timer = setInterval(() => { if (!box.isConnected) return clearInterval(timer); tick(); }, 1000);
     const row = (label, value) => h('div', { class: 'row', style: 'gap:8px' }, h('span', { style: 'min-width:150px' }, label), h('code', { class: 'mono', style: 'flex:1;word-break:break-all' }, value));
+    if (sess.rtmp) {
+      const node = myNodes().find(n => n.node === sess.node), name = node?.info?.name || 'your computer';
+      return [h('h3', { style: 'margin-top:0' }, h('span', { class: 'badge live' }, 'LIVE'), ' ', sess.title, h('span', { class: 'sub' }, ` · OBS on ${name}`)),
+        h('p', { class: 'sub', style: 'margin-top:0' }, `In OBS on ${name}: Settings → Stream:`),
+        row('Service', 'Custom…'), h('div', { class: 'row', style: 'gap:8px' }, h('span', { style: 'min-width:150px' }, 'Server'), h('code', { class: 'mono', style: 'flex:1' }, 'rtmp://localhost/live'), h('button', { class: 'small', onclick: () => copyText('rtmp://localhost/live', 'Server') }, 'Copy')),
+        row('Stream Key', 'anything, e.g. opentube'),
+        h('p', { class: 'sub' }, 'Settings → Output: an H.264 video encoder (x264 or your GPU’s H.264, not HEVC/AV1), keyframe interval 2 s, AAC audio. Then click Start Streaming. Stop Streaming ends it.'),
+        video, state];
+    }
     return [h('h3', { style: 'margin-top:0' }, h('span', { class: 'badge live' }, 'LIVE'), ' ', sess.title, h('span', { class: 'sub' }, ' · from OBS')),
       h('p', { class: 'sub', style: 'margin-top:0' }, 'In OBS: Settings → Output → Output Mode “Advanced” → Recording tab, then set:'),
       row('Type', 'Custom Output (FFmpeg)'), row('FFmpeg Output Type', 'Output to URL'),

@@ -116,6 +116,60 @@ if (fs.existsSync(memFile)) for (const m of JSON.parse(fs.readFileSync(memFile, 
 log(`network ${engine.MAIN_ID.slice(0, 16)}… · main height ${engine.main.best.height} · ${engine.directory.size} registered · ${engine.chains.size} chains loaded`);
 setInterval(() => engine.gossip(), 15000);
 
+// ---- OBS "Start Streaming" (RTMP_PORT): OBS → rtmp://localhost/live → this node → the live hub. The owner first clicks
+// Go live → Stream from OBS on the site and picks this computer; that live block names this node's key as `relay`.
+function liveSink(chain, stream, mime) {
+  let n = 0, o = 0, queue = Promise.resolve(), ended = false;
+  const seg = (bytes, k) => (queue = queue.then(async () => {
+    const g = { stream, n: n++, o, h: crypto.createHash('sha256').update(bytes).digest('hex') };
+    o += bytes.length;
+    g.sig = await signer.sign(core.liveSegPreimage(g)); g.d = bytes.toString('base64'); if (k) g.k = 1;
+    send(g);
+  }).catch(e => log('[obs] segment failed:', e.message)));
+  let send, finish;
+  const site = process.env.NODE_SITE;
+  if (!site) {   // this node is the site: feed its own hub
+    const src = liveHub.local(stream, chain, mime);
+    send = (g) => src.seg(g); finish = () => src.end();
+  } else {       // relay to the site's hub as the broadcaster (segments only: this node has no WebRTC)
+    let ws = null, ready = false; const pending = [];
+    const flush = () => { while (ready && pending.length) ws.send(JSON.stringify({ t: 'seg', seg: pending.shift() })); };
+    const connect = () => {
+      ready = false; ws = new WebSocket(site.replace(/^http/, 'ws') + '/live');
+      ws.onmessage = async (e) => {
+        let m; try { m = JSON.parse(e.data); } catch { return; }
+        if (m.t === 'hi') { ws.send(JSON.stringify({ t: 'auth', key: signer.pub, sig: await signer.sign(core.liveAuthPreimage(m.nonce)) })); ws.send(JSON.stringify({ t: 'broadcast', stream, chain, mime, rtc: false })); }
+        else if (m.t === 'broadcasting') { ready = true; flush(); log('[obs] relaying to ' + site); }
+        else if (m.t === 'error') log('[obs] the site refused the stream:', m.error);
+      };
+      ws.onclose = () => { ready = false; if (!ended) setTimeout(connect, 2000); };
+      ws.onerror = () => {};
+    };
+    connect();
+    send = (g) => { pending.push(g); flush(); };
+    finish = () => { const done = () => { try { ws.send(JSON.stringify({ t: 'leave', stream })); } catch {} ended = true; setTimeout(() => ws.close(), 500); };
+      const wait = () => (pending.length && Date.now() - t0 < 15000 ? setTimeout(wait, 200) : done()); const t0 = Date.now(); wait(); };
+  }
+  return { init: (bytes) => seg(bytes, false), fragment: (bytes, k) => seg(bytes, k), end: () => { queue.then(() => finish()); } };
+}
+if (process.env.RTMP_PORT) {
+  try {
+    const { startRtmp } = await import('./rtmp.mjs');
+    const armed = () => {   // the newest live stream, not ended, whose owner named this node as its relay
+      let best = null;
+      for (const c of engine.chains.values()) {
+        if (c === engine.main) continue;
+        const d = engine.derive(c.id); if (!d || d.kind !== 'channel') continue;
+        for (const b of d.liveNow) if (b.payload.relay === signer.pub && (!best || b.ts > best.b.ts)) best = { chain: c.id, b };
+      }
+      return best;
+    };
+    const rtmp = startRtmp({ port: Number(process.env.RTMP_PORT), host: process.env.RTMP_HOST || '127.0.0.1', log: (...a) => log('[obs]', ...a),
+      onPublish: () => { const a = armed(); return a ? liveSink(a.chain, a.b.payload.stream, a.b.payload.mime) : 'Not live yet. On the site: Go live → Stream from OBS, pick this computer, then Start Streaming again.'; } });
+    globalThis.openTubeRtmp = { status: () => ({ ...rtmp.status(), armed: !!armed() }) };
+  } catch (e) { log('OBS receiver unavailable:', e.message); }
+}
+
 // ---- "your node": started from someone's My node command, it announces itself to their My node page
 const GRANT = (() => { try { return process.env.NODE_GRANT ? JSON.parse(Buffer.from(process.env.NODE_GRANT, 'base64url').toString('utf8')) : null; } catch { return null; } })();
 if (process.env.NODE_GRANT && !(GRANT && core.validNodeGrant(GRANT))) log('NODE_GRANT is not a valid grant; not announcing this node');
