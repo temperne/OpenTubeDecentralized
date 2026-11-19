@@ -323,6 +323,11 @@ const rankingPreimage = (r) => { const { sig, ...rest } = r; return 'opentube-ra
 // Selling back is how tokens become money: an advertiser buys back tokens its ads put out (paying
 // outside the chain), the tokens die, and the advertiser's free balance recovers for new ads.
 const LEDGER = { cap: 100000, txBits: 10, maxTxs: 200, maxOuts: 100, maxBurns: 20, memo: 140 };
+// Usernames: a channel can hold one @name and a list one ~name (links: site/@name, site/~name). A `name` transaction,
+// signed by the key that created the channel/list, claims a free name; claiming another frees the old one, and
+// handle null releases it. Main-chain order decides who got a name first.
+const NAMES = { re: /^[a-z0-9](?:[a-z0-9._-]{1,28}[a-z0-9])$/ };
+const nameShape = (n) => !!n && typeof n === 'object' && (n.space === '@' || n.space === '~') && isHex(n.chain, 64) && (n.handle === null || (typeof n.handle === 'string' && NAMES.re.test(n.handle) && !/[._-]{2}/.test(n.handle)));
 const holdKey = (holder, token) => holder + '|' + token;
 class Ledger {
   constructor(src) {
@@ -330,6 +335,7 @@ class Ledger {
     this.burned = src?.burned || 0; this.txCount = src?.txCount || 0;
     this.claimed = new Set(src?.claimed); this.slotUsed = new Set(src?.slotUsed); this.adViews = new Map(src?.adViews);
     this.adPaid = new Map(src?.adPaid);
+    this.names = new Map(src?.names); this.nameOf = new Map(src?.nameOf);   // '@cooking' -> { chain, key }; chain -> '@cooking'
   }
   outstanding(issuer) { return this.out.get(issuer) || 0; }
   free(k) { return LEDGER.cap - this.outstanding(k); }
@@ -342,6 +348,14 @@ class Ledger {
   // Returns null if the transaction applies, or the reason it doesn't. Only mutates on success.
   check(t) {
     if (t.seq !== (this.seq.get(t.from) || 0) + 1) return 'out of order (sequence)';
+    if (t.name) {
+      const n = t.name, cur = this.nameOf.get(n.chain);
+      if (n.handle === null) return cur ? null : 'there is no name to release';
+      const k = n.space + n.handle, holder = this.names.get(k);
+      if (cur === k) return 'that is already the name';
+      if (holder && holder.chain !== n.chain) return 'that name is taken';
+      return null;
+    }
     if (t.claim) {
       const tid = claimTid.get(t), c = t.claim, adv = c.terms.advertiser;
       if (!tid) return 'claim not verified';
@@ -365,6 +379,13 @@ class Ledger {
   }
   apply(t) {
     const why = this.check(t); if (why) return why;
+    if (t.name) {
+      const n = t.name, cur = this.nameOf.get(n.chain);
+      if (cur) { this.names.delete(cur); this.nameOf.delete(n.chain); }
+      if (n.handle) { this.names.set(n.space + n.handle, { chain: n.chain, key: t.from }); this.nameOf.set(n.chain, n.space + n.handle); }
+      this.seq.set(t.from, t.seq); this.txCount++;
+      return null;
+    }
     if (t.claim) {
       const tid = claimTid.get(t), adv = t.claim.terms.advertiser;
       for (const x of this.claimPayouts(t)) {
@@ -440,6 +461,7 @@ function txShape(t) {
   if (!t || typeof t !== 'object' || t.v !== 1 || t.kind !== 'tx' || !isKey(t.from) || !Number.isSafeInteger(t.seq) || t.seq < 1) return false;
   if (!Number.isSafeInteger(t.ts) || t.ts > Date.now() + 10 * 60000 || !isStr(t.memo ?? '', LEDGER.memo)) return false;
   if (t.claim !== undefined) return t.outs === undefined && t.burns === undefined && claimShape(t.claim);
+  if (t.name !== undefined) return t.outs === undefined && t.burns === undefined && nameShape(t.name);
   const outs = t.outs || [], burns = t.burns || [];
   if (!Array.isArray(outs) || !Array.isArray(burns) || outs.length > LEDGER.maxOuts || burns.length > LEDGER.maxBurns || !(outs.length + burns.length)) return false;
   if (!outs.every(o => o && isKey(o.to) && isKey(o.token) && amtOk(o.amt) && o.to !== t.from)) return false;
@@ -656,6 +678,11 @@ async function createEngine(o) {
     while (ledgerCache.size > 300) { const k = ledgerCache.keys().next().value; if (k === MAIN_ID) { ledgerCache.delete(k); ledgerCache.set(k, new Ledger()); } else ledgerCache.delete(k); }
     return st;
   }
+  const nameAllowed = (t) => {
+    if (!t.name) return true;
+    const g = genesisFor(t.name.chain);
+    return !!g && g.author === t.from && (g.payload.kind === 'channel') === (t.name.space === '@');
+  };
   async function validMainBlock(b) {
     if (b.parents.length !== 1 || zeroBits(b.hash) < CFG.difficulty) return false;
     const p = b.payload;
@@ -665,7 +692,7 @@ async function createEngine(o) {
     for (const g of p.entries) if (!validGenesis(g) || !(await checkSigned(g))) return false;
     const before = stateAfter(b.parents[0]); if (!before) return false;
     const st = new Ledger(before);
-    for (const t of txs) if (!(await checkTx(t)) || st.apply(t)) return false;
+    for (const t of txs) if (!(await checkTx(t)) || !nameAllowed(t) || st.apply(t)) return false;
     ledgerCache.set(b.hash, st);
     return true;
   }
@@ -735,7 +762,7 @@ async function createEngine(o) {
 
   // ---- transactions
   async function addTx(t) {
-    if (!t || txpool.has(t.hash) || !(await checkTx(t)) || t.seq <= (E.ledger.seq.get(t.from) || 0)) return false;
+    if (!t || txpool.has(t.hash) || !(await checkTx(t)) || !nameAllowed(t) || t.seq <= (E.ledger.seq.get(t.from) || 0)) return false;
     txpool.set(t.hash, t);
     return true;
   }
@@ -745,9 +772,10 @@ async function createEngine(o) {
     for (const t of [...txpool.values()].filter(x => x.from === from).sort((a, b) => a.seq - b.seq)) st.apply(t);
     return st;
   }
-  async function submitTx({ outs = [], burns = [], memo = '', claim }, signer = o.signer, onProgress) {
+  async function submitTx({ outs = [], burns = [], memo = '', claim, name }, signer = o.signer, onProgress) {
     const from = signer.pub, st = pendingState(from);
     const body = { v: 1, kind: 'tx', from, seq: (st.seq.get(from) || 0) + 1, ts: Date.now(), nonce: 0 };
+    if (name) { body.name = name; if (!txShape(body) || !nameAllowed(body)) throw new Error('invalid name'); }
     if (claim) { body.claim = claim; if (!txShape(body)) throw new Error('invalid claim'); if (!(await checkClaim(body))) throw new Error('claim does not verify'); }
     if (outs.length) body.outs = outs.map(x => ({ to: x.to, token: x.token || from, amt: x.amt }));
     if (burns.length) body.burns = burns.map(x => ({ token: x.token, amt: x.amt }));
@@ -960,14 +988,14 @@ async function createEngine(o) {
   });
 }
 
-globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
+globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, NAMES, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
 })();
 </script>
 
 <script type="module">
 import WebTorrent from 'https://cdn.jsdelivr.net/npm/webtorrent@3.0.21/dist/webtorrent.min.js';
 // ===================================================================== BROWSER NODE
-const { LIMITS, isHex, isKey, b64u, preimage, newIdentity, signer: makeSigner, createEngine } = globalThis.OpenTubeCore;
+const { LIMITS, NAMES, isHex, isKey, b64u, preimage, newIdentity, signer: makeSigner, createEngine } = globalThis.OpenTubeCore;
 
 // ---------------------------------------------------------------- helpers
 const $ = (s, r = document) => r.querySelector(s);
@@ -1638,7 +1666,7 @@ function chanRow(id) {
   const d = chains.has(id) ? derive(id) : null; const p = d?.profile || g.payload;
   const reg = E.directory.get(id);
   return h('a', { class: 'chan-row', href: `#/c/${id}` }, avatar(p.avatar, p.name, 'sm'),
-    h('div', { style: 'min-width:0;flex:1' }, h('div', {}, h('b', {}, p.name), ' ', h('span', { class: 'fp' }, '·' + fp(g.author))),
+    h('div', { style: 'min-width:0;flex:1' }, h('div', {}, h('b', {}, p.name), ' ', nameOf(id) ? h('span', { class: 'sub' }, nameOf(id) + ' ') : null, h('span', { class: 'fp' }, '·' + fp(g.author))),
       h('div', { class: 'sub', style: 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis' }, p.about || (p.kind === 'list' ? 'List' : 'Channel'))),
     h('span', { class: 'badge' + (reg ? '' : ' warn') }, p.kind === 'list' ? 'list' : 'channel', reg ? '' : ' · pending'),
     subs[id] ? h('span', { class: 'badge ok' }, subs[id] === 'join' ? 'joined' : 'subscribed') : null);
@@ -1663,8 +1691,24 @@ function setSub(id, mode) {
 
 // ---- routes
 let route = { name: 'home' }, routeKey = '';
+// ---- usernames: site/@channel and site/~list
+const nameOf = (id) => E.ledger?.nameOf?.get(id) || null;   // e.g. '@cooking'
+function resolveName(full) {   // '@cooking' -> chain id, only if the claim was signed by the chain's creator
+  const r = E.ledger?.names?.get(full); if (!r) return null;
+  const g = genesisFor(r.chain);
+  return g && g.author === r.key ? r.chain : null;
+}
+const nameLink = (full) => location.origin + location.pathname.replace(/[^/]*$/, '') + full;
+const copyText = (text, what = 'Link') => navigator.clipboard?.writeText(text).then(() => toast(`${what} copied`), () => prompt('Copy this:', text));
+const NAME_IN_PATH = /^([@~])([a-z0-9._-]{3,30})\/?$/i;
 function parseRoute() {
   const p = location.hash.replace(/^#\/?/, '').split('/');
+  const fromHash = NAME_IN_PATH.exec(decodeURIComponent(p[0] || ''));
+  if (fromHash) return { name: 'named', full: fromHash[1] + fromHash[2].toLowerCase() };
+  if (!p[0]) {   // a pretty link: site/@name or site/~name
+    const fromPath = NAME_IN_PATH.exec(decodeURIComponent(location.pathname.split('/').filter(Boolean).pop() || ''));
+    if (fromPath) return { name: 'named', full: fromPath[1] + fromPath[2].toLowerCase() };
+  }
   if (p[0] === 'explore') return { name: 'explore', tab: p[1] || 'trending' };
   if (p[0] === 'me') return { name: 'me' };
   if (p[0] === 'network') return { name: 'network' };
@@ -1676,6 +1720,7 @@ function parseRoute() {
 window.addEventListener('hashchange', () => { route = parseRoute(); render(true); window.scrollTo(0, 0); });
 route = parseRoute();
 
+const startedAt = Date.now();
 function render(force) {
   updateStatus();
   document.querySelectorAll('[data-nav]').forEach(a => a.classList.toggle('active', a.dataset.nav === route.name));
@@ -1690,6 +1735,14 @@ function render(force) {
 }
 
 const views = {};
+views.named = { render() {
+  const id = resolveName(route.full);
+  if (id) { route = { name: 'chain', id, tab: route.full[0] === '@' ? 'videos' : 'channels' }; queueMicrotask(() => render(true)); return h('div', { class: 'empty' }, 'Opening ' + route.full + '…'); }
+  const synced = E.syncState?.(main)?.state === 'synced' || Date.now() - startedAt > 20000;
+  return h('div', { class: 'empty' }, synced
+    ? [h('p', {}, `No ${route.full[0] === '@' ? 'channel' : 'list'} is called ${route.full}.`), h('p', {}, h('a', { href: '#/explore' }, 'Explore'), ' or ', h('a', { href: '#/me' }, 'create one'), ' and claim the name.')]
+    : `Looking up ${route.full} on the main chain…`);
+} };
 // Forms that must survive re-renders while new blocks stream in (cleared when the route changes).
 const kept = new Map();
 const keep = (key, make) => kept.get(key) || kept.set(key, make()).get(key);
@@ -1760,6 +1813,8 @@ views.chain = { render() {
   return h('div', {},
     h('div', { class: 'row' }, avatar(p.avatar, p.name),
       h('div', { style: 'flex:1;min-width:200px' }, h('h1', { style: 'margin:0' }, p.name),
+        nameOf(id) ? h('div', { class: 'row', style: 'gap:8px;margin:2px 0' }, h('a', { href: nameLink(nameOf(id)), style: 'font-weight:600' }, nameOf(id)),
+          h('button', { class: 'small', onclick: () => copyText(nameLink(nameOf(id))) }, 'Copy link')) : null,
         h('div', { class: 'sub' }, h('span', { class: 'fp' }, 'owner ' + fp(d.owner)), ` · ${d.blockCount} blocks · `, reg ? `registered in main block #${reg.height}` : h('span', { class: 'badge warn' }, 'registration pending'))),
       subBtn, joinBtn,
       !mine ? h('button', { title: 'Send this channel some of your tokens', onclick: async () => {
@@ -1773,6 +1828,34 @@ views.chain = { render() {
     h('div', { class: 'tabs' }, tabs.map(t => h('a', { href: `#/c/${id}/${t}`, class: t === tab ? 'active' : '' }, t[0].toUpperCase() + t.slice(1)))),
     chainTab[tab](id, d));
 } };
+function namePanel(id, d) {
+  const space = d.kind === 'channel' ? '@' : '~', what = d.kind === 'channel' ? 'channel' : 'list';
+  const cur = nameOf(id), pend = E.pendingState(d.owner).nameOf.get(id) || null;
+  const input = h('input', { type: 'text', placeholder: d.kind === 'channel' ? 'yourchannel' : 'yourlist', maxLength: 30, value: (pend || cur || '').slice(1), style: 'flex:1;min-width:160px' });
+  const status = h('span', { class: 'sub' });
+  const check = () => {
+    const v = input.value.trim().toLowerCase(); if (input.value !== v) input.value = v;
+    const holder = E.ledger.names.get(space + v);
+    status.textContent = !v ? '' : !NAMES.re.test(v) || /[._-]{2}/.test(v) ? '3–30 characters: a–z, 0–9, and . _ - in the middle'
+      : holder && holder.chain !== id ? `${space}${v} is taken` : space + v === cur ? 'This is your name' : `${space}${v} is available`;
+  };
+  input.oninput = check; check();
+  const send = async (handle, btn) => {
+    btn.disabled = true; status.textContent = 'Signing…';
+    try {
+      await E.submitTx({ name: { space, chain: id, handle } }, signerFor(d.owner), (n) => { status.textContent = `Signing (anti-spam work: ${n.toLocaleString()} hashes)…`; });
+      toast(handle ? `${space}${handle} claimed. It’s yours once the next main-chain block confirms it.` : 'Name released.');
+      kept.delete('manage'); scheduleRender();
+    } catch (e) { status.textContent = e.message; btn.disabled = false; }
+  };
+  const claimBtn = h('button', { class: 'primary', onclick: () => send(input.value.trim().toLowerCase(), claimBtn) }, cur ? 'Change name' : 'Claim name');
+  const releaseBtn = cur ? h('button', { onclick: () => { if (confirm(`Release ${cur}? Anyone can claim it afterwards.`)) send(null, releaseBtn); } }, 'Release') : null;
+  return h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Username'),
+    h('p', { class: 'sub', style: 'margin-top:0' }, `Gives this ${what} a short link: ${nameLink(space + 'name')}. One name per ${what}. Changing or releasing it frees the old name for anyone. If two people claim the same name, the claim recorded first on the main chain wins.`),
+    cur ? h('div', { class: 'row', style: 'margin-bottom:8px' }, h('span', {}, 'Current: '), h('a', { href: nameLink(cur) }, nameLink(cur)), h('button', { class: 'small', onclick: () => copyText(nameLink(cur)) }, 'Copy link')) : null,
+    pend !== cur ? h('div', { class: 'sub', style: 'margin-bottom:8px' }, h('span', { class: 'badge warn' }, 'pending'), ' ', pend ? `${pend} is waiting for the next main-chain block.` : 'Release is waiting for the next main-chain block.') : null,
+    h('div', { class: 'row' }, h('b', {}, space), input, claimBtn, releaseBtn), h('div', { style: 'margin-top:6px' }, status));
+}
 const chainTab = {
   videos(id, d) {
     return h('div', {}, isMine(d.owner) ? keep('upload:' + id, () => uploadForm(id)) : null,
@@ -1813,7 +1896,7 @@ const chainTab = {
         h('div', {}, 'Heads'), h('div', { class: 'mono' }, [...chains.get(id).heads].map(x => x.slice(0, 12)).join(', '))));
   },
   manage(id, d) { return keep('manage', () => chainTab.manageBuild(id, d)); },
-  manageBuild(id, d) { return h('div', {}, sponsorPanel(id, d), chainTab.manageCore(id, d)); },
+  manageBuild(id, d) { return h('div', {}, namePanel(id, d), sponsorPanel(id, d), chainTab.manageCore(id, d)); },
   manageCore(id, d) {
     const name = h('input', { type: 'text', value: d.profile.name, maxLength: LIMITS.name });
     const about = h('textarea', { value: d.profile.about, maxLength: LIMITS.about });

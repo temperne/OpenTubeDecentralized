@@ -132,6 +132,16 @@ The *Network* page (and the health dot in the header) checks each part of the sy
 - **Explore** has Trending, New, Channels and Lists tabs, driven by the chosen ranking. Without one, each browser ranks the channels it has loaded.
 - **Known weakness:** keys are free, so one person can cast many votes. Proof of work only slows that down. Making votes resist fakes is the ranker's job, for example by weighting older or invested keys, and is the main open design question.
 
+## Usernames and links
+
+Channels can claim an **@name** and lists a **~name** (*Manage → Username*). Then `https://your-site/@cooking` opens the channel and `https://your-site/~science` the list. (`#` can't be used: browsers never send what follows it to the server.)
+
+- A claim is a small signed transaction in a main-chain block, made with the channel's or list's own key. Nodes reject claims by anyone else, and `@` names only go to channels, `~` names only to lists.
+- One name per channel or list. Claiming a different one, or releasing it, frees the old name for anyone.
+- If two people claim the same name, the claim that lands in the main chain first wins.
+- Names are 3–30 characters: `a–z`, `0–9`, and `. _ -` in the middle. Capital letters are lowercased.
+- `server.mjs` and the Cloudflare worker serve the page for `/@…` and `/~…` paths; the page looks the name up.
+
 ## Subscribe vs. Join
 
 - **Subscribe:** your node keeps that channel's chain in sync and shows its videos in your feed. Videos download only when you watch them.

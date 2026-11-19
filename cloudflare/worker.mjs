@@ -16,6 +16,8 @@ export default {
       // One node for the whole network: every browser talks to the same Durable Object.
       return env.NODE.get(env.NODE.idFromName('main')).fetch(request);
     }
+    // Username links (/@channel, /~list) open the page, which looks the name up on the main chain.
+    if (/^\/[@~][A-Za-z0-9._-]{3,30}\/?$/.test(url.pathname)) return env.ASSETS.fetch(new Request(new URL('/', url), request));
     return env.ASSETS.fetch(request);
   }
 };
