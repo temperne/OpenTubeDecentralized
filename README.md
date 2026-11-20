@@ -220,6 +220,17 @@ A single 2-cent view is too small to sell, but a bundle of thousands of views of
 
 Anything that isn't coins or certificates (goods, gift cards, services) is delivered by the seller off the network, using the contact in the listing.
 
+## Maps (OpenStreetMap)
+
+Listings, organizations and channels (for shops, venues and businesses) can carry a **place**: map coordinates plus a label. You set it by searching an address, by *Use my location*, or by clicking the map; only the pin and the label you type are published.
+
+- **Market → 🗺 Map** shows every place this browser knows: 🛍 listings, 🏠 housing, 🏛 organizations, 🏪 channels and businesses.
+- **Market → 🏠 Housing** lists homes for sale or for rent (rent is priced per month), with a map.
+- **Near you** filters and sorts by distance (5 / 25 / 100 / 500 km). Your location is asked for only then and is kept in your browser.
+- **Pages with a place** show a small map: listings, channels' and organizations' About pages, and the Orgs page.
+
+Maps use the Leaflet library (jsDelivr), OpenStreetMap's map tiles (© OpenStreetMap contributors) and Nominatim for address search. These are loaded only when a map or a search is shown; heavy use should move to your own tile server.
+
 ## Groups
 
 A **group** is a chain kind where members post. Create one under *My node* and choose whether anyone can post or only members you approve (*Manage → approve*). Posts, which can include a picture, plus replies and likes are blocks on the group's chain, so anyone who subscribes keeps a copy. Likes pay the author. Find groups under *Explore → Groups*.

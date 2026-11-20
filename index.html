@@ -68,6 +68,8 @@
   .tagbox { display: inline-flex; align-items: center; gap: 2px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px; padding: 1px 4px 1px 10px; font-size: 13px; }
   .tagbox .tagx { background: none; border: 0; padding: 0 4px; color: var(--muted); cursor: pointer; font-size: 12px; }
   a.tag { color: var(--accent, inherit); text-decoration: none; }
+  .osm-pin { font-size: 22px; line-height: 26px; text-align: center; background: none; border: 0; filter: drop-shadow(0 1px 1px rgba(0,0,0,.4)); }
+  .osm .leaflet-popup-content a { color: #2563eb; }
   .rich ul { margin: 4px 0; padding-left: 22px; } .rich code { background: var(--panel-2); padding: 0 4px; border-radius: 4px; }
   .linkchip { white-space: nowrap; } .linkchip .tagx { background: none; border: 0; cursor: pointer; padding: 0 2px; font-size: 12px; }
   a.person { color: inherit; text-decoration: none; } a.person:hover { text-decoration: underline; }
@@ -369,7 +371,9 @@ async function checkSigned(b) {
 // Tags describe a video or an ad ("cooking", "pc-games"); ads also name what kind of product they're for. Viewers can say
 // they're not interested in a tag or category; that choice stays on their device and only filters what they see.
 const TAG_RE = /^[a-z0-9][a-z0-9-]{0,23}$/;
-const AD_CATEGORIES = ['apparel', 'autos', 'beauty', 'books', 'education', 'electronics', 'entertainment', 'finance', 'food', 'games', 'health', 'home', 'jobs', 'pets', 'services', 'software', 'sports', 'travel', 'other'];
+const AD_CATEGORIES = ['apparel', 'autos', 'beauty', 'books', 'education', 'electronics', 'entertainment', 'finance', 'food', 'games', 'health', 'home', 'housing', 'jobs', 'pets', 'services', 'software', 'sports', 'travel', 'other'];
+// A place on the map (OpenStreetMap coordinates) with a label, e.g. a listing's or a business's location.
+const placeShape = (x) => !!x && typeof x === 'object' && Number.isFinite(x.lat) && Math.abs(x.lat) <= 90 && Number.isFinite(x.lon) && Math.abs(x.lon) <= 180 && isStr(x.label ?? '', 120);
 const validTags = (t) => t === undefined || (Array.isArray(t) && t.length <= 8 && t.every(x => typeof x === 'string' && TAG_RE.test(x)) && new Set(t).size === t.length);
 function validPayload(chain, b, CFG) {
   const p = b.payload; if (!p || typeof p !== 'object') return false;
@@ -449,7 +453,7 @@ function validPayload(chain, b, CFG) {
     case 'comment': return isHex(p.target, 64) && isStr(p.text, LIMITS.comment) && p.text.trim().length > 0;
     case 'hide': return isHex(p.target, 64);
     case 'allow': case 'revoke': return isKey(p.key);
-    case 'profile': return (p.links === undefined || (Array.isArray(p.links) && p.links.length <= 12 && p.links.every(l => l && isStr(l.label, 40) && isStr(l.url, 300) && /^https:\/\/\S+$/.test(l.url))))
+    case 'profile': return (p.place === undefined || placeShape(p.place)) && (p.links === undefined || (Array.isArray(p.links) && p.links.length <= 12 && p.links.every(l => l && isStr(l.label, 40) && isStr(l.url, 300) && /^https:\/\/\S+$/.test(l.url))))
       && (p.location === undefined || isStr(p.location, 100)) && (p.join === undefined || (kind === 'group' && ['open', 'approved'].includes(p.join))) && (p.name === undefined || (isStr(p.name, LIMITS.name) && p.name.trim().length > 0)) && (p.about === undefined || isStr(p.about, LIMITS.about)) && (p.avatar === undefined || isImg(p.avatar)) && (p.comments === undefined || ['anyone', 'approved', 'off'].includes(p.comments));
     case 'add': return kind === 'list' && isHex(p.target, 64) && isStr(p.note ?? '', LIMITS.about);
     case 'vote': return (kind === 'channel' || kind === 'group') && isHex(p.target, 64) && [1, 0, -1].includes(p.v);
@@ -648,7 +652,8 @@ const MARKET = { maxDays: 30, minStep: 0.05, title: 120, about: 2000, contact: 2
 const listingShape = (x) => !!x && typeof x === 'object' && ['fixed', 'auction'].includes(x.kind) && (x.arbiter === undefined || isKey(x.arbiter)) && (x.hold === undefined || (Number.isSafeInteger(x.hold) && x.hold >= 1 && x.hold <= 90)) && (x.org === undefined || isHex(x.org, 64)) && isStr(x.title, MARKET.title) && x.title.trim().length > 0 && isStr(x.about ?? '', MARKET.about)
   && isStr(x.contact ?? '', MARKET.contact) && (x.image === undefined || (isImg(x.image) && x.image.length <= MARKET.img)) && amtOk(x.price)
   && (x.kind === 'fixed' || (Number.isSafeInteger(x.ends) && x.ends > 0)) && (x.category === undefined || AD_CATEGORIES.includes(x.category) || x.category === 'adviews')
-  && (x.certs === undefined || (Array.isArray(x.certs) && x.certs.length <= PIECE.maxCerts && x.certs.every(c => isHex(c, 64)) && new Set(x.certs).size === x.certs.length)) && validTags(x.tags);
+  && (x.certs === undefined || (Array.isArray(x.certs) && x.certs.length <= PIECE.maxCerts && x.certs.every(c => isHex(c, 64)) && new Set(x.certs).size === x.certs.length)) && validTags(x.tags)
+  && (x.place === undefined || placeShape(x.place)) && (x.deal === undefined || ['sale', 'rent'].includes(x.deal));   // housing: for sale or for rent (price per month)
 const postCost = (price, size) => Math.max(1, Math.ceil(price * size / 1e9));
 const priceOf = (L, k) => Math.max(1, Math.ceil(L.prices[k]));   // what to pay now for a view or a vote (whole units)
 class Ledger {
@@ -1376,7 +1381,7 @@ function derive(c) {
     const p = b.payload;
     if (p.type === 'video' && p.comments) videoPolicy.set(b.hash, p.comments);
     if (p.type === 'settings') { if (p.comments === 'default') videoPolicy.delete(p.target); else videoPolicy.set(p.target, p.comments); }
-    if (p.type === 'profile') for (const k of ['name', 'about', 'avatar', 'comments', 'join', 'links', 'location']) if (p[k] !== undefined) profile[k] = p[k];
+    if (p.type === 'profile') for (const k of ['name', 'about', 'avatar', 'comments', 'join', 'links', 'location', 'place']) if (p[k] !== undefined) profile[k] = p[k];
     if (p.type === 'allow') { allowed.add(p.key); for (let i = revokes.length - 1; i >= 0; i--) if (revokes[i].key === p.key) revokes.splice(i, 1); }   // allowing again unblocks
     if (p.type === 'revoke') { allowed.delete(p.key); revokes.push({ key: p.key, before: c.ancestors([b.hash]) }); }
   }
@@ -1880,7 +1885,7 @@ async function createEngine(o) {
   });
 }
 
-globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, domainOf, MAIL, ORG, orgRoles, orderPreimage, courtPreimage, bindPreimage, retirePreimage, rekeyPreimage, SQUARE, SEAL, monthKey, squareMonths, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
+globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, placeShape, domainOf, MAIL, ORG, orgRoles, orderPreimage, courtPreimage, bindPreimage, retirePreimage, rekeyPreimage, SQUARE, SEAL, monthKey, squareMonths, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
 })();
 </script>
 
@@ -2033,7 +2038,7 @@ function setMuted(kind, value, on) {
 }
 const tagLink = (t) => h('a', { class: 'tag', href: `#/tag/${t}` }, '#' + t);
 const CAT_NAMES = { apparel: 'Clothing & apparel', autos: 'Cars & vehicles', beauty: 'Beauty', books: 'Books', education: 'Education', electronics: 'Electronics', entertainment: 'Entertainment',
-  finance: 'Finance', food: 'Food & drink', games: 'Games', health: 'Health', home: 'Home & garden', jobs: 'Jobs', pets: 'Pets', services: 'Services', software: 'Software & apps', sports: 'Sports', travel: 'Travel', other: 'Other' };
+  finance: 'Finance', food: 'Food & drink', games: 'Games', health: 'Health', home: 'Home & garden', housing: 'Housing & real estate', jobs: 'Jobs', pets: 'Pets', services: 'Services', software: 'Software & apps', sports: 'Sports', travel: 'Travel', other: 'Other' };
 const subs = Object.assign({}, await kv.get('subs'));            // chainId -> 'sub' | 'join'
 const saveSubs = () => kv.set('subs', subs);
 
@@ -3385,10 +3390,11 @@ const listingPrice = (L) => L.kind === 'auction' ? (L.high ? L.high.amt : L.pric
 const endsText = (ts) => { const d = ts - Date.now(); if (d <= 0) return 'ended'; const hrs = d / 3600000; return hrs >= 48 ? `${Math.round(hrs / 24)} days left` : hrs >= 1 ? `${Math.round(hrs)} h left` : `${Math.max(1, Math.round(d / 60000))} min left`; };
 function listingCard([id, L]) {
   const th = h('div', { class: 'thumb' }); if (L.image) th.style.backgroundImage = `url("${L.image}")`; else th.textContent = L.certs.length ? '🎟' : '🛍';
-  const what = L.kind === 'auction' ? `${L.high ? 'bid' : 'starts at'} ${fmtCoin(listingPrice(L))} · ${L.state === 'open' ? endsText(L.ends) : L.state}` : `${fmtCoin(L.price)} coins${L.state !== 'open' ? ' · ' + L.state : ''}`;
+  const what = L.kind === 'auction' ? `${L.high ? 'bid' : 'starts at'} ${fmtCoin(listingPrice(L))} · ${L.state === 'open' ? endsText(L.ends) : L.state}` : `${fmtCoin(L.price)} coins${L.deal === 'rent' ? ' / month' : ''}${L.state !== 'open' ? ' · ' + L.state : ''}`;
   return h('a', { class: 'card', href: `#/market/item/${id}` }, th,
     h('div', { class: 'meta' }, h('h3', { title: L.title }, L.title), h('div', { class: 'sub' }, what),
       h('div', { class: 'sub' }, keyName(L.seller), L.certs.length ? ` · ${L.certs.length} ad view${L.certs.length === 1 ? '' : 's'}` : '', L.category && L.category !== 'adviews' ? ' · ' + CAT_NAMES[L.category] : ''),
+      L.place ? h('div', { class: 'sub' }, '📍 ', (L.place.label || '').split(',')[0] || 'on the map', myPlace ? ` · ${km(myPlace, L.place).toFixed(1)} km` : '') : null,
       L.pending ? h('span', { class: 'badge warn' }, 'waiting for a block…') : null));
 }
 function marketNew() {
@@ -3401,9 +3407,13 @@ function marketNew() {
   const courts = [...E.directory.values(), ...[...E.childGenesis.values()].map(genesis => ({ genesis }))].filter(e => e.genesis.payload.kind === 'org').map(e => e.genesis);
   const court = h('select', {}, h('option', { value: '' }, 'No escrow: I’m paid at once'), courts.map(g => h('option', { value: g.hash }, `Escrow, disputes arbitrated by ${g.payload.name}${g.payload.jurisdiction ? ' (' + g.payload.jurisdiction + ')' : ''}`)));
   const cat = h('select', {}, h('option', { value: '' }, 'Category (optional)'), AD_CATEGORIES.map(c => h('option', { value: c }, CAT_NAMES[c])));
+  cat.onchange = () => dealRow.classList.toggle('hidden', cat.value !== 'housing');
   const tags = h('input', { type: 'text', placeholder: 'Tags (optional)' });
   const img = h('input', { type: 'file', accept: 'image/*' });
   const daysRow = h('div', { class: 'row hidden' }, h('span', {}, 'Ends in'), days, h('span', {}, 'days'));
+  let place = null;
+  const deal = h('select', { style: 'width:auto' }, h('option', { value: 'sale' }, 'For sale'), h('option', { value: 'rent' }, 'For rent (price per month)'));
+  const dealRow = h('div', { class: 'row hidden', style: 'margin-top:6px' }, h('span', {}, 'Housing:'), deal);
   kind.onchange = () => daysRow.classList.toggle('hidden', kind.value !== 'auction');
   // ad-view certificates you can bundle into the listing
   const groups = certGroups(myCerts()), picks = new Map();
@@ -3418,6 +3428,7 @@ function marketNew() {
     const x = { kind: kind.value, title: title.value.trim(), price: amt, ...(about.value.trim() ? { about: about.value.trim() } : {}), ...(contact.value.trim() ? { contact: contact.value.trim() } : {}),
       ...(kind.value === 'auction' ? { ends: Date.now() + Math.min(MARKET.maxDays, Math.max(1, Number(days.value) || 7)) * 86400000 } : {}),
       ...(certs.length ? { certs, category: 'adviews' } : cat.value ? { category: cat.value } : {}),
+      ...(place ? { place } : {}), ...(cat.value === 'housing' && !certs.length ? { deal: deal.value } : {}),
       ...(court.value ? { org: court.value, arbiter: derive(orgCh(court.value).id)?.owner || genesisFor(court.value).author, hold: 14 } : {}), ...(parseTags(tags.value).length ? { tags: parseTags(tags.value) } : {}), ...(image ? { image } : {}) };
     btn.disabled = true;
     try { await sendTx({ list: x }, me.pub, status); toast('Listed. Your browser is confirming it in a main-chain block, which can take a minute; it shows as “waiting for a block” until then.'); kept.delete('market-new'); location.hash = '#/market/mine'; }
@@ -3426,7 +3437,8 @@ function marketNew() {
   return h('div', { class: 'panel', style: 'max-width:720px' }, h('h3', { style: 'margin-top:0' }, 'Sell something'),
     h('p', { class: 'sub', style: 'margin-top:0' }, 'Listings live on the main chain. Coins move through the network (10% of each sale feeds the network’s resource pools). Ad views move automatically. Anything else (goods, gift cards, services, cash or PayPal deals) is delivered by you, using the contact you give.'),
     h('label', {}, 'Type'), kind, daysRow, h('label', {}, 'Payment protection'), court, h('label', {}, 'Title'), title, h('label', {}, 'Description'), about, h('label', {}, 'Price'), price, h('label', {}, 'Contact'), contact,
-    h('div', { class: 'split', style: 'gap:10px;margin-top:10px' }, cat, tags), h('label', {}, 'Picture (optional)'), img, certBox,
+    h('div', { class: 'split', style: 'gap:10px;margin-top:10px' }, cat, tags), dealRow, h('label', {}, 'Picture (optional)'), img,
+    h('label', {}, 'Where (optional: helps people nearby find it)'), placePicker(null, (pl) => { place = pl; }), certBox,
     h('div', { class: 'row', style: 'margin-top:12px' }, btn, status));
 }
 function escrowBox(id, L) {
@@ -3468,6 +3480,8 @@ function marketItem(id) {
       L.certs.length ? h('div', { class: 'panel', style: 'margin:10px 0' }, `🎟 ${L.certs.length} verified ad view${L.certs.length === 1 ? '' : 's'} of ${certAdv.map(advName).join(', ')}'s ads. They move to the buyer automatically and can be cashed in for ${fmtCoin(certVal)} coins, or sold back to the advertiser.`) : null,
       L.about ? rich(L.about, L.seller) : null,
       L.contact ? h('div', { class: 'sub' }, 'Contact: ', L.contact) : null,
+      L.deal ? h('div', {}, h('span', { class: 'badge' }, L.deal === 'rent' ? 'For rent · price per month' : 'For sale')) : null,
+      L.place ? h('div', { style: 'margin:10px 0' }, h('div', { class: 'sub' }, '📍 ', L.place.label || `${L.place.lat}, ${L.place.lon}`, myPlace ? ` · ${km(myPlace, L.place).toFixed(1)} km from you` : ''), mapView([{ ...L.place, title: L.title, kind: L.category === 'housing' ? 'housing' : 'listing' }], { height: 220, zoom: 14 })) : null,
       L.org ? h('div', { class: 'sub' }, '🛡 Payment held in escrow; disputes heard by ', chainLink(L.org), ` (released after ${L.hold || 14} days unless disputed).`) : null,
       escrowBox(id, L),
       (L.tags || []).length ? h('div', { class: 'row', style: 'gap:6px;margin-top:6px' }, L.tags.map(t => h('span', { class: 'tagbox', style: 'padding-right:10px' }, '#' + t))) : null,
@@ -3490,17 +3504,35 @@ views.market = { render() {
   const pending = [...E.txpool.values()].filter(t => t.list && !E.ledger.listings.has(t.hash)).map(t => [t.hash, { ...t.list, certs: t.list.certs || [], seller: t.from, ts: t.ts, high: null, bids: 0, state: 'open', pending: true }]);
   const tab = route.tab, all = [...pending, ...E.ledger.listings].sort((a, b) => b[1].ts - a[1].ts);
   const live = all.filter(([, L]) => L.state === 'open' && (L.kind === 'fixed' || L.ends > Date.now()));
-  const tabs = [['items', 'For sale'], ['auctions', 'Auctions'], ['adviews', 'Ad views'], ['ads', 'Ad board'], ['mine', 'Mine'], ['new', '＋ Sell something']];
-  const grid = (list, empty) => list.length ? h('div', { class: 'grid' }, list.map(listingCard)) : h('div', { class: 'empty' }, empty);
+  const tabs = [['items', 'For sale'], ['housing', '🏠 Housing'], ['map', '🗺 Map'], ['auctions', 'Auctions'], ['adviews', 'Ad views'], ['ads', 'Ad board'], ['mine', 'Mine'], ['new', '＋ Sell something']];
+  // near me: sort by distance and keep what's within the chosen radius (your location stays in this browser)
+  const radius = Number(settings.nearKm || 0);
+  const near = (list) => !myPlace || !radius ? list : list.filter(([, L]) => L.place && km(myPlace, L.place) <= radius).sort((a, b) => km(myPlace, a[1].place) - km(myPlace, b[1].place));
+  const nearBar = h('div', { class: 'row', style: 'margin:0 0 10px' }, h('span', { class: 'sub' }, myPlace ? '📍 Near you:' : 'Near you:'),
+    h('select', { style: 'width:auto', onchange: async (e) => { settings.nearKm = Number(e.target.value); saveSettings(); if (settings.nearKm && !myPlace) { try { await locateMe(); } catch (err) { toast(err.message); } } render(true); } },
+      [[0, 'anywhere'], [5, 'within 5 km'], [25, 'within 25 km'], [100, 'within 100 km'], [500, 'within 500 km']].map(([v, l]) => h('option', { value: v, selected: radius === v }, l))),
+    myPlace ? h('button', { class: 'small', onclick: () => locateMe().then(() => render(true), e => toast(e.message)) }, 'Update my location') : null);
+  const grid = (list, empty) => { list = near(list); return list.length ? h('div', { class: 'grid' }, list.map(listingCard)) : h('div', { class: 'empty' }, radius && myPlace ? 'Nothing within that distance.' : empty); };
   let body;
   if (tab === 'item') body = marketItem(route.id);
   else if (tab === 'new') body = keep('market-new', marketNew);
   else if (tab === 'ads') body = adBoard();
-  else if (tab === 'auctions') body = grid(live.filter(([, L]) => L.kind === 'auction'), 'No auctions running.');
+  else if (tab === 'auctions') body = h('div', {}, nearBar, grid(live.filter(([, L]) => L.kind === 'auction'), 'No auctions running.'));
+  else if (tab === 'housing') {
+    const deal = settings.housingDeal || 'all', hs = live.filter(([, L]) => L.category === 'housing' && (deal === 'all' || L.deal === deal));
+    body = h('div', {}, h('div', { class: 'row', style: 'justify-content:space-between' }, viewChips('housingDeal', [['all', 'All'], ['sale', 'For sale'], ['rent', 'For rent']], () => render(true)), nearBar),
+      mapView(hs.filter(([, L]) => L.place).map(([id, L]) => ({ ...L.place, title: L.title, sub: `${fmtCoin(L.price)} coins${L.deal === 'rent' ? ' / month' : ''}`, href: `#/market/item/${id}`, kind: 'housing' })), { height: 300 }),
+      h('div', { style: 'margin-top:12px' }, grid(hs, 'No housing listed yet. List a home with the category “Housing & real estate”.')));
+  }
+  else if (tab === 'map') {
+    const pts = placedThings();
+    body = h('div', {}, h('p', { class: 'sub', style: 'margin-top:0' }, '🛍 listings · 🏠 housing · 🏛 organizations · 🏪 channels and businesses. Click a pin to open it.'), mapView(pts, { height: 520 }),
+      h('div', { class: 'sub', style: 'margin-top:6px' }, `${pts.length} place(s) known to this browser.`));
+  }
   else if (tab === 'adviews') body = h('div', {}, h('p', { class: 'sub' }, 'Bundles of verified ad views. Creators collect them from their viewers and sell them back to the advertiser (or anyone). Each one can be cashed in for the coins it holds.'), grid(live.filter(([, L]) => L.certs.length), 'No ad-view bundles for sale.'));
   else if (tab === 'mine') body = h('div', {}, h('h3', {}, 'Your listings'), grid(all.filter(([, L]) => isMine(L.seller)), 'You haven’t listed anything.'),
     h('h3', {}, 'Your bids and purchases'), grid(all.filter(([, L]) => (L.high && isMine(L.high.by)) || (L.buyer && isMine(L.buyer))), 'None yet.'));
-  else body = grid(live.filter(([, L]) => L.kind === 'fixed'), 'Nothing for sale yet. Be the first: ＋ Sell something.');
+  else body = h('div', {}, nearBar, grid(live.filter(([, L]) => L.kind === 'fixed'), 'Nothing for sale yet. Be the first: ＋ Sell something.'));
   return h('div', {}, h('h2', { style: 'margin:0' }, 'Market'),
     h('div', { class: 'tabs', style: 'flex-wrap:wrap' }, tabs.map(([k, l]) => h('a', { href: `#/market/${k}`, class: tab === k ? 'active' : '' }, l))), body);
 } };
@@ -3827,6 +3859,7 @@ views.orgs = { render() {
   const name = h('input', { type: 'text', placeholder: 'Name', maxLength: LIMITS.name, style: 'flex:1' }), jur = h('input', { type: 'text', placeholder: 'Jurisdiction (optional), e.g. United States', style: 'flex:1' }), about = h('textarea', { placeholder: 'What it does (moderation, arbitration…)', maxLength: LIMITS.about }), st = h('span', { class: 'sub' });
   return h('div', { style: 'max-width:900px' }, h('h2', { style: 'margin-top:0' }, 'Organizations'),
     h('p', { class: 'sub' }, 'Organizations moderate and arbitrate. Follow one to see what it flags (you choose what a flag does). Arbitration bodies take filings, run cases and rule on marketplace disputes; they nest in levels, and appeals go to the next level up, inside the network.'),
+    (() => { for (const id of all) if (!chains.has(id)) E.requestChain(openChain(id)); const pts = placedThings().filter(x => x.kind === 'org'); return pts.length ? h('div', { style: 'margin-bottom:12px' }, mapView(pts, { height: 300 })) : null; })(),
     h('div', { class: 'grid' }, all.length ? all.map(channelCard) : h('div', { class: 'empty' }, 'No organizations yet.')),
     h('details', { class: 'panel', style: 'margin-top:14px' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Create an organization'),
       h('div', { class: 'row', style: 'margin-top:8px' }, name, jur), about, h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { class: 'primary', onclick: async () => {
@@ -4110,6 +4143,72 @@ function fmtBar(ta) {   // B / I / link / list buttons for a text box
     h('button', { class: 'small', type: 'button', title: 'Link', onclick: () => { const u = prompt('Link address (https://…)'); if (u && /^https?:\/\//.test(u)) wrap('[', `](${u})`, 'link text'); } }, '🔗'),
     h('button', { class: 'small', type: 'button', title: 'List item', onclick: () => wrap((ta.value && !ta.value.endsWith('\n') ? '\n' : '') + '- ', '', 'item') }, '• list'),
     h('span', { class: 'sub' }, '**bold** *italic* [text](https://…) #tag @channel @@person'));
+}
+// ---------------------------------------------------------------- maps (OpenStreetMap via Leaflet)
+// Places are just coordinates on the chain; the map tiles come from OpenStreetMap and address search from Nominatim,
+// both loaded only when a map is shown.
+let leafletP = null;
+function leaflet() {
+  return leafletP ||= new Promise((res, rej) => {
+    const css = h('link', { rel: 'stylesheet', href: 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css' }); document.head.append(css);
+    const js = h('script', { src: 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js' }); js.onload = () => res(window.L); js.onerror = () => { leafletP = null; rej(new Error('map library unavailable')); }; document.head.append(js);
+  });
+}
+const round5 = (x) => Math.round(x * 1e5) / 1e5;
+function km(a, b) { const R = 6371, r = Math.PI / 180, dLa = (b.lat - a.lat) * r, dLo = (b.lon - a.lon) * r; const x = Math.sin(dLa / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dLo / 2) ** 2; return 2 * R * Math.asin(Math.sqrt(x)); }
+let myPlace = (() => { try { return JSON.parse(localStorage.getItem('opentube-here')) || null; } catch { return null; } })();
+function locateMe() {   // the browser's location, kept only in this browser
+  return new Promise((res, rej) => navigator.geolocation ? navigator.geolocation.getCurrentPosition(p => { myPlace = { lat: round5(p.coords.latitude), lon: round5(p.coords.longitude), label: 'Your location' }; try { localStorage.setItem('opentube-here', JSON.stringify(myPlace)); } catch {} res(myPlace); }, e => rej(new Error(e.message || 'location not allowed')), { timeout: 15000 }) : rej(new Error('this browser can’t share its location')));
+}
+async function geocode(q) {
+  const r = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=5&q=' + encodeURIComponent(q), { headers: { Accept: 'application/json' } });
+  return (await r.json()).map(x => ({ lat: round5(Number(x.lat)), lon: round5(Number(x.lon)), label: String(x.display_name).slice(0, 120) }));
+}
+// A map. points: [{ lat, lon, title, href, kind }]; onPick(place) makes clicks choose a spot.
+function mapView(points, { height = 360, center = null, zoom = null, onPick = null, picked = null } = {}) {
+  const el = h('div', { class: 'osm', style: `height:${height}px;border-radius:12px;overflow:hidden;background:var(--panel-2)` });
+  leaflet().then((L) => {
+    const map = L.map(el, { scrollWheelZoom: false });
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors' }).addTo(map);
+    const icon = (kind) => L.divIcon({ className: 'osm-pin', html: { listing: '🛍', housing: '🏠', org: '🏛', channel: '🏪', me: '📍' }[kind] || '📍', iconSize: [26, 26], iconAnchor: [13, 24] });
+    const bounds = [];
+    for (const pt of points) {
+      const m = L.marker([pt.lat, pt.lon], { icon: icon(pt.kind) }).addTo(map);
+      const pop = h('div', {}, pt.href ? h('a', { href: pt.href }, pt.title) : h('b', {}, pt.title), pt.sub ? h('div', { class: 'sub' }, pt.sub) : null); m.bindPopup(pop);
+      bounds.push([pt.lat, pt.lon]);
+    }
+    let pin = picked ? L.marker([picked.lat, picked.lon], { icon: icon('me') }).addTo(map) : null;
+    if (onPick) map.on('click', (e) => { const pl = { lat: round5(e.latlng.lat), lon: round5(e.latlng.lng), label: '' }; if (pin) pin.setLatLng(e.latlng); else pin = L.marker(e.latlng, { icon: icon('me') }).addTo(map); onPick(pl); });
+    if (center) map.setView([center.lat, center.lon], zoom || 13);
+    else if (bounds.length > 1) map.fitBounds(bounds, { padding: [30, 30], maxZoom: 14 });
+    else if (bounds.length === 1) map.setView(bounds[0], zoom || 13);
+    else if (myPlace) map.setView([myPlace.lat, myPlace.lon], 11);
+    else map.setView([20, 0], 2);
+    el._map = map; setTimeout(() => map.invalidateSize(), 50);
+  }, () => el.replaceChildren(h('div', { class: 'sub', style: 'padding:14px' }, 'The map couldn’t load (no connection to the map library).')));
+  return el;
+}
+// Choose a place: search an address, use your location, or click the map.
+function placePicker(initial, onChange) {
+  let cur = initial || null;
+  const label = h('input', { type: 'text', placeholder: 'Place name or address shown to others (optional)', maxLength: 120, value: cur?.label || '', style: 'flex:1' });
+  const q = h('input', { type: 'search', placeholder: 'Search an address or place…', style: 'flex:1' }), results = h('div'), st = h('span', { class: 'sub' });
+  const set = (pl, fly = false) => { cur = { ...pl, label: (pl.label || label.value).slice(0, 120) }; if (pl.label) label.value = pl.label; st.textContent = `📍 ${cur.lat}, ${cur.lon}`; onChange(cur); if (fly) mapEl._map?.setView([cur.lat, cur.lon], 15); };
+  label.oninput = () => { if (cur) { cur.label = label.value.slice(0, 120); onChange(cur); } };
+  const mapEl = mapView([], { height: 260, center: cur || myPlace || null, zoom: cur ? 15 : 11, picked: cur, onPick: (pl) => set({ ...pl, label: label.value }) });
+  const search = async () => { if (!q.value.trim()) return; st.textContent = 'Searching…'; try { const r = await geocode(q.value.trim()); results.replaceChildren(...(r.length ? r.map(x => h('div', {}, h('a', { href: '#', onclick: (e) => { e.preventDefault(); results.replaceChildren(); set(x, true); } }, x.label))) : [h('div', { class: 'sub' }, 'Nothing found.')])); st.textContent = ''; } catch { st.textContent = 'Address search is unavailable; click the map instead.'; } };
+  q.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); search(); } };
+  if (cur) st.textContent = `📍 ${cur.lat}, ${cur.lon}`;
+  return h('div', {}, h('div', { class: 'row' }, q, h('button', { class: 'small', type: 'button', onclick: search }, 'Search'),
+      h('button', { class: 'small', type: 'button', onclick: () => locateMe().then(pl => set(pl, true), e => toast(e.message)) }, 'Use my location'),
+      h('button', { class: 'small', type: 'button', onclick: () => { cur = null; label.value = ''; st.textContent = 'No place'; onChange(null); } }, 'Clear')),
+    results, h('div', { style: 'margin-top:6px' }, mapEl), h('div', { class: 'row', style: 'margin-top:6px' }, label, st), h('div', { class: 'sub' }, 'Click the map to place the pin. Only the pin and the label you type are published.'));
+}
+function placedThings() {   // everything with a place: open listings, organizations, channels (businesses)
+  const pts = [];
+  for (const [id, L] of E.ledger.listings) if (L.place && L.state === 'open' && (L.kind === 'fixed' || L.ends > Date.now())) pts.push({ ...L.place, title: L.title, sub: `${fmtCoin(listingPrice(L))} coins${L.deal === 'rent' ? ' / month' : ''}`, href: `#/market/item/${id}`, kind: L.category === 'housing' ? 'housing' : 'listing', id, L });
+  for (const c of chains.values()) { if (c === main) continue; const k = c.genesis.payload.kind, pr = derive(c.id)?.profile; if (pr?.place && ['org', 'channel'].includes(k)) pts.push({ ...pr.place, title: pr.name, sub: pr.place.label || (k === 'org' ? 'Organization' : 'Channel'), href: `#/c/${c.id}`, kind: k === 'org' ? 'org' : 'channel' }); }
+  return pts;
 }
 views.tag = { render() {
   const t = route.tag, found = [];
@@ -4529,6 +4628,7 @@ const chainTab = {
     const links = d.profile.links || [], owner = ownerIdentity(id);
     return h('div', { class: 'panel' }, h('p', { class: 'pre' }, d.profile.about || 'No description.'),
       d.profile.location ? h('div', { class: 'sub' }, '📍 ', d.profile.location) : null,
+      d.profile.place ? h('div', { style: 'margin-top:10px;max-width:640px' }, mapView([{ ...d.profile.place, title: d.profile.name, sub: d.profile.place.label, kind: d.kind === 'org' ? 'org' : 'channel' }], { height: 240, zoom: 15 })) : null,
       links.length ? h('div', { class: 'row', style: 'gap:8px;margin-top:8px;flex-wrap:wrap' }, links.map(l => h('a', { class: 'tagbox', style: 'padding:4px 12px', href: l.url, target: '_blank', rel: 'noopener noreferrer nofollow' }, '🔗 ' + l.label))) : null,
       owner && owner !== d.owner ? h('div', { class: 'sub', style: 'margin-top:8px' }, 'Owned by ', personLink(owner), ' (coins paid to this channel go to them)') : null,
       h('div', { class: 'kv', style: 'margin-top:16px' },
@@ -4547,6 +4647,8 @@ const chainTab = {
     const policy = h('select', {}, [['anyone', 'Anyone can comment'], ['approved', 'Only approved users'], ['off', 'Comments off']].map(([v, l]) => h('option', { value: v, selected: d.profile.comments === v }, l)));
     const key = h('input', { type: 'text', placeholder: 'User public key (43 characters)' });
     const location_ = h('input', { type: 'text', value: d.profile.location || '', maxLength: 100, placeholder: 'City, country (optional)' });
+    let place = d.profile.place || null, placeChanged = false;
+    const picker = placePicker(place, (pl) => { place = pl; placeChanged = true; });
     const avatarIn = h('input', { type: 'file', accept: 'image/*' });
     const links = [...(d.profile.links || [])];
     const linkList = h('div');
@@ -4565,6 +4667,7 @@ const chainTab = {
       if (avatarIn.files[0]) p.avatar = await imageFileToDataUrl(avatarIn.files[0]);
       if ((location_.value.trim() || '') !== (d.profile.location || '')) p.location = location_.value.trim();
       if (JSON.stringify(links) !== JSON.stringify(d.profile.links || [])) p.links = links;
+      if (placeChanged && place) p.place = place;
       if (name.value.trim() && name.value.trim() !== d.profile.name) p.name = name.value.trim();
       if (about.value !== d.profile.about) p.about = about.value;
       if (d.kind === 'channel' && policy.value !== d.profile.comments) p.comments = policy.value;
@@ -4586,6 +4689,7 @@ const chainTab = {
         h('label', {}, 'Name'), name, h('label', {}, 'About'), about,
         d.kind !== 'list' ? [h('label', {}, 'Avatar'), h('div', { class: 'row' }, avatar(d.profile.avatar, d.profile.name, 'sm'), avatarIn)] : null,
         h('label', {}, 'Location'), location_,
+        d.kind !== 'list' ? [h('label', {}, d.kind === 'org' ? 'On the map (where this organization is)' : 'On the map (for a business or venue; optional)'), picker] : null,
         h('label', {}, 'Links (shown on the About page)'), linkList, h('div', { class: 'row', style: 'margin-top:6px' }, lLabel, lUrl, addLink),
         d.kind === 'channel' ? [h('label', {}, 'Default comment setting (each video can override it)'), policy] : null,
         h('p', { class: 'sub' }, 'Edits are appended as a new block. The genesis block on the main chain never changes.'),
