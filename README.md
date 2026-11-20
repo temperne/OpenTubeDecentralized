@@ -61,12 +61,17 @@ It mirrors you: your browser publishes a signed list of the channels you've join
 
 Note: the joined-channel list is public, so anyone with your user ID can see which channels you host.
 
-## How browsers connect
+## How peers connect (no central node)
 
-1. **Home node first.** The page connects to `wss://<the host it was loaded from>/ot`. That node keeps the main chain (and by default every channel chain) and relays between all connected browsers. `server.mjs` also mines pending registrations; the Cloudflare node only mines its own ranking list. The same host runs a **video tracker** at `/tracker`, which introduces browsers that have the same video so they can connect over WebRTC. Public WebTorrent trackers are only a fallback.
-2. **Fallback: direct P2P.** If no node answers (a static host, `file://`, or the node is down), browsers find each other through public WebTorrent trackers using [Trystero](https://github.com/dmotz/trystero) and sync over WebRTC.
+OpenTube works like Bitcoin and BitTorrent: every browser and every command-line node is an equal peer, and none is required.
 
-URL options: `?node=wss://host/ot` (use a specific node), `?net=p2p` (skip the home node), `?net=local` (tabs of one browser only, for development), `?trackers=ws://localhost:8000` (override trackers, for testing).
+- **The mesh:** browsers and command-line nodes join the network's WebRTC room and connect directly to each other. Blocks, transactions and introductions spread over those connections; a peer that receives something new passes it on. Losing any peer, including the site the page came from, changes nothing for the others.
+- **Trackers only introduce peers:** the site's own tracker, every node's tracker, the network's defaults, and the current public WebSocket trackers from [ngosang/trackerslist](https://github.com/ngosang/trackerslist), fetched on every start (and remembered in case GitHub can't be reached). Any one of them is enough. Command-line nodes also use the list's UDP/HTTP trackers and the DHT for videos, so ordinary BitTorrent apps can share them too.
+- **Command-line nodes** are the always-on backbone, like bitcoind: they keep everything, join the same mesh (`@trystero-p2p/torrent` with WebTorrent's WebRTC, installed by `opentube.mjs`), and host videos.
+- **WebSocket links to nodes are only a backup:** a browser connects to the site's node (or `?nodes=wss://a/ot,wss://b/ot`, or nodes announcing a public address) only while it has fewer than 3 direct peers.
+- **Trending** is computed by each browser for itself; picking a ranking list is optional.
+
+URL options: `?net=p2p` (mesh only, no WebSocket links), `?net=local` (tabs of one browser, for development), `?trackers=wss://…` (use only these trackers, for testing).
 
 ## The chains
 

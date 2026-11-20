@@ -1444,74 +1444,98 @@ function mine(body, bits, onProgress) {
   return { promise, cancel: () => w.terminate() };
 }
 
-// ---------------------------------------------------------------- networking
-// 1. The node on the host that served this page (wss://<host>/ot), or ?node=<url>.
-// 2. Otherwise, direct browser-to-browser WebRTC via Trystero (public trackers for discovery).
-// ?net=local makes tabs of one browser talk via BroadcastChannel (development).
+// ---------------------------------------------------------------- networking: a peer-to-peer mesh, like Bitcoin / BitTorrent
+// Every connection is an equal peer: other browsers (and command-line nodes) over WebRTC, found through trackers (this
+// site's, any node's, public ones: any one is enough), plus command-line nodes over WebSocket where reachable (the host
+// this page came from is just one of them). Blocks, transactions and introductions spread over all of them. No node is
+// required; losing any one changes nothing. ?net=local: tabs of one browser only (development).
 const net = {
-  mode: 'starting', peers: new Set(), send: () => {},
-  status() { return this.mode === 'home' ? 'home node' : this.mode === 'p2p' ? `P2P · ${this.peers.size} peer${this.peers.size === 1 ? '' : 's'}` : this.mode === 'local' ? `local · ${this.peers.size} tabs` : 'connecting…'; },
-  online() { return this.mode === 'home' || this.peers.size > 0; }
+  links: new Map(),   // peer id -> { kind: 'p2p' | 'node' | 'local', send(data), label }
+  send(m, to) { if (to) return this.links.get(to)?.send(m); for (const l of this.links.values()) l.send(m); },
+  count(kind) { let n = 0; for (const l of this.links.values()) if (!kind || l.kind === kind) n++; return n; },
+  status() {
+    const t = this.count('local'); if (t) return `local · ${t} tab${t === 1 ? '' : 's'}`;
+    const b = this.count('p2p'), n = this.count('node');
+    if (!b && !n) return 'looking for peers…';
+    return [b ? `${b} peer${b === 1 ? '' : 's'}` : '', n ? `${n} node${n === 1 ? '' : 's'}` : ''].filter(Boolean).join(' · ');
+  },
+  online() { return this.links.size > 0; },
+  get peers() { return new Set(this.links.keys()); }
 };
 let engine;  // assigned below; the transports only deliver into it once it exists
 const deliver = (m, from) => engine?.handle(m, from);
-const joined = (pid) => { net.peers.add(pid); engine?.peerJoined(pid); engine?.logEvent('net', pid === 'home' ? 'connected to home node' : `peer ${pid.slice(0, 8)} joined`); scheduleRender(); };
-const left = (pid) => { net.peers.delete(pid); engine?.logEvent('net', pid === 'home' ? 'lost the home node connection' : `peer ${pid.slice(0, 8)} left`); scheduleRender(); };
+function addLink(id, kind, send, label) {
+  const fresh = !net.links.has(id);
+  net.links.set(id, { kind, send, label });
+  if (fresh) { engine?.peerJoined(id); engine?.logEvent('net', `${kind === 'node' ? 'node' : 'peer'} ${label || id.slice(0, 8)} connected`); scheduleRender(); }
+}
+function dropLink(id) {
+  const l = net.links.get(id); if (!l) return;
+  net.links.delete(id); engine?.logEvent('net', `${l.kind === 'node' ? 'node' : 'peer'} ${l.label || id.slice(0, 8)} left`); scheduleRender();
+}
 
+// The node on the host this page came from (one node among many; used by video introductions and live too).
 function homeNodeUrl() {
   if (params.get('node')) return params.get('node');
   if (!/^https?:$/.test(location.protocol)) return null;
   return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ot';
 }
-function connectHome(url) {
-  return new Promise((resolve) => {
-    let ws, settled = false, opened = false;
-    try { ws = new WebSocket(url); } catch { return resolve(false); }
-    const fail = () => { if (!settled) { settled = true; resolve(false); } };
-    const timer = setTimeout(() => { fail(); ws.close(); }, 4000);
+// Nodes to connect to over WebSocket: this host's, ?nodes=wss://a/ot,wss://b/ot, and nodes that announce a public address.
+function nodeUrls() {
+  const out = new Set();
+  const home = params.get('net') === 'p2p' ? null : homeNodeUrl(); if (home) out.add(home);
+  for (const u of (params.get('nodes') || '').split(',')) if (/^wss?:\/\//.test(u)) out.add(u);
+  for (const n of engine?.nodes?.values() || []) for (const a of n.addrs || []) {
+    const u = a.replace(/^http/, 'ws').replace(/\/+$/, '') + '/ot';
+    if (u.startsWith('wss://') || (location.protocol === 'http:' && !/\/\/(localhost|127\.)/.test(u))) out.add(u);
+  }
+  return [...out];
+}
+const nodeSockets = new Map();   // url -> { ws, tries }
+function connectNode(url) {
+  if (nodeSockets.has(url)) return;
+  const entry = { ws: null, tries: 0 }; nodeSockets.set(url, entry);
+  const id = 'node:' + url, label = url.replace(/^wss?:\/\//, '').replace(/\/ot$/, '');
+  const open = () => {
+    let ws; try { ws = entry.ws = new WebSocket(url); } catch { return; }
     ws.onopen = () => {
-      clearTimeout(timer); settled = true; opened = true;
-      net.mode = 'home';
-      fetch(url.replace(/^ws/, 'http').replace(/\/ot$/, '/status')).then(r => r.json()).then(j => { homeRanker = j.ranker || null; scheduleRender(); }).catch(() => {});
-      net.send = (m) => ws.readyState === 1 && ws.send(JSON.stringify(m));  // the home node relays to everyone
-      joined('home');
-      resolve(true);
+      entry.tries = 0;
+      addLink(id, 'node', (m) => ws.readyState === 1 && ws.send(JSON.stringify(m)), label);
+      if (url === homeNodeUrl()) fetch(url.replace(/^ws/, 'http').replace(/\/ot$/, '/status')).then(r => r.json()).then(j => { homeRanker = j.ranker || null; scheduleRender(); }).catch(() => {});
     };
-    ws.onmessage = (e) => { try { deliver(JSON.parse(e.data), 'home'); } catch {} };
-    ws.onerror = fail;
-    ws.onclose = () => {
-      clearTimeout(timer);
-      if (!opened) return fail();
-      left('home');
-      // Try to get the home node back; fall back to P2P if it stays away.
-      net.mode = 'starting';
-      setTimeout(async () => { if (!(await connectHome(url))) startP2P(); }, 2000);
-    };
-  });
+    ws.onmessage = (e) => { try { deliver(JSON.parse(e.data), id); } catch {} };
+    ws.onclose = () => { dropLink(id); setTimeout(open, Math.min(120000, 3000 * 2 ** entry.tries++)); };   // keep trying, slower and slower
+  };
+  open();
+}
+const MAX_NODES = 4;
+// WebSocket links to nodes are a backup for when the browser mesh is thin (few peers yet, or WebRTC blocked here):
+// with 3+ direct peers, no node connection is needed at all.
+function maintainNodes() {
+  if (net.count('p2p') >= 3) return;
+  for (const u of nodeUrls()) { if (nodeSockets.size >= MAX_NODES) break; connectNode(u); }
 }
 function startLocal() {
-  net.mode = 'local';
   const id = Math.random().toString(36).slice(2), bc = new BroadcastChannel('opentube-local');
   bc.onmessage = (e) => {
     const { from, to, data, hello } = e.data;
     if (from === id || (to && to !== id)) return;
-    if (!net.peers.has(from)) { bc.postMessage({ from: id, to: from, hello: 1 }); joined(from); }
+    if (!net.links.has(from)) { bc.postMessage({ from: id, to: from, hello: 1 }); addLink(from, 'local', (d) => bc.postMessage({ from: id, to: from, data: d }), 'tab ' + from.slice(0, 4)); }
     if (!hello) deliver(data, from);
   };
-  net.send = (data, to) => bc.postMessage({ from: id, to: to || null, data });
   bc.postMessage({ from: id, hello: 1 });
 }
+// The browser mesh: WebRTC connections to everyone in the network's room, introduced by the trackers.
 let p2pStarted = false;
 async function startP2P() {
-  if (p2pStarted) { net.mode = 'p2p'; return; }
-  p2pStarted = true; net.mode = 'p2p';
-  engine?.logEvent('net', 'no home node: switched to direct peer-to-peer discovery via public trackers');
-  const { joinRoom } = await import('https://cdn.jsdelivr.net/npm/@trystero-p2p/torrent@0.26.0/+esm');
-  const room = joinRoom({ appId: 'opentube-' + engine.MAIN_ID.slice(0, 16), relayConfig: { urls: TRACKERS }, maxReceiveBytes: 16 * 1024 ** 2 }, 'opentube/' + engine.MAIN_ID.slice(0, 32));
-  const action = room.makeAction('ot', { onMessage: (data, ctx) => deliver(data, ctx.peerId) });
-  room.onPeerJoin = joined;
-  room.onPeerLeave = left;
-  net.send = (data, to) => action.send(data, to ? { target: to } : undefined).catch(() => {});
+  if (p2pStarted) return; p2pStarted = true;
+  try {
+    const { joinRoom } = await import('https://cdn.jsdelivr.net/npm/@trystero-p2p/torrent@0.26.0/+esm');
+    const room = joinRoom({ appId: 'opentube-' + engine.MAIN_ID.slice(0, 16), relayConfig: { urls: TRACKERS }, maxReceiveBytes: 16 * 1024 ** 2 }, 'opentube/' + engine.MAIN_ID.slice(0, 32));
+    const action = room.makeAction('ot', { onMessage: (data, ctx) => deliver(data, ctx.peerId) });
+    room.onPeerJoin = (pid) => addLink(pid, 'p2p', (d) => action.send(d, { target: pid }).catch(() => {}), pid.slice(0, 8));
+    room.onPeerLeave = dropLink;
+  } catch (e) { engine?.logEvent('net', 'peer-to-peer mesh unavailable: ' + e.message); }
 }
 
 // ---------------------------------------------------------------- engine
@@ -1536,7 +1560,20 @@ const { main, chains, mempool, CFG, MAIN_ID, openChain, genesisFor, headsOf, app
 const derive = (id) => E.derive(id);
 // Video peers are introduced by the home node's own tracker first; public trackers are a fallback.
 const homeTracker = params.get('net') ? null : homeNodeUrl()?.replace(/\/ot$/, '/tracker');
+// Trackers only introduce peers (any one is enough). Built in: this site's and the network's defaults; added: the current
+// public WebSocket trackers from github.com/ngosang/trackerslist (browsers can only use wss:// trackers), remembered
+// for next time in case the list can't be fetched.
+const TRACKER_LIST = 'https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_all_ws.txt';
 const TRACKERS = params.get('trackers') ? params.get('trackers').split(',') : [homeTracker, ...CFG.trackers].filter(Boolean);
+if (!params.get('trackers')) {
+  const add = (list) => { for (const u of list) if (/^wss:\/\/[\w.-]+(:\d+)?(\/[\w./-]*)?$/.test(u) && !TRACKERS.includes(u.replace(/:443(?=\/|$)/, ''))) TRACKERS.push(u.replace(/:443(?=\/|$)/, '')); };
+  try { add(JSON.parse(localStorage.getItem('opentube-trackers') || '[]')); } catch {}
+  try {
+    const r = await fetch(TRACKER_LIST, { signal: AbortSignal.timeout(3000) });
+    const list = (await r.text()).split('\n').map(x => x.trim()).filter(Boolean).slice(0, 20);
+    add(list); try { localStorage.setItem('opentube-trackers', JSON.stringify(list)); } catch {}
+  } catch {}
+}
 let homeRanker = null;  // the ranking list run by the node that served this page
 const MIRROR = isKey(params.get('mirror')) ? params.get('mirror') : null;  // see "mirror mode" at the end
 
@@ -2381,7 +2418,7 @@ function channelCard(id) {
 }
 // Which ranking to show: the viewer's choice, else this site's node, else any we know, else compute locally.
 function currentRanking() {
-  const pick = [settings.ranker, homeRanker, ...E.rankings.keys()].find(id => id && E.rankings.has(id));
+  const pick = settings.ranker && E.rankings.has(settings.ranker) ? settings.ranker : null;   // your choice of ranking list; otherwise this browser ranks for itself
   if (pick) return E.rankings.get(pick);
   // No ranking list has published: load every registered channel and rank them here.
   for (const [id, e] of E.directory) if (e.genesis.payload.kind === 'channel' && !chains.has(id)) { const c = openChain(id); if (c) E.requestChain(c); }
@@ -3236,15 +3273,10 @@ const secs = (ts) => ts ? Math.round((Date.now() - ts) / 1000) : null;
 function healthChecks() {
   const checks = [];
   // connection
-  if (net.mode === 'home') {
-    const quiet = secs(E.stats.lastMsgIn);
-    checks.push(quiet !== null && quiet > 90 ? warn('Connection', `Connected to the home node, but nothing has arrived for ${quiet} s.`, 'The node may be overloaded or restarting. Reload if this persists.')
-      : ok('Connection', `Connected to the home node at ${location.host}.`));
-  } else if (net.mode === 'p2p') {
-    checks.push(net.peers.size ? warn('Connection', `No home node; connected directly to ${net.peers.size} other browser(s).`, 'This works, but chains only sync while those browsers are open. Run server.mjs or the Cloudflare node on the host that serves this page.')
-      : bad('Connection', 'No home node, and no other browsers found through the public trackers.', 'Nobody else may be online, or the trackers are blocked. Open the site from a host that runs a node (server.mjs / Cloudflare).'));
-  } else if (net.mode === 'local') checks.push(warn('Connection', `Local test mode: only tabs of this browser (${net.peers.size}).`, 'Remove ?net=local from the address to join the real network.'));
-  else checks.push(warn('Connection', 'Connecting…', 'If this does not change within 10 s, the home node is unreachable.'));
+  const nP = net.count('p2p'), nN = net.count('node'), nL = net.count('local');
+  if (nL) checks.push(warn('Connection', `Local test mode: only tabs of this browser (${nL}).`, 'Remove ?net=local from the address to join the real network.'));
+  else if (nP + nN === 0) checks.push(bad('Connection', 'No peers yet: no other browser or node found.', 'Nobody else may be online, or the trackers are blocked on this network. Running OpenTube on a computer (My node) gives the network an always-on peer.'));
+  else checks.push((nP + nN >= 2 ? ok : warn)('Connection', `Connected to ${nP} peer(s) directly and ${nN} node(s). Every connection is an equal peer; none is required.`, nP + nN < 2 ? 'With only one connection, losing it pauses syncing until another peer is found.' : undefined));
   // main chain
   const ms = E.syncState(main);
   const nodeH = diag.home?.height;
@@ -3951,10 +3983,7 @@ window.opentube = { me, engine: E, net, wt, live: { broadcasts, viewing, hub: li
 
 // ---------------------------------------------------------------- connect
 if (params.get('net') === 'local') startLocal();
-else {
-  const url = params.get('net') === 'p2p' ? null : homeNodeUrl();
-  if (!(url && await connectHome(url))) startP2P();
-}
+else { startP2P(); setTimeout(maintainNodes, 6000); setInterval(maintainNodes, 60000); }   // give the mesh a few seconds first
 
 // ---------------------------------------------------------------- mirror mode
 // ?mirror=<user ID> turns this page into that person's always-on host (e.g. headless Chromium on a

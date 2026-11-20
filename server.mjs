@@ -330,6 +330,27 @@ function dial(url) {
 }
 PEERS.forEach(dial);
 
+// ---- the peer mesh: join the network's WebRTC room like every browser does, so browsers and other nodes connect to
+// this node directly (no server in between), introduced by any tracker: the site's, this node's own, public ones.
+// Needs the @trystero-p2p/torrent and webtorrent packages (opentube.mjs installs both). MESH=0 turns it off.
+async function joinMesh() {   // called once the HTTP server listens (its own tracker must be up)
+  try {
+    const [{ joinRoom }, { RTCPeerConnection }] = await Promise.all([import('@trystero-p2p/torrent'), import('webrtc-polyfill')]);
+    const site = process.env.NODE_SITE;
+    let listed = []; try { listed = (await (await fetch('https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_all_ws.txt', { signal: AbortSignal.timeout(5000) })).text()).split('\n').map(x => x.trim()).filter(x => x.startsWith('wss://')).slice(0, 20); } catch {}
+    const urls = [...new Set([site && site.replace(/^http/, 'ws') + '/tracker', `ws://localhost:${PORT}/tracker`, ...(engine.CFG.trackers || []), ...listed].filter(Boolean))];
+    const room = joinRoom({ appId: 'opentube-' + engine.MAIN_ID.slice(0, 16), relayConfig: { urls }, rtcPolyfill: RTCPeerConnection, maxReceiveBytes: 16 * 1024 ** 2 }, 'opentube/' + engine.MAIN_ID.slice(0, 32));
+    const action = room.makeAction('ot', { onMessage: (data, ctx) => engine.handle(data, 'rtc:' + ctx.peerId).catch(() => {}) });
+    room.onPeerJoin = (pid) => {
+      const id = 'rtc:' + pid;
+      peers.set(id, { send: (s) => action.send(JSON.parse(s), { target: pid }).catch(() => {}), label: 'webrtc ' + pid.slice(0, 6) });
+      log(`+ peer ${pid.slice(0, 8)} over WebRTC (${peers.size} connected)`); engine.peerJoined(id);
+    };
+    room.onPeerLeave = (pid) => { if (peers.delete('rtc:' + pid)) log(`- peer ${pid.slice(0, 8)} (${peers.size} connected)`); };
+    log(`peer mesh: joined the network's room via ${urls.length} tracker(s)`);
+  } catch (e) { log('peer mesh unavailable:', e.message, '(npm install @trystero-p2p/torrent webtorrent next to server.mjs)'); }
+}
+
 // ---- HTTP: the page itself, a status endpoint, and the WebSocket upgrade
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://x');
@@ -359,4 +380,7 @@ server.on('upgrade', (req, socket) => {
   else if (p === '/live') acceptSocket(req, socket, 'live');
   else socket.destroy();
 });
-server.listen(PORT, () => log(`OpenTube node on http://localhost:${PORT}  (node /ot, video tracker /tracker, live hub /live, status /status)`));
+server.listen(PORT, () => {
+  log(`OpenTube node on http://localhost:${PORT}  (node /ot, video tracker /tracker, live hub /live, status /status)`);
+  if (process.env.MESH !== '0') joinMesh();
+});

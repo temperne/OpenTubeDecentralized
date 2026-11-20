@@ -79,6 +79,12 @@ const install = (spec) => spawnSync(npm, ['install', '--prefix', HOME, '--no-aud
 
 // Hosting: the node itself keeps and shares the videos (WebTorrent over WebRTC, no browser). Needs the webtorrent
 // package, installed into ~/.opentube once (a few MB). --browser-host runs the older headless-Chromium host instead.
+// The peer mesh (browsers and nodes connect to this node directly over WebRTC) needs Trystero and WebTorrent's WebRTC.
+if (want.node && (!installed('@trystero-p2p/torrent') || !installed('webtorrent'))) {
+  log('first run: installing the peer-to-peer libraries (a few MB, once)…');
+  if (!installed('webtorrent')) install('webtorrent@3.0.21');
+  if (!installed('@trystero-p2p/torrent')) install('@trystero-p2p/torrent@0.26.0');
+}
 let nodeHosts = false;
 if (want.host && want.node && !args['browser-host']) {
   if (!installed('webtorrent')) { log('first run: installing WebTorrent for video hosting (a few MB, once)…'); install('webtorrent@3.0.21'); }

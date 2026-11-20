@@ -11,11 +11,19 @@ import path from 'node:path';
 
 const cleanName = (s, fallback = 'Untitled') => String(s || '').replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().replace(/^\.+/, '').slice(0, 100).trim() || fallback;
 
+// Public trackers from github.com/ngosang/trackerslist: WebSocket ones (shared with browsers) and the best UDP/HTTP ones.
+export async function publicTrackers() {
+  const get = async (f) => { try { const r = await fetch('https://raw.githubusercontent.com/ngosang/trackerslist/master/' + f, { signal: AbortSignal.timeout(5000) }); return (await r.text()).split('\n').map(x => x.trim()).filter(Boolean); } catch { return []; } };
+  const [ws, best] = await Promise.all([get('trackers_all_ws.txt'), get('trackers_best.txt')]);
+  return [...ws.slice(0, 20), ...best.slice(0, 20)];
+}
 export async function startHost({ engine, user, videoDir, site, capGB = 5, log = console.log }) {
   const { default: WebTorrent } = await import('webtorrent');
-  const client = new WebTorrent({ dht: false, lsd: false, utp: false, natUpnp: false, natPmp: false });
+  // DHT and TCP/UDP trackers too: ordinary BitTorrent apps can share these videos with this node, and it bridges them to browsers.
+  const client = new WebTorrent({ dht: true, lsd: false, natUpnp: false, natPmp: false });
   client.on('error', (e) => log('[host] webtorrent:', e.message));
-  const trackers = [...new Set([site ? site.replace(/^http/, 'ws') + '/tracker' : null, ...(engine.CFG.trackers || [])].filter(Boolean))];
+  const listed = await publicTrackers();
+  const trackers = [...new Set([site ? site.replace(/^http/, 'ws') + '/tracker' : null, ...(engine.CFG.trackers || []), ...listed].filter(Boolean))];
   await fsp.mkdir(videoDir, { recursive: true });
   const folders = new Map();   // chain -> { dir, name, meta }
   const torrents = new Map();  // infohash -> { chain, t }
@@ -100,7 +108,7 @@ export async function startHost({ engine, user, videoDir, site, capGB = 5, log =
     for (const [ih, x] of torrents) if (!want.has(x.chain)) { x.t.destroy(); torrents.delete(ih); }   // left: stop sharing (files stay)
   }
   setTimeout(follow, 3000); setInterval(follow, 30000);
-  log(`[host] hosting for user ${user.slice(0, 8)}… in ${videoDir} (trackers: ${trackers.join(', ')})`);
+  log(`[host] hosting for user ${user.slice(0, 8)}… in ${videoDir} (${trackers.length} trackers + DHT)`);
   return {
     follow,
     status: () => {
