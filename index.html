@@ -129,6 +129,7 @@
     <a href="#/square" data-nav="square">Posts</a>
     <a href="#/friends" data-nav="friends">Friends</a>
     <a href="#/market" data-nav="market">Market</a>
+    <a href="#/orgs" data-nav="orgs">Orgs</a>
     <a href="#/wallet" data-nav="wallet">Wallet</a>
     <a href="#/mine" data-nav="mine" id="nav-mine">My channel</a>
     <a href="#/me" data-nav="me">My node</a>
@@ -143,6 +144,9 @@
   </a>
 </header>
 <div id="folderbar" class="hidden"></div>
+<div id="terms-banner" class="hidden" style="background:var(--panel-2);border-bottom:1px solid var(--border);padding:10px 16px;font-size:14px">
+  By using OpenTube you agree that disputes about transactions made through it are resolved by the network’s arbitration, as described in the <a href="#/terms">terms</a>. <button class="small primary" id="terms-ok">I agree</button>
+</div>
 <main id="app"><div class="empty">Starting node…</div></main>
 <div id="toast"></div>
 <!--
@@ -267,13 +271,14 @@ function validGenesis(g) {
   if (!g || g.v !== 1 || g.chain !== null || !Array.isArray(g.parents) || g.parents.length || g.height !== 0 || !isKey(g.author)) return false;
   const p = g.payload;
   if (!p || p.type !== 'genesis' || !['channel', 'list', 'group', 'circle', 'square', 'org', 'case'].includes(p.kind)) return false;
-  if ((p.parent !== undefined) !== (p.kind === 'case') || (p.parent !== undefined && !isHex(p.parent, 64))) return false;   // cases live under an organization
+  if (p.parent !== undefined && (!isHex(p.parent, 64) || !['case', 'org'].includes(p.kind))) return false;   // child chains: cases, and sub-jurisdictions of an org
+  if (p.kind === 'case' && p.parent === undefined) return false;
   if (p.kind === 'square') return validSquareGenesis(g);
   if (!isStr(p.name, LIMITS.name) || !p.name.trim() || !isStr(p.about, LIMITS.about)) return false;
   if (p.kind === 'channel' && (!isImg(p.avatar) || !['anyone', 'approved', 'off'].includes(p.comments))) return false;
   if (p.kind === 'list' && p.ranking !== undefined && p.ranking !== true) return false;
   if (p.kind === 'group' && (!isImg(p.avatar) || !['open', 'approved'].includes(p.join))) return false;   // open: anyone may post; approved: members the owner approved
-  if (p.kind === 'org' && !isImg(p.avatar)) return false;
+  if (p.kind === 'org' && (!isImg(p.avatar) || !isStr(p.jurisdiction ?? '', 120))) return false;   // jurisdiction: e.g. United States › California
   if (p.kind === 'case' && (!(p.listing === undefined || isHex(p.listing, 64)) || !(p.about.trim().length > 0))) return false;
   if (p.kind === 'circle' && !(typeof p.enc === 'string' && /^[A-Za-z0-9_-]{80,100}$/.test(p.enc))) return false;   // your friends page: enc = your public encryption key
   return true;
@@ -308,7 +313,9 @@ function squareMonths(now = Date.now()) {   // every month from the first until 
 // ---- the tree of chains. A chain can have CHILD chains registered on it with a `child` block instead of on the main
 // chain: an org's dispute CASES live under the org. Nobody needs a child chain until they look at it, so browsers
 // sync it only when they open it (nodes keep them all).
-const ORG = { roles: ['moderator', 'arbiter'], slug: /^[a-z0-9][a-z0-9-]{1,30}$/ };
+const ORG = { roles: ['moderator', 'clerk', 'judge'], slug: /^[a-z0-9][a-z0-9-]{1,30}$/, filings: ['complaint', 'motion', 'response', 'evidence', 'appeal', 'order', 'other'],
+  states: ['filed', 'open', 'hearing', 'stayed', 'decided', 'appealed', 'closed'], appealDays: 14 };
+const orderPreimage = (caseId, x) => 'opentube-order:' + caseId + ':' + canon({ title: x.title, text: x.text, buyerShare: x.buyerShare ?? null });   // a judge signs this
 function orgRoles(chain, parents) {   // key -> Set(roles) as of that point in the org's history
   const roles = new Map(), anc = chain.ancestors(parents);
   const list = [...anc].map(x => chain.blocks.get(x)).filter(x => x.payload.type === 'role' && chain.isOwnerBlock(x)).sort((a, b) => a.height - b.height || a.ts - b.ts);
@@ -366,25 +373,35 @@ function validPayload(chain, b, CFG) {
     if (p.type === 'hide') return isHex(p.target, 64) && chain.blocks.get(p.target)?.author === b.author;
     return false;
   }
-  if (p.type === 'child') return (owner || kind === 'org') && (owner || zeroBits(b.hash) >= CFG.commentDifficulty) && !!p.genesis && validGenesis(p.genesis) && p.genesis.payload.parent === chain.id;   // signature checked on insert
+  // child chains: an org's owner adds sub-jurisdictions and cases; its clerks open cases
+  if (p.type === 'child') return !!p.genesis && validGenesis(p.genesis) && p.genesis.payload.parent === chain.id
+    && (owner || (kind === 'org' && p.genesis.payload.kind === 'case' && orgRoles(chain, b.parents).get(b.author)?.has('clerk')));   // the genesis signature is checked on insert
   if (kind === 'org') {
     if (owner && p.type === 'class') return ORG.slug.test(p.id) && isStr(p.name, 60) && isStr(p.about ?? '', LIMITS.about) && (p.on === undefined || typeof p.on === 'boolean');
     if (owner && p.type === 'role') return isKey(p.key) && ORG.roles.includes(p.role) && typeof p.on === 'boolean';
     if (owner && ['post', 'profile', 'hide', 'rekey'].includes(p.type)) { /* falls through to the common owner rules below */ }
     else {
       if (p.type === 'flag') return refShape(p.ref) && ORG.slug.test(p.cls) && typeof p.on === 'boolean' && isStr(p.note ?? '', LIMITS.comment) && (owner || orgRoles(chain, b.parents).get(b.author)?.has('moderator'));
+      if (!owner && zeroBits(b.hash) < CFG.commentDifficulty) return false;
+      // a filing handed to the clerk: anyone may file (with the anti-spam work); the clerk puts it on a case's docket.
+      // An order a judge signed carries `judge` and `sig` (the signature is checked when the clerk enters it).
+      if (p.type === 'submit') return (p.judge === undefined || isKey(p.judge)) && ORG.filings.includes(p.what) && isStr(p.title, LIMITS.title) && p.title.trim().length > 0 && isStr(p.text, LIMITS.text) && (p.case === undefined || isHex(p.case, 64)) && (p.listing === undefined || isHex(p.listing, 64))
+        && (p.sig === undefined || typeof p.sig === 'string') && (p.buyerShare === undefined || (Number.isFinite(p.buyerShare) && p.buyerShare >= 0 && p.buyerShare <= 1));
       if (owner) return false;
-      if (zeroBits(b.hash) < CFG.commentDifficulty) return false;
       if (p.type === 'report') return refShape(p.ref) && ORG.slug.test(p.cls) && isStr(p.note ?? '', LIMITS.comment);
       if (p.type === 'petition') return ORG.slug.test(p.id) && isStr(p.name, 60) && isStr(p.about ?? '', LIMITS.about);
       if (p.type === 'vote') return isHex(p.target, 64) && chain.ancestors(b.parents).has(p.target) && [1, 0, -1].includes(p.v);
       return false;
     }
   }
-  if (kind === 'case') {   // a dispute: the parties and the org's arbiters write here; the binding ruling is a ledger transaction
-    if (p.type === 'post') return isStr(p.text, LIMITS.text) && p.text.trim().length > 0 && isStr(p.name ?? '', LIMITS.name) && (owner || zeroBits(b.hash) >= CFG.commentDifficulty);
-    if (p.type === 'ruling') return isStr(p.text, LIMITS.text) && Number.isFinite(p.buyerShare) && p.buyerShare >= 0 && p.buyerShare <= 1 && (owner || zeroBits(b.hash) >= CFG.commentDifficulty);
+  // A case is a chain whose key the clerk holds: only the clerk writes its docket. Filings come from the parties through
+  // the court (submit blocks there); orders carry the signing judge's signature (checked on insert).
+  if (kind === 'case') {
     if (!owner) return false;
+    if (p.type === 'filing') return ORG.filings.includes(p.what) && isStr(p.title, LIMITS.title) && isStr(p.text, LIMITS.text) && isKey(p.by) && (p.ref === undefined || isHex(p.ref, 64));
+    if (p.type === 'status') return ORG.states.includes(p.state) && isStr(p.note ?? '', LIMITS.comment);
+    if (p.type === 'order') return isStr(p.title, LIMITS.title) && isStr(p.text, LIMITS.text) && isKey(p.judge) && typeof p.sig === 'string' && (p.buyerShare === undefined || (Number.isFinite(p.buyerShare) && p.buyerShare >= 0 && p.buyerShare <= 1));
+    if (!['profile', 'rekey', 'hide'].includes(p.type)) return false;
   }
   if (kind === 'circle') {
     if (p.type === 'sealed') return sealedShape(p) && (owner ? true : p.target !== undefined && zeroBits(b.hash) >= CFG.commentDifficulty && chain.ancestors(b.parents).has(p.target));
@@ -583,6 +600,7 @@ const receiptShape = (r) => !!r && typeof r === 'object' && r.v === 1 && r.kind 
 const NAMES = { re: /^[a-z0-9](?:[a-z0-9._-]{1,28}[a-z0-9])$/ };
 const nameShape = (n) => !!n && typeof n === 'object' && (n.space === '@' || n.space === '~') && isHex(n.chain, 64) && (n.handle === null || (typeof n.handle === 'string' && NAMES.re.test(n.handle) && !/[._-]{2}/.test(n.handle)));
 const bindPreimage = (identity, key) => `opentube-bind:${identity}:${key}`;     // signed by the channel key: "this identity owns me"
+const courtPreimage = (court, parent) => `opentube-court:${court}:${parent}`;   // signed by the court above: "appeals from court come to me"
 const retirePreimage = (old, key) => `opentube-retire:${old}:${key}`;            // signed by the new key: "I take over from old"
 const amtOk = (a) => Number.isSafeInteger(a) && a > 0 && a <= COIN.maxAmt;
 // ---- paying per piece. Whoever downloads a video pays the peer that sent each piece, at the network's piece price,
@@ -631,6 +649,8 @@ class Ledger {
     this.receipts = new Set(src?.receipts); this.rcptUse = new Map(src?.rcptUse); this.poolFees = new Map(src?.poolFees);
     this.settled = new Set(src?.settled); this.earned = new Map([...(src?.earned || [])].map(([k, v]) => [k, [...v]])); this.clock = src?.clock || 0;   // viewer -> first time slot after the last ad they were paid for
     this.names = new Map(src?.names); this.nameOf = new Map(src?.nameOf);   // '@cooking' -> { chain, key }; chain -> '@cooking'
+    this.superior = new Map(src?.superior);   // court key -> the court above it (appeals go there)
+    this.judges = new Map([...(src?.judges || [])].map(([k, v]) => [k, new Set(v)]));   // court key -> keys that may rule for it
     this.owners = new Map(src?.owners);   // key -> the identity it belongs to (channel keys: `bind`; retired identities: `retire`)
     this.retired = new Set(src?.retired);  // keys that may not send transactions any more
     this.tabsPaid = new Map(src?.tabsPaid); this.viewers = new Set(src?.viewers);   // 'payer|payee|video' -> units paid; 'video|viewer' seen
@@ -680,10 +700,19 @@ class Ledger {
     if (t.release || t.dispute || t.rule) {
       const id = (t.release || t.dispute || t.rule).id, L = this.listings.get(id), E = L?.escrow;
       if (!E || !['held', 'disputed'].includes(E.state)) return 'nothing is held for that listing';
-      if (t.release) return this.resolve(E.buyer) === this.resolve(t.from) ? null : 'only the buyer releases the payment';
-      if (t.dispute) return E.state === 'held' && [E.buyer, L.seller].some(k => this.resolve(k) === this.resolve(t.from)) ? null : 'only the buyer or the seller can dispute, once';
-      return this.resolve(L.arbiter) === this.resolve(t.from) ? null : 'only the listing’s arbiter can rule';
+      const party = [E.buyer, L.seller].some(k => this.resolve(k) === this.resolve(t.from));
+      if (t.release) return E.state === 'held' && this.resolve(E.buyer) === this.resolve(t.from) ? null : 'only the buyer releases the payment';
+      if (t.dispute) return E.state === 'held' && party ? null : 'only the buyer or the seller can dispute, once';
+      return E.state === 'disputed' && this.mayRule(E.court || L.arbiter, t.from) ? null : 'only the court hearing the dispute (or its judges) can rule';
     }
+    if (t.appeal) {
+      const L = this.listings.get(t.appeal.id), E = L?.escrow;
+      if (!E || E.state !== 'ruled' || t.ts > E.until) return 'there’s no ruling open to appeal';
+      if (![E.buyer, L.seller].some(k => this.resolve(k) === this.resolve(t.from))) return 'only the buyer or the seller can appeal';
+      return this.superior.has(E.court || L.arbiter) ? null : 'this is the highest court: its ruling is final';
+    }
+    if (t.court) return this.superior.has(t.from) ? 'this court already has a court above it' : null;
+    if (t.judge) return null;
     if (t.unlist) { const L = this.listings.get(t.unlist.id); return !L || L.seller !== t.from ? 'not your listing' : L.high ? 'it already has a bid' : null; }
     if (t.buy) {
       const L = this.listings.get(t.buy.id);
@@ -787,10 +816,18 @@ class Ledger {
       this.add(t.from, -L.price); this.pay(L, t.from, L.price, t.ts); this.closeListing(t.buy.id, L, t.from, 'sold');
     } else if (t.release) {
       const L = this.listings.get(t.release.id); this.payOut(L, 0, t.ts, 'released');
+    } else if (t.appeal) {   // the ruling is set aside until the court above rules
+      const L = this.listings.get(t.appeal.id), E = L.escrow;
+      E.state = 'disputed'; E.court = this.superior.get(E.court || L.arbiter); E.appeals = (E.appeals || 0) + 1; E.case = t.appeal.case || E.case;
+    } else if (t.court) { this.superior.set(t.from, t.court.parent);
+    } else if (t.judge) {
+      const set = this.judges.get(t.from) || this.judges.set(t.from, new Set()).get(t.from);
+      if (t.judge.on) set.add(t.judge.key); else set.delete(t.judge.key);
     } else if (t.dispute) {
       const L = this.listings.get(t.dispute.id); L.escrow.state = 'disputed'; L.escrow.disputedBy = t.from; L.escrow.case = t.dispute.case || null;
-    } else if (t.rule) {
-      const L = this.listings.get(t.rule.id); this.payOut(L, Math.floor(L.escrow.amt * t.rule.buyerShare), t.ts, 'ruled');
+    } else if (t.rule) {   // a ruling stands once the appeal window passes (settleAuctions pays it out)
+      const L = this.listings.get(t.rule.id), E = L.escrow;
+      E.state = 'ruled'; E.buyerShare = t.rule.buyerShare; E.ruledBy = t.from; E.court = E.court || L.arbiter; E.until = t.ts + ORG.appealDays * 86400000;
     } else if (t.bid) {
       const L = this.listings.get(t.bid.id);
       if (L.high) this.add(L.high.by, L.high.amt);   // the outbid bidder gets their coins back
@@ -817,6 +854,7 @@ class Ledger {
     }
     return null;
   }
+  mayRule(court, key) { return this.resolve(court) === this.resolve(key) || !!this.judges.get(court)?.has(key) || [...(this.judges.get(court) || [])].some(j => this.resolve(j) === this.resolve(key)); }
   pay(L, buyer, amt, ts) {   // the sale's coins: held when the listing names an arbiter, else to the seller now
     if (L.arbiter) L.escrow = { buyer, amt, state: 'held', until: ts + (L.hold || 14) * 86400000 };
     else this.add(L.seller, amt - this.feeCut({ ts }, amt));
@@ -837,7 +875,10 @@ class Ledger {
       if (L.high) { this.pay(L, L.high.by, L.high.amt, L.ends); this.closeListing(id, L, L.high.by, 'sold'); }
       else this.closeListing(id, L, null, 'ended');
     }
-    for (const L of this.listings.values()) if (L.escrow?.state === 'held' && L.escrow.until <= now) this.payOut(L, 0, now, 'released');   // nobody disputed in time
+    for (const L of this.listings.values()) {
+      if (L.escrow?.state === 'held' && L.escrow.until <= now) this.payOut(L, 0, now, 'released');   // nobody disputed in time
+      else if (L.escrow?.state === 'ruled' && L.escrow.until <= now) this.payOut(L, Math.floor(L.escrow.amt * L.escrow.buyerShare), now, 'final');   // nobody appealed in time
+    }
   }
   // After a block's transactions: pay its miner, then move prices toward the target load.
   feeCut(t, amt) {   // the share of a payment that goes to the resource pools of its period
@@ -885,7 +926,7 @@ class Ledger {
   supply() {   // coins in wallets, plus those held in ad-view certificates and in the high bids of open auctions
     let s = 0; for (const v of this.bal.values()) s += v;
     for (const c of this.certs.values()) s += c.amt;
-    for (const L of this.listings.values()) { if (L.state === 'open' && L.high) s += L.high.amt; if (['held', 'disputed'].includes(L.escrow?.state)) s += L.escrow.amt; }
+    for (const L of this.listings.values()) { if (L.state === 'open' && L.high) s += L.high.amt; if (['held', 'disputed', 'ruled'].includes(L.escrow?.state)) s += L.escrow.amt; }
     return s;
   }
 }
@@ -944,7 +985,7 @@ function txShape(t) {
     if (!Array.isArray(outs) || !Array.isArray(burns) || outs.length > 100 || burns.length > 20 || !(outs.length + burns.length)) return false;
     return outs.every(o => o && isKey(o.to) && isKey(o.token) && amtOk(o.amt) && o.to !== t.from) && burns.every(b => b && isKey(b.token) && b.token !== t.from && amtOk(b.amt));
   }
-  const acts = ['pay', 'starter', 'post', 'view', 'vote', 'host', 'claim', 'name', 'serve', 'tabs', 'redeem', 'certs', 'list', 'unlist', 'buy', 'bid', 'bind', 'retire', 'release', 'dispute', 'rule'].filter(k => t[k] !== undefined);
+  const acts = ['pay', 'starter', 'post', 'view', 'vote', 'host', 'claim', 'name', 'serve', 'tabs', 'redeem', 'certs', 'list', 'unlist', 'buy', 'bid', 'bind', 'retire', 'release', 'dispute', 'rule', 'appeal', 'court', 'judge'].filter(k => t[k] !== undefined);
   if (acts.length !== 1 || t.outs !== undefined || t.burns !== undefined) return false;
   const x = t[acts[0]];
   switch (acts[0]) {
@@ -961,6 +1002,9 @@ function txShape(t) {
     case 'certs': return !!x && isKey(x.to) && x.to !== t.from && Array.isArray(x.ids) && x.ids.length >= 1 && x.ids.length <= PIECE.maxCerts && x.ids.every(i => isHex(i, 64)) && new Set(x.ids).size === x.ids.length;
     case 'list': return listingShape(x);
     case 'release': return !!x && isHex(x.id, 64);
+    case 'appeal': return !!x && isHex(x.id, 64) && (x.case === undefined || isHex(x.case, 64));
+    case 'court': return !!x && isKey(x.parent) && x.parent !== t.from && typeof x.sig === 'string';   // x.sig: the court above agrees (courtPreimage)
+    case 'judge': return !!x && isKey(x.key) && typeof x.on === 'boolean';
     case 'dispute': return !!x && isHex(x.id, 64) && (x.case === undefined || isHex(x.case, 64));
     case 'rule': return !!x && isHex(x.id, 64) && Number.isFinite(x.buyerShare) && x.buyerShare >= 0 && x.buyerShare <= 1;
     case 'bind': return !!x && isKey(x.key) && x.key !== t.from && typeof x.sig === 'string';      // x.sig: the key's consent (bindPreimage)
@@ -980,6 +1024,7 @@ async function checkTx(t) {
   if (t.tabs) for (const x of t.tabs) if (!(await verify(x.payer, tabPreimage(x), x.sig))) return false;   // every tab signed by its payer
   if (t.bind && !(await verify(t.bind.key, bindPreimage(t.from, t.bind.key), t.bind.sig))) return false;
   if (t.retire && !(await verify(t.retire.to, retirePreimage(t.from, t.retire.to), t.retire.sig))) return false;
+  if (t.court && !(await verify(t.court.parent, courtPreimage(t.from, t.court.parent), t.court.sig))) return false;
   if (t.serve) {   // every receipt signed by its receiver; a grant (if any) signed by the owner who gets paid
     for (const r of t.serve.receipts) if (!(await verify(r.by, receiptPreimage(r), r.sig))) return false;
     if (t.serve.grant) { if (!(await verify(t.serve.grant.user, nodeGrantPreimage(t.serve.grant), t.serve.grant.sig))) return false; serveGrants.set(t, t.serve.grant.user); }
@@ -1554,6 +1599,7 @@ async function createEngine(o) {
       if (chain === main ? !(await validMainBlock(b)) : !validPayload(chain, b, CFG)) { reject(b, chain === main ? 'breaks main-chain rules' : 'not permitted by channel rules'); continue; }
       if (b.payload?.type === 'rekey' && !(await verify(b.payload.key, rekeyPreimage(chainId, b.payload.key), b.payload.proof))) { reject(b, 'new key did not agree'); continue; }
       if (b.payload?.type === 'child' && !(await checkSigned(b.payload.genesis))) { reject(b, 'bad child chain'); continue; }
+      if (b.payload?.type === 'order' && !(await verify(b.payload.judge, orderPreimage(chainId, b.payload), b.payload.sig))) { reject(b, 'order not signed by its judge'); continue; }
       if (b.payload?.type === 'child') { childGenesis.set(b.payload.genesis.hash, b.payload.genesis); if (o.trackAll && !chains.has(b.payload.genesis.hash)) setTimeout(() => requestChain(openChain(b.payload.genesis.hash)), 0); }
       if (b.payload?.type === 'rekey') { chain.rekeys = [...(chain.rekeys || []), b].sort((x, y) => x.height - y.height || x.ts - y.ts); }
       chain.add(b); chain.orphans.delete(b.hash); added = true;
@@ -1780,7 +1826,7 @@ async function createEngine(o) {
   });
 }
 
-globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, ORG, orgRoles, bindPreimage, retirePreimage, rekeyPreimage, SQUARE, SEAL, monthKey, squareMonths, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
+globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, ORG, orgRoles, orderPreimage, courtPreimage, bindPreimage, retirePreimage, rekeyPreimage, SQUARE, SEAL, monthKey, squareMonths, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
 })();
 </script>
 
@@ -3025,6 +3071,12 @@ const viewsOf = (hash) => (E.ledger.views.get(hash) || 0) + [...E.txpool.values(
 const fmtViews = (n) => n === 1 ? '1 view' : (n >= 1e6 ? (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M' : n >= 1e4 ? Math.round(n / 1e3) + 'K' : n.toLocaleString()) + ' views';
 function videoCard(chainId, b) {
   if (isMutedVideo(chainId, b)) return null;   // you said you're not interested in one of its tags
+  const fl = flagsOn(b.hash), act = strongest(fl);
+  if (act === 'hide') return null;
+  if (act) { const card = videoCardInner(chainId, b); card.querySelector('.meta').append(h('span', { class: 'badge warn', title: flagText(fl) }, '⚑ ' + fl.map(f => f.name).join(', '))); if (act === 'disable') { card.removeAttribute('href'); card.style.opacity = '0.45'; card.style.pointerEvents = 'none'; } return card; }
+  return videoCardInner(chainId, b);
+}
+function videoCardInner(chainId, b) {
   const v = b.payload, d = derive(chainId);
   const th = h('div', { class: 'thumb' }); if (v.thumb) th.style.backgroundImage = `url("${v.thumb}")`; else th.textContent = '▶';
   return h('a', { class: 'card', href: `#/v/${chainId}/${b.hash}` }, th,
@@ -3120,6 +3172,8 @@ function parseRoute() {
   if (p[0] === 'explore') return { name: 'explore', tab: p[1] || 'trending' };
   if (p[0] === 'me') return { name: 'me' };
   if (p[0] === 'friends') return { name: 'friends' };
+  if (p[0] === 'terms') return { name: 'terms' };
+  if (p[0] === 'orgs') return { name: 'orgs' };
   if (p[0] === 'square') return /^\d{4}-\d{2}$/.test(p[1] || '') && isHex(p[2], 64) ? { name: 'square', month: p[1], post: p[2] } : { name: 'square', month: /^\d{4}-\d{2}$/.test(p[1] || '') ? p[1] : null };
   if (p[0] === 'market') return p[1] === 'item' && isHex(p[2], 64) ? { name: 'market', tab: 'item', id: p[2] } : { name: 'market', tab: p[1] || 'items' };
   if (p[0] === 'tag' && TAG_RE.test(p[1] || '')) return { name: 'tag', tag: p[1] };
@@ -3250,6 +3304,8 @@ function marketNew() {
   const price = h('input', { type: 'text', inputMode: 'decimal', placeholder: 'Price in coins (auction: starting bid)' });
   const days = h('input', { type: 'number', min: 1, max: MARKET.maxDays, value: 7, style: 'width:80px' });
   const contact = h('input', { type: 'text', maxLength: MARKET.contact, placeholder: 'How the buyer reaches you (email, site, shop link) — public' });
+  const courts = [...E.directory.values(), ...[...E.childGenesis.values()].map(genesis => ({ genesis }))].filter(e => e.genesis.payload.kind === 'org').map(e => e.genesis);
+  const court = h('select', {}, h('option', { value: '' }, 'No escrow: I’m paid at once'), courts.map(g => h('option', { value: g.hash }, `Escrow, disputes heard by ${g.payload.name}${g.payload.jurisdiction ? ' (' + g.payload.jurisdiction + ')' : ''}`)));
   const cat = h('select', {}, h('option', { value: '' }, 'Category (optional)'), AD_CATEGORIES.map(c => h('option', { value: c }, CAT_NAMES[c])));
   const tags = h('input', { type: 'text', placeholder: 'Tags (optional)' });
   const img = h('input', { type: 'file', accept: 'image/*' });
@@ -3267,16 +3323,33 @@ function marketNew() {
     let image; if (img.files[0]) { image = await imageFileToDataUrl(img.files[0], 320); if (image.length > MARKET.img) image = await imageFileToDataUrl(img.files[0], 200); }
     const x = { kind: kind.value, title: title.value.trim(), price: amt, ...(about.value.trim() ? { about: about.value.trim() } : {}), ...(contact.value.trim() ? { contact: contact.value.trim() } : {}),
       ...(kind.value === 'auction' ? { ends: Date.now() + Math.min(MARKET.maxDays, Math.max(1, Number(days.value) || 7)) * 86400000 } : {}),
-      ...(certs.length ? { certs, category: 'adviews' } : cat.value ? { category: cat.value } : {}), ...(parseTags(tags.value).length ? { tags: parseTags(tags.value) } : {}), ...(image ? { image } : {}) };
+      ...(certs.length ? { certs, category: 'adviews' } : cat.value ? { category: cat.value } : {}),
+      ...(court.value ? { org: court.value, arbiter: derive(orgCh(court.value).id)?.owner || genesisFor(court.value).author, hold: 14 } : {}), ...(parseTags(tags.value).length ? { tags: parseTags(tags.value) } : {}), ...(image ? { image } : {}) };
     btn.disabled = true;
     try { await sendTx({ list: x }, me.pub, status); toast('Listed. It shows on the market once the next block confirms it.'); kept.delete('market-new'); location.hash = '#/market/mine'; }
     catch { btn.disabled = false; }
   } }, 'List it');
   return h('div', { class: 'panel', style: 'max-width:720px' }, h('h3', { style: 'margin-top:0' }, 'Sell something'),
     h('p', { class: 'sub', style: 'margin-top:0' }, 'Listings live on the main chain. Coins move through the network (10% of each sale feeds the network’s resource pools). Ad views move automatically. Anything else (goods, gift cards, services, cash or PayPal deals) is delivered by you, using the contact you give.'),
-    h('label', {}, 'Type'), kind, daysRow, h('label', {}, 'Title'), title, h('label', {}, 'Description'), about, h('label', {}, 'Price'), price, h('label', {}, 'Contact'), contact,
+    h('label', {}, 'Type'), kind, daysRow, h('label', {}, 'Payment protection'), court, h('label', {}, 'Title'), title, h('label', {}, 'Description'), about, h('label', {}, 'Price'), price, h('label', {}, 'Contact'), contact,
     h('div', { class: 'split', style: 'gap:10px;margin-top:10px' }, cat, tags), h('label', {}, 'Picture (optional)'), img, certBox,
     h('div', { class: 'row', style: 'margin-top:12px' }, btn, status));
+}
+function escrowBox(id, L) {
+  const E_ = L.escrow; if (!E_) return null;
+  const st = h('span', { class: 'sub' }), buyer = isMine(E_.buyer), party = buyer || isMine(L.seller);
+  const court = E_.court ? (L.arbiter === E_.court ? L.org : null) : L.org;
+  const fileWith = async (orgId, what, title, text) => { orgCh(orgId); await append(orgId, { type: 'submit', what, title, text, listing: id }); };
+  const words = { held: `${fmtCoin(E_.amt)} coins held until ${new Date(E_.until).toLocaleDateString()}`, disputed: `${fmtCoin(E_.amt)} coins frozen: disputed${E_.appeals ? ` (on appeal, level ${E_.appeals + 1})` : ''}`,
+    ruled: `Ruled: the buyer gets ${Math.round(E_.buyerShare * 100)}%. Final on ${new Date(E_.until).toLocaleDateString()} unless appealed.`, released: 'Paid to the seller.', final: `Final: buyer received ${fmtCoin(E_.toBuyer || 0)}, seller the rest.` }[E_.state];
+  const why = h('input', { type: 'text', placeholder: 'What went wrong?', style: 'flex:1' });
+  return h('div', { class: 'panel', style: 'margin:10px 0' }, h('div', {}, '🛡 ', words),
+    party && E_.state === 'held' ? h('div', { class: 'row', style: 'margin-top:8px' },
+      buyer ? h('button', { class: 'primary', onclick: () => sendTx({ release: { id } }, me.pub, st).catch(() => {}) }, 'I got it: pay the seller') : null,
+      why, h('button', { onclick: async () => { if (!why.value.trim()) return toast('Say what went wrong'); try { await fileWith(L.org, 'complaint', 'Dispute: ' + L.title, why.value.trim()); await sendTx({ dispute: { id } }, me.pub, st); } catch (e) { st.textContent = e.message; } } }, 'Open a dispute')) : null,
+    party && E_.state === 'ruled' && genesisFor(L.org)?.payload.parent ? h('div', { class: 'row', style: 'margin-top:8px' }, why, h('button', { onclick: async () => {
+      const up = genesisFor(court || L.org)?.payload.parent || genesisFor(L.org).payload.parent;
+      try { await fileWith(up, 'appeal', 'Appeal: ' + L.title, why.value.trim() || 'I appeal the ruling.'); await sendTx({ appeal: { id } }, me.pub, st); } catch (e) { st.textContent = e.message; } } }, 'Appeal to the court above')) : null, st);
 }
 function marketItem(id) {
   const L = E.ledger.listings.get(id);
@@ -3301,6 +3374,8 @@ function marketItem(id) {
       L.certs.length ? h('div', { class: 'panel', style: 'margin:10px 0' }, `🎟 ${L.certs.length} verified ad view${L.certs.length === 1 ? '' : 's'} of ${certAdv.map(advName).join(', ')}'s ads. They move to the buyer automatically and can be cashed in for ${fmtCoin(certVal)} coins, or sold back to the advertiser.`) : null,
       L.about ? h('p', { class: 'pre' }, L.about) : null,
       L.contact ? h('div', { class: 'sub' }, 'Contact: ', L.contact) : null,
+      L.org ? h('div', { class: 'sub' }, '🛡 Payment held in escrow; disputes heard by ', chainLink(L.org), ` (released after ${L.hold || 14} days unless disputed).`) : null,
+      escrowBox(id, L),
       (L.tags || []).length ? h('div', { class: 'row', style: 'gap:6px;margin-top:6px' }, L.tags.map(t => h('span', { class: 'tagbox', style: 'padding-right:10px' }, '#' + t))) : null,
       h('div', { style: 'margin-top:12px' }, actions, ' ', status)));
 }
@@ -3564,6 +3639,97 @@ async function rekeyChannel(id, status) {
   status.textContent = 'New key in use. It will be bound to your identity within a minute. Export it now.';
   bindMyKeys(); kept.delete('manage'); scheduleRender();
 }
+// ---------------------------------------------------------------- organizations and courts (core: ORG)
+// Follow an org to see what it flags; per classification you choose: label it, list it but disable clicking, or hide
+// it. Courts are orgs too: clerks open cases (child chains whose keys they hold), file what parties submit, and enter
+// orders the judges sign; jurisdictions nest (country › state › county), and appeals go one level up.
+const { ORG, orgRoles, orderPreimage, courtPreimage } = globalThis.OpenTubeCore;
+settings.orgs = settings.orgs || {};   // org id -> { cls -> 'label' | 'disable' | 'hide' }
+const orgCh = (id) => { const fresh = !chains.has(id); const c = openChain(id); if (c && fresh) E.requestChain(c); return c; };
+setTimeout(() => { for (const id of Object.keys(settings.orgs)) orgCh(id); }, 3000);
+function orgState(id) {   // classes, flags, roles, petitions, reports, submissions, cases and sub-courts of an org
+  const c = chains.get(id); if (!c) return null;
+  if (c._org?.v === c.version) return c._org;
+  const d = derive(id), blocks = [...c.blocks.values()].filter(b => b.hash !== id).sort((a, b) => a.height - b.height || a.ts - b.ts);
+  const roles = orgRoles(c, [...c.heads]), classes = new Map(), flags = new Map(), petitions = [], reports = [], submits = [], children = [];
+  for (const b of blocks) {
+    const p = b.payload;
+    if (p.type === 'class' && c.isOwnerBlock(b)) { if (p.on === false) classes.delete(p.id); else classes.set(p.id, { id: p.id, name: p.name, about: p.about || '' }); }
+    if (p.type === 'flag') { const k = p.ref.block + '|' + p.cls; if (p.on) flags.set(k, { ...p, by: b.author, ts: b.ts, hash: b.hash }); else flags.delete(k); }
+    if (p.type === 'petition') petitions.push(b);
+    if (p.type === 'report') reports.push(b);
+    if (p.type === 'submit') submits.push(b);
+    if (p.type === 'child') children.push(p.genesis);
+  }
+  const support = (h) => [...blocks].filter(b => b.payload.type === 'vote' && b.payload.target === h && b.payload.v > 0).length;
+  return (c._org = { v: c.version, d, roles, classes, flags, petitions, reports, submits, support,
+    cases: children.filter(g => g.payload.kind === 'case'), courts: children.filter(g => g.payload.kind === 'org'),
+    has: (key, role) => isMine(d.owner) && key === me.pub ? true : [...(roles.get(key) || [])].includes(role) });
+}
+const iAm = (id, role) => { const st = orgState(id); return !!st && (isMine(st.d.owner) || [me.pub, ...ownedSigners.keys()].some(k => st.roles.get(k)?.has(role))); };
+function flagsOn(blockHash) {   // what the orgs you follow say about this video, with your chosen action for each
+  const out = [];
+  for (const [id, prefs] of Object.entries(settings.orgs)) {
+    const st = orgState(id); if (!st) continue;
+    for (const [k, f] of st.flags) if (k.startsWith(blockHash + '|')) out.push({ org: id, orgName: st.d.profile.name, cls: f.cls, name: st.classes.get(f.cls)?.name || f.cls, action: prefs[f.cls] || 'label' });
+  }
+  return out;
+}
+const strongest = (fl) => fl.some(f => f.action === 'hide') ? 'hide' : fl.some(f => f.action === 'disable') ? 'disable' : fl.length ? 'label' : null;
+const flagText = (fl) => fl.map(f => `${f.name} (${f.orgName})`).join(', ');
+const shownAnyway = new Set();
+function reportBox(chainId, block) {
+  const known = [...E.directory.values()].filter(e => e.genesis.payload.kind === 'org').map(e => e.genesis.hash);
+  const orgs = [...new Set([...Object.keys(settings.orgs), ...known])];
+  const orgSel = h('select', { style: 'width:auto' }, orgs.map(id => h('option', { value: id }, genesisFor(id)?.payload.name || id.slice(0, 8))));
+  const clsSel = h('select', { style: 'width:auto' }), note = h('input', { type: 'text', placeholder: 'What’s wrong (optional)', maxLength: LIMITS.comment, style: 'flex:1' }), st = h('span', { class: 'sub' });
+  const fill = () => { orgCh(orgSel.value); const s_ = orgState(orgSel.value); clsSel.replaceChildren(...[...(s_?.classes.values() || [])].map(c => h('option', { value: c.id }, c.name)), h('option', { value: 'other' }, 'Something else')); };
+  orgSel.onchange = fill; if (orgs.length) fill(); setTimeout(fill, 2500);
+  return h('div', { class: 'panel', style: 'margin-top:8px' }, orgs.length ? h('div', { class: 'row' }, h('span', {}, 'Report to'), orgSel, h('span', {}, 'as'), clsSel, note,
+    h('button', { class: 'small', onclick: async () => { st.textContent = 'Doing anti-spam work…'; try { await append(orgSel.value, { type: 'report', ref: { chain: chainId, block }, cls: clsSel.value || 'other', ...(note.value.trim() ? { note: note.value.trim() } : {}) }); st.textContent = 'Reported. The org’s moderators review it.'; } catch (e) { st.textContent = 'Failed: ' + e.message; } } }, 'Send report'), st)
+    : h('div', { class: 'sub' }, 'No organizations known yet. Find or create one under Orgs.'));
+}
+const linkRef = (r) => h('a', { href: `#/v/${r.chain}/${r.block}` }, chains.get(r.chain)?.blocks.get(r.block)?.payload.title || 'video ' + r.block.slice(0, 8));
+const caseStatus = (id) => { const c = chains.get(id); if (!c) return null; let s_ = null, h_ = -1; for (const b of c.blocks.values()) if (b.payload.type === 'status' && b.height >= h_) { s_ = b.payload.state; h_ = b.height; } return s_; };
+async function openCase(courtId, title, about, listing) {   // the clerk makes the case's key and keeps it
+  const key = await newIdentity(); await addChannelKey({ ...key, name: 'Case: ' + title.slice(0, 50) });
+  const g = await E.createChild(courtId, { type: 'genesis', kind: 'case', name: title.slice(0, LIMITS.name), about: about || title, ...(listing ? { listing } : {}) }, ownedSigners.get(key.pub));
+  await addChannelKey({ ...key, chain: g.hash }); bindMyKeys();
+  await append(g.hash, { type: 'status', state: 'open' });
+  return g;
+}
+const fileInto = (caseId, b) => append(caseId, { type: 'filing', what: b.payload.what, title: b.payload.title, text: b.payload.text || '', by: b.author, ref: b.hash });
+async function createSubCourt(parentId, name, jurisdiction) {   // a child org with its own key; appeals from it go to the parent
+  const key = await newIdentity(); await addChannelKey({ ...key, name });
+  const sg = ownedSigners.get(key.pub), parentKey = derive(parentId).owner;
+  const g = await E.createChild(parentId, { type: 'genesis', kind: 'org', name, about: '', avatar: '', ...(jurisdiction ? { jurisdiction } : {}) }, sg);
+  await addChannelKey({ ...key, chain: g.hash }); bindMyKeys();
+  await E.submitTx({ court: { parent: parentKey, sig: await signerFor(parentKey).sign(courtPreimage(key.pub, parentKey)) } }, sg);
+  return g;
+}
+views.orgs = { render() {
+  const all = [...E.directory.values()].filter(e => e.genesis.payload.kind === 'org').map(e => e.genesis.hash);
+  const name = h('input', { type: 'text', placeholder: 'Name', maxLength: LIMITS.name, style: 'flex:1' }), jur = h('input', { type: 'text', placeholder: 'Jurisdiction (optional), e.g. United States', style: 'flex:1' }), about = h('textarea', { placeholder: 'What it does (moderation, arbitration…)', maxLength: LIMITS.about }), st = h('span', { class: 'sub' });
+  return h('div', { style: 'max-width:900px' }, h('h2', { style: 'margin-top:0' }, 'Organizations'),
+    h('p', { class: 'sub' }, 'Organizations moderate and arbitrate. Follow one to see what it flags (you choose what a flag does). Courts take filings, run cases and rule on marketplace disputes; jurisdictions nest, and appeals go up a level.'),
+    h('div', { class: 'grid' }, all.length ? all.map(channelCard) : h('div', { class: 'empty' }, 'No organizations yet.')),
+    h('details', { class: 'panel', style: 'margin-top:14px' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Create an organization'),
+      h('div', { class: 'row', style: 'margin-top:8px' }, name, jur), about, h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { class: 'primary', onclick: async () => {
+        if (!name.value.trim()) return toast('Name it'); st.textContent = 'Registering…';
+        try { const key = await newIdentity(); await addChannelKey({ ...key, name: name.value.trim() }); const g = await E.createGenesis({ type: 'genesis', kind: 'org', name: name.value.trim(), about: about.value.trim(), avatar: '', ...(jur.value.trim() ? { jurisdiction: jur.value.trim() } : {}) }, ownedSigners.get(key.pub)); await addChannelKey({ ...key, chain: g.hash }); location.hash = `#/c/${g.hash}/rules`; }
+        catch (e) { st.textContent = 'Failed: ' + e.message; }
+      } }, 'Create'), st)));
+} };
+views.terms = { render() {
+  return h('div', { class: 'panel', style: 'max-width:760px' }, h('h2', { style: 'margin-top:0' }, 'Terms: arbitration'),
+    h('p', {}, 'OpenTube is run by the people who use it; there is no company behind a transaction. By using it you agree to the following.'),
+    h('ol', {}, h('li', {}, 'Any dispute about a transaction made through OpenTube (a sale, an auction, a payment held in escrow) is resolved through the network’s arbitration: the court named on the listing, and on appeal the courts above it.'),
+      h('li', {}, 'Filings, case dockets and orders are public records on the network. Don’t file anything you need to keep private.'),
+      h('li', {}, 'A ruling decides how coins held in escrow are split. When the appeal window (14 days) passes, or the highest court has ruled, that ruling is final as far as the network is concerned.'),
+      h('li', {}, 'Goods, services and payments outside the network are between the parties; the courts’ rulings and records are what the network provides.')),
+    h('p', { class: 'sub' }, 'This is a plain description of how the system works, not legal advice. Whether it binds you outside the network depends on where you live.'),
+    h('button', { class: 'primary', onclick: () => { try { localStorage.setItem('opentube-terms', '1'); } catch {} $('#terms-banner').classList.add('hidden'); toast('Thanks'); } }, 'I agree'));
+} };
 views.tag = { render() {
   const t = route.tag, found = [];
   for (const c of chains.values()) {
@@ -3643,7 +3809,9 @@ views.chain = { render() {
   const reg = E.directory.get(id);
   const subBtn = h('button', { class: subs[id] === 'sub' ? 'on' : '', onclick: () => setSub(id, subs[id] === 'sub' ? null : 'sub') }, subs[id] === 'sub' ? 'Subscribed ✓' : 'Subscribe');
   const joinBtn = d.kind === 'channel' ? h('button', { class: subs[id] === 'join' ? 'on' : 'primary', title: 'Joining downloads every video this channel posts and shares it with other viewers.', onclick: () => setSub(id, subs[id] === 'join' ? 'sub' : 'join') }, subs[id] === 'join' ? (canHost() ? 'Joined · hosting ✓' : 'Joined · not hosting (no folder)') : canHost() ? 'Join (host videos)' : folder.state === 'unsupported' ? 'Join (needs Chrome/Edge)' : 'Join (needs video folder)') : null;
-  const tabs = d.kind === 'group' ? ['discussion', 'members', 'about'].concat(mine ? ['manage'] : [])
+  const tabs = d.kind === 'org' ? ['flags', 'reports', 'rules', 'filings', 'cases', 'courts', 'people', 'about'].concat(mine ? ['manage'] : [])
+    : d.kind === 'case' ? ['docket', 'about'].concat(mine ? ['manage'] : [])
+    : d.kind === 'group' ? ['discussion', 'members', 'about'].concat(mine ? ['manage'] : [])
     : d.kind === 'channel' ? (mine ? ['videos', 'upload', 'golive', 'posts', 'about', 'advertise', 'manage'] : ['videos', 'posts', 'about'])
     : (c.genesis.payload.ranking ? ['ranking', 'about'] : ['channels', 'about']).concat(mine ? ['manage'] : []);
   const tab = tabs.includes(route.tab) ? route.tab : tabs[0];
@@ -4135,6 +4303,10 @@ views.watch = {
     if (!(views.chain.requested ||= new Set()).has(id)) { views.chain.requested.add(id); E.requestChain(c); }
     if (!c.has(video)) { E.send({ t: 'rq', c: id, w: [video], h: headsOf(c) }); views.watch.refresh = () => { if (c.has(video)) render(true); }; return h('div', { class: 'empty' }, 'Fetching this video’s block from peers…'); }
     const b = c.blocks.get(video), v = b.payload, d = derive(id);
+    const fl = flagsOn(video), act = strongest(fl);
+    if ((act === 'disable' || act === 'hide') && !shownAnyway.has(video) && !isMine(d.owner)) return h('div', { class: 'panel', style: 'max-width:640px' },
+      h('h2', { style: 'margin-top:0' }, '⚑ ' + v.title), h('p', {}, `Flagged as ${flagText(fl)}. You chose not to open videos with this flag.`),
+      h('button', { onclick: () => { shownAnyway.add(video); render(true); } }, 'Show it anyway'), ' ', h('a', { href: `#/c/${id}` }, 'Back to the channel'));
     let player = h('video', { controls: true, playsInline: true, autoplay: true });   // replaced by a fresh one after an ad
     const bar = h('div'); const stats = h('div', { class: 'stats' });
     const comments = h('div');
@@ -4290,7 +4462,10 @@ views.watch = {
           h('span', { class: 'sub' }, fmtViews(viewsOf(video)) + ' · ' + ago(b.ts) + ' · ' + fmtBytes(v.size)),
           h('span', { class: 'votes' }, upBtn, downBtn), voteStatus,
           h('button', { class: 'small', onclick: () => { const url = location.href; navigator.clipboard?.writeText(url).then(() => toast('Link copied'), () => prompt('Copy link', url)); } }, 'Copy link'),
+          h('button', { class: 'small', onclick: (e) => { const box = e.target.closest('.watch').querySelector('.report-slot'); box.replaceChildren(box.childElementCount ? '' : reportBox(id, video)); } }, '⚑ Report'),
           isMine(d.owner) ? h('button', { class: 'small', onclick: async () => { await append(id, { type: 'hide', target: video }); location.hash = `#/c/${id}`; } }, 'Hide video') : null),
+        h('div', { class: 'report-slot' }),
+        fl.length ? h('div', { class: 'panel', style: 'margin-top:8px;border-color:var(--warn)' }, '⚑ Flagged as ', flagText(fl)) : null,
         (v.tags || []).length ? h('div', { class: 'row', style: 'margin-top:8px;gap:6px' }, v.tags.map(t => h('span', { class: 'tagbox' }, tagLink(t),
           isMine(d.owner) ? null : h('button', { class: 'tagx', title: `Not interested in #${t}: hide videos with this tag (kept in this browser only)`, onclick: () => { setMuted('tags', t, true); toast(`You won’t see videos or ads tagged #${t}. Undo under My node → Not interested.`); } }, '✕')))) : null,
         h('div', { class: 'panel', style: 'margin-top:12px' }, h('p', { class: 'pre', style: 'margin:0' }, v.desc || 'No description.')),
@@ -4647,6 +4822,129 @@ function runAd(ad, { player, panel, video, creator, alive }) {
   });
 }
 
+Object.assign(chainTab, {
+  flags(id, d) {
+    const st = orgState(id), prefs = settings.orgs[id];
+    const follow = h('div', { class: 'panel' }, h('div', { class: 'row', style: 'justify-content:space-between' }, h('h3', { style: 'margin:0' }, prefs ? 'You follow this organization' : 'Follow this organization'),
+      h('button', { class: prefs ? '' : 'primary', onclick: () => { if (prefs) delete settings.orgs[id]; else settings.orgs[id] = {}; saveSettings(); scheduleRender(); } }, prefs ? 'Unfollow' : 'Follow')),
+      prefs ? [...st.classes.values()].map(c => h('div', { class: 'row', style: 'justify-content:space-between' }, h('span', {}, h('b', {}, c.name), ' ', h('span', { class: 'sub' }, c.about)),
+        h('select', { style: 'width:auto', onchange: (e) => { prefs[c.id] = e.target.value; saveSettings(); } }, [['label', 'Label it'], ['disable', 'List it, but don’t open it'], ['hide', 'Hide it']].map(([v, l]) => h('option', { value: v, selected: (prefs[c.id] || 'label') === v }, l))))) : h('p', { class: 'sub' }, 'Following shows its flags on videos, the way you choose for each classification. Your choices stay in this browser.'));
+    const list = [...st.flags.values()].sort((a, b) => b.ts - a.ts);
+    const canFlag = iAm(id, 'moderator');
+    return h('div', {}, follow, h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Flagged'),
+      list.length ? list.map(f => h('div', { class: 'item row', style: 'justify-content:space-between' }, h('div', {}, linkRef(f.ref), ' · ', h('b', {}, st.classes.get(f.cls)?.name || f.cls), f.note ? h('span', { class: 'sub' }, ' · ' + f.note) : null, h('span', { class: 'sub' }, ' · ' + ago(f.ts))),
+        canFlag ? h('button', { class: 'small', onclick: () => append(id, { type: 'flag', ref: f.ref, cls: f.cls, on: false }) }, 'Remove flag') : null)) : h('div', { class: 'sub' }, 'Nothing flagged.')));
+  },
+  reports(id) {
+    const st = orgState(id), canFlag = iAm(id, 'moderator');
+    const open = st.reports.filter(r => !st.flags.has(r.payload.ref.block + '|' + r.payload.cls)).sort((a, b) => b.ts - a.ts);
+    return h('div', { class: 'panel' }, h('p', { class: 'sub', style: 'margin-top:0' }, 'Reports from anyone. Moderators review them and flag what fits a classification. Report a video from its page (Report).'),
+      open.length ? open.map(r => h('div', { class: 'item row', style: 'justify-content:space-between' },
+        h('div', {}, linkRef(r.payload.ref), ' · reported as ', h('b', {}, st.classes.get(r.payload.cls)?.name || r.payload.cls), r.payload.note ? ' · “' + r.payload.note + '”' : '', h('span', { class: 'sub' }, ' · ' + ago(r.ts))),
+        canFlag ? h('button', { class: 'small primary', onclick: () => append(id, { type: 'flag', ref: r.payload.ref, cls: r.payload.cls, on: true, ...(r.payload.note ? { note: r.payload.note } : {}) }) }, 'Flag it') : null)) : h('div', { class: 'sub' }, 'No open reports.'));
+  },
+  rules(id, d) {   // classifications and petitions for new ones
+    const st = orgState(id), mine = isMine(d.owner);
+    const pid = h('input', { type: 'text', placeholder: 'short-id, e.g. adult', style: 'width:160px' }), pname = h('input', { type: 'text', placeholder: 'Name, e.g. Adult content', style: 'flex:1' }), pabout = h('input', { type: 'text', placeholder: 'What it covers', style: 'flex:2' }), pst = h('span', { class: 'sub' });
+    const make = async (type) => {
+      if (!ORG.slug.test(pid.value.trim())) return toast('The id: 2–31 letters, digits or dashes'); if (!pname.value.trim()) return toast('Give it a name');
+      pst.textContent = type === 'petition' ? 'Doing anti-spam work…' : '';
+      try { await append(id, { type, id: pid.value.trim(), name: pname.value.trim(), about: pabout.value.trim() }); pid.value = pname.value = pabout.value = ''; pst.textContent = type === 'class' ? 'Added.' : 'Petition filed.'; } catch (e) { pst.textContent = 'Failed: ' + e.message; }
+    };
+    return h('div', {}, h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Classifications'),
+      st.classes.size ? [...st.classes.values()].map(c => h('div', { class: 'row', style: 'justify-content:space-between' }, h('span', {}, h('b', {}, c.name), h('span', { class: 'sub' }, ` (${c.id}) · ${c.about}`)),
+        mine ? h('button', { class: 'small', onclick: () => append(id, { type: 'class', id: c.id, name: c.name, on: false }) }, 'Retire') : null)) : h('div', { class: 'sub' }, 'None yet.')),
+      h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Petitions for new classifications'),
+        st.petitions.filter(b => !st.classes.has(b.payload.id)).map(b => h('div', { class: 'item row', style: 'justify-content:space-between' }, h('span', {}, h('b', {}, b.payload.name), h('span', { class: 'sub' }, ` (${b.payload.id}) · ${b.payload.about || ''} · ${st.support(b.hash)} supporter(s)`)),
+          h('div', { class: 'row' }, h('button', { class: 'small', onclick: () => append(id, { type: 'vote', target: b.hash, v: 1 }).catch(e => toast(e.message)) }, 'Support'),
+            mine ? h('button', { class: 'small primary', onclick: () => append(id, { type: 'class', id: b.payload.id, name: b.payload.name, about: b.payload.about || '' }) }, 'Adopt') : null))),
+        h('div', { class: 'row', style: 'margin-top:8px' }, pid, pname, pabout), h('div', { class: 'row', style: 'margin-top:6px' }, mine ? h('button', { class: 'primary', onclick: () => make('class') }, 'Add classification') : null, h('button', { onclick: () => make('petition') }, 'Petition for it'), pst)));
+  },
+  filings(id, d) {   // what parties have filed with the clerk
+    const st = orgState(id), clerk = iAm(id, 'clerk'), judge = iAm(id, 'judge');
+    const caseSel = () => h('select', { style: 'width:auto' }, st.cases.map(g => h('option', { value: g.hash }, g.payload.name)));
+    const filedRefs = new Set(); for (const g of st.cases) for (const b of chains.get(g.hash)?.blocks.values() || []) if (b.payload.ref) filedRefs.add(b.payload.ref);
+    const what = h('select', { style: 'width:auto' }, ORG.filings.filter(w => w !== 'order').map(w => h('option', { value: w }, w))), title = h('input', { type: 'text', placeholder: 'Title', maxLength: LIMITS.title, style: 'flex:1' });
+    const text = h('textarea', { placeholder: 'What you’re filing (public)', maxLength: LIMITS.text }), forCase = h('select', { style: 'width:auto' }, h('option', { value: '' }, 'New matter'), st.cases.map(g => h('option', { value: g.hash }, g.payload.name))), fst = h('span', { class: 'sub' });
+    const list = st.submits.slice().sort((a, b) => b.ts - a.ts);
+    return h('div', {}, h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'File with the clerk'),
+      h('div', { class: 'row' }, what, title, forCase), text, h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { class: 'primary', onclick: async () => {
+        if (!title.value.trim()) return toast('Give it a title'); fst.textContent = 'Doing anti-spam work…';
+        try { await append(id, { type: 'submit', what: what.value, title: title.value.trim(), text: text.value.trim(), ...(forCase.value ? { case: forCase.value } : {}) }); title.value = text.value = ''; fst.textContent = 'Filed. The clerk dockets it.'; } catch (e) { fst.textContent = 'Failed: ' + e.message; }
+      } }, 'File'), fst)),
+      h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Filed with this court'),
+        list.length ? list.map(b => {
+          const p = b.payload, done = filedRefs.has(b.hash), sel = caseSel(), sst = h('span', { class: 'sub' });
+          return h('div', { class: 'item' }, h('div', {}, h('span', { class: 'badge' }, p.what), ' ', h('b', {}, p.title), h('span', { class: 'sub' }, ` · by ${keyName(b.author)} · ${ago(b.ts)}`), p.case ? h('span', { class: 'sub' }, ' · for ', h('a', { href: `#/c/${p.case}/docket` }, genesisFor(p.case)?.payload.name || 'a case')) : null, done ? h('span', { class: 'badge ok', style: 'margin-left:6px' }, 'docketed') : null),
+            p.text ? h('p', { class: 'pre', style: 'margin:4px 0' }, p.text) : null,
+            clerk && !done ? h('div', { class: 'row' },
+              h('button', { class: 'small primary', onclick: async () => { sst.textContent = 'Opening a case…'; try { const g = await openCase(id, p.title, p.text, p.listing); await fileInto(g.hash, b); sst.textContent = 'Case opened.'; location.hash = `#/c/${g.hash}/docket`; } catch (e) { sst.textContent = 'Failed: ' + e.message; } } }, 'Open a case for it'),
+              st.cases.length ? [sel, h('button', { class: 'small', onclick: async () => { try { await fileInto(sel.value, b); sst.textContent = 'Docketed.'; } catch (e) { sst.textContent = 'Failed: ' + e.message; } } }, 'File into case')] : null, sst) : null);
+        }) : h('div', { class: 'sub' }, 'Nothing filed yet.')));
+  },
+  cases(id) {
+    const st = orgState(id);
+    return h('div', { class: 'panel' }, st.cases.length ? st.cases.slice().reverse().map(g => { const cs = caseStatus(g.hash); return h('div', { class: 'item row', style: 'justify-content:space-between' }, h('a', { href: `#/c/${g.hash}/docket` }, h('b', {}, g.payload.name)), h('span', { class: 'badge' }, cs || 'filed')); })
+      : h('div', { class: 'sub' }, 'No cases yet. Clerks open cases from filings.'));
+  },
+  courts(id, d) {   // the jurisdiction tree: this org's parent and its sub-jurisdictions
+    const st = orgState(id), parent = genesisFor(id)?.payload.parent;
+    const name = h('input', { type: 'text', placeholder: 'Name, e.g. Superior Court of Los Angeles County', style: 'flex:1' }), jur = h('input', { type: 'text', placeholder: 'Jurisdiction, e.g. United States › California › Los Angeles County', style: 'flex:1' }), cst = h('span', { class: 'sub' });
+    return h('div', { class: 'panel' }, h('p', { class: 'sub', style: 'margin-top:0' }, 'Jurisdictions nest like the places they serve. Appeals from a court go to the court above it.'),
+      parent ? h('div', {}, 'Above: ', chainLink(parent)) : h('div', { class: 'sub' }, 'This is a top-level organization.'),
+      d.profile.jurisdiction ? h('div', { class: 'sub' }, 'Jurisdiction: ', d.profile.jurisdiction) : null,
+      h('h4', {}, 'Below'), st.courts.length ? st.courts.map(g => h('div', {}, chainLink(g.hash), h('span', { class: 'sub' }, ' · ' + (g.payload.jurisdiction || '')))) : h('div', { class: 'sub' }, 'None.'),
+      isMine(d.owner) ? h('div', { style: 'margin-top:10px' }, h('div', { class: 'row' }, name, jur), h('div', { class: 'row', style: 'margin-top:6px' }, h('button', { onclick: async () => {
+        if (!name.value.trim()) return toast('Name it'); cst.textContent = 'Creating…';
+        try { await createSubCourt(id, name.value.trim(), jur.value.trim()); cst.textContent = 'Created. It will appear here when its block is in.'; } catch (e) { cst.textContent = 'Failed: ' + e.message; }
+      } }, 'Add a court below this one'), cst)) : null);
+  },
+  people(id, d) {
+    const st = orgState(id), mine = isMine(d.owner);
+    const key = h('input', { type: 'text', placeholder: 'User ID', style: 'flex:1' }), role = h('select', { style: 'width:auto' }, ORG.roles.map(r => h('option', { value: r }, r))), pst = h('span', { class: 'sub' });
+    const setRole = async (k, r, on) => {
+      await append(id, { type: 'role', key: k, role: r, on });
+      if (r === 'judge') await E.submitTx({ judge: { key: k, on } }, signerFor(d.owner)).catch(e => toast('Ledger: ' + e.message));   // judges may rule on escrow for this court
+    };
+    return h('div', { class: 'panel' }, h('div', { class: 'kv' }, h('div', {}, 'Owner'), h('div', {}, keyName(ownerIdentity(id) || d.owner)),
+      ...[...st.roles].filter(([, r]) => r.size).flatMap(([k, r]) => [h('div', {}, [...r].join(', ')), h('div', {}, h('a', { href: `#/wallet/${k}` }, keyName(k)), mine ? [...r].map(x => h('button', { class: 'small', style: 'margin-left:6px', onclick: () => setRole(k, x, false) }, 'remove ' + x)) : null)])),
+      mine ? h('div', { class: 'row', style: 'margin-top:10px' }, key, role, h('button', { onclick: async () => { if (!isKey(key.value.trim())) return toast('Paste a user ID'); try { await setRole(key.value.trim(), role.value, true); key.value = ''; pst.textContent = 'Done.'; } catch (e) { pst.textContent = e.message; } } }, 'Give role'), pst) : null);
+  },
+  docket(id, d) {   // a case
+    const c = chains.get(id), g = c.genesis, court = g.payload.parent, cst = orgState(court) || (orgCh(court), null);
+    const items = [...c.blocks.values()].filter(b => b.hash !== id && ['filing', 'status', 'order'].includes(b.payload.type)).sort((a, b) => a.height - b.height || a.ts - b.ts);
+    const clerk = isMine(d.owner), judge = court && iAm(court, 'judge'), L = g.payload.listing ? E.ledger.listings.get(g.payload.listing) : null;
+    const status = h('select', { style: 'width:auto' }, ORG.states.map(x => h('option', { value: x, selected: x === caseStatus(id) }, x))), note = h('input', { type: 'text', placeholder: 'Note', style: 'flex:1' });
+    const ot = h('input', { type: 'text', placeholder: 'Order title', style: 'flex:1' }), ox = h('textarea', { placeholder: 'The order' }), share = h('input', { type: 'number', min: 0, max: 100, placeholder: '% to buyer', style: 'width:110px' }), ost = h('span', { class: 'sub' });
+    const orders = (cst?.submits || []).filter(b => b.payload.what === 'order' && b.payload.case === id && b.payload.sig && !items.some(x => x.payload.ref === b.hash));
+    return h('div', {},
+      h('div', { class: 'panel' }, h('div', {}, 'Court: ', court ? chainLink(court) : '—', ' · status ', h('b', {}, caseStatus(id) || 'filed')),
+        L ? h('div', { class: 'sub' }, 'About the sale ', h('a', { href: `#/market/item/${g.payload.listing}` }, '“' + L.title + '”'), L.escrow ? ` · ${fmtCoin(L.escrow.amt)} coins ${L.escrow.state}` : '') : null,
+        h('p', { class: 'pre' }, g.payload.about)),
+      h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Docket'), items.length ? items.map(b => {
+        const p = b.payload;
+        if (p.type === 'status') return h('div', { class: 'item sub' }, `Status → ${p.state}`, p.note ? ' · ' + p.note : '', ' · ' + ago(b.ts));
+        if (p.type === 'order') return h('div', { class: 'item' }, h('span', { class: 'badge ok' }, 'order'), ' ', h('b', {}, p.title), h('span', { class: 'sub' }, ` · signed by judge ${keyName(p.judge)} · ${ago(b.ts)}`), p.buyerShare !== undefined ? h('div', {}, `Buyer receives ${Math.round(p.buyerShare * 100)}% of the held coins.`) : null, h('p', { class: 'pre', style: 'margin:4px 0' }, p.text));
+        return h('div', { class: 'item' }, h('span', { class: 'badge' }, p.what), ' ', h('b', {}, p.title), h('span', { class: 'sub' }, ` · by ${keyName(p.by)} · ${ago(b.ts)}`), p.text ? h('p', { class: 'pre', style: 'margin:4px 0' }, p.text) : null);
+      }) : h('div', { class: 'sub' }, 'Nothing on the docket yet.')),
+      clerk ? h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Clerk'), h('div', { class: 'row' }, status, note, h('button', { onclick: () => append(id, { type: 'status', state: status.value, ...(note.value.trim() ? { note: note.value.trim() } : {}) }) }, 'Set status')),
+        orders.map(b => h('div', { class: 'row', style: 'margin-top:8px' }, h('span', {}, 'Signed order from judge ', keyName(b.payload.judge || b.author), ': ', h('b', {}, b.payload.title)), h('button', { class: 'small primary', onclick: () => append(id, { type: 'order', title: b.payload.title, text: b.payload.text, judge: b.payload.judge || b.author, sig: b.payload.sig, ...(b.payload.buyerShare !== undefined ? { buyerShare: b.payload.buyerShare } : {}) }) }, 'Enter on the docket'))),
+        h('p', { class: 'sub' }, 'You hold this case’s key. To hand the case to another clerk, export it (Manage → Export key).')) : null,
+      judge ? h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Judge: write an order'), ot, ox, h('div', { class: 'row', style: 'margin-top:6px' }, L?.escrow ? share : null, h('button', { class: 'primary', onclick: async () => {
+        if (!ot.value.trim()) return toast('Title the order');
+        const x = { title: ot.value.trim(), text: ox.value.trim(), ...(L?.escrow && share.value !== '' ? { buyerShare: Math.max(0, Math.min(100, Number(share.value))) / 100 } : {}) };
+        ost.textContent = 'Signing…';
+        try {
+          await append(court, { type: 'submit', what: 'order', case: id, ...x, judge: me.pub, sig: await me.sign(orderPreimage(id, x)) });
+          if (x.buyerShare !== undefined && L?.escrow?.state === 'disputed') {   // the court's own key rules if you hold it; otherwise you as one of its judges
+            const courtKey = L.escrow.court || L.arbiter;
+            await E.submitTx({ rule: { id: g.payload.listing, buyerShare: x.buyerShare } }, ownedSigners.get(courtKey) || me);
+          }
+          ost.textContent = 'Signed and sent to the clerk' + (x.buyerShare !== undefined ? '; the ruling on the held coins is on the ledger (14 days to appeal).' : '.');
+        } catch (e) { ost.textContent = 'Failed: ' + e.message; }
+      } }, 'Sign order'), ost)) : null);
+  }
+});
 chainTab.advertise = (id, d) => {
   const form = keep('adform', () => {
     let file = null, thumb = '', duration = 0;
@@ -4894,7 +5192,9 @@ const walletStatus = () => walletStatusEl || h('span');
 views.wallet = { render() {
   const viewing = route.key;
   if (viewing && !myAccounts().includes(viewing)) {
+    const roles = []; for (const e of [...E.directory.values(), ...[...E.childGenesis.values()].map(genesis => ({ genesis }))]) if (e.genesis.payload.kind === 'org') { const st = orgState(e.genesis.hash); for (const r of st?.roles.get(viewing) || []) roles.push([e.genesis.hash, r]); }
     return h('div', {}, h('h2', { style: 'margin-top:0' }, 'Account'), accountCard(viewing, false),
+      roles.length ? h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Roles'), roles.map(([o, r]) => h('div', {}, h('b', {}, r), ' at ', chainLink(o)))) : null,
       h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Activity'),
         (() => { const hist = E.history(viewing); return hist.length ? hist.map(x => describeTx(x, viewing)) : h('div', { class: 'sub' }, 'No transactions yet.'); })()));
   }
@@ -5179,6 +5479,8 @@ views.me = { render() {
 } };
 
 uiReady = true;
+try { if (!localStorage.getItem('opentube-terms')) $('#terms-banner').classList.remove('hidden'); } catch {}
+$('#terms-ok').onclick = () => { try { localStorage.setItem('opentube-terms', '1'); } catch {} $('#terms-banner').classList.add('hidden'); };
 render(true);
 window.addEventListener('beforeunload', (e) => { if (E.miner || hosting.size) { e.preventDefault(); e.returnValue = ''; } });
 // Exposed for debugging in the console.

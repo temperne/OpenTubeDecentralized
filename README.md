@@ -207,6 +207,36 @@ A **group** is a chain kind where members post. Create one under *My node* and c
 - **Syncing:** nodes keep every month. A browser syncs only the months it opens (*older ›*).
 - **Likes** pay the author, as elsewhere.
 
+## Organizations: moderation, courts and the tree of chains
+
+An **organization** is a chain (create one under *Orgs*). Its owner can do three things:
+
+- give people **roles**: moderator, clerk or judge;
+- name **classifications**, such as `adult`;
+- add **courts below it**.
+
+Courts below an org are **child chains**: they're registered by a `child` block on their parent's chain, not on the main chain, so jurisdictions nest like the places they serve (United States › California › Los Angeles County). A browser syncs a child chain only when you open it; nodes keep them all.
+
+**Moderation**
+
+- **Reporting:** anyone can report a video to an org (*⚑ Report* on the video).
+- **Flagging:** moderators review reports and **flag** what fits a classification.
+- **New classifications:** anyone can **petition** for one, others support it, and the owner adopts it.
+- **Following:** when you follow an org, you choose for each classification whether its flags **label** a video, **list it but disable opening it**, or **hide** it. That choice is kept in your browser.
+
+**Courts and cases**
+
+- **Filing:** you file with a court's clerk (complaint, motion, response, evidence, appeal). The filing is a public, signed block on the court's chain.
+- **Cases:** a clerk opens a **case**, a child chain of the court with its own key pair, which the clerk holds and can hand over by exporting it. The clerk dockets filings, sets the status (open, hearing, stayed, decided, appealed, closed) and enters **orders**. Each order carries its judge's signature, which every node checks.
+- **Roles:** an identity's public page lists its roles.
+
+**Escrow, rulings and appeals** (on the ledger)
+
+- **Escrow:** a market listing can name a court. The buyer's coins are then held: released when the buyer confirms delivery, or automatically after 14 days unless disputed.
+- **Disputes and rulings:** a dispute freezes the coins, and the court's key or the judges it named (`judge` transaction) rule how to split them.
+- **Appeals:** either side may appeal within 14 days. The dispute then goes to the court above (`court` transaction, signed by both courts), whose ruling replaces the earlier one. A ruling pays out when its appeal window passes, or at once at the top court.
+- **The clause:** the site asks every visitor to agree to resolve disputes this way (*Terms*).
+
 ## Tags and "not interested"
 
 Videos and ads carry up to 8 tags, and ads a product category. Click a tag to see its videos (`#/tag/name`). Click ✕ next to a tag on a video, or set categories under *My node → Not interested*, and videos and ads with those tags or categories are hidden for you. That list stays in your browser; it's never published.
