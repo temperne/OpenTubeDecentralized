@@ -245,6 +245,7 @@ async function answerChallenge(q) {
   const host = globalThis.openTubeHost;
   if (!host || !/^[0-9a-f]{40}$/.test(q.ih) || typeof q.nonce !== 'string' || q.nonce.length !== 32) return { kind: 'pproof', has: false };
   const bytes = await host.piece(q.ih, q.piece);
+  dbg('challenged on', q.ih.slice(0, 8), 'piece', q.piece, bytes ? bytes.length + ' bytes' : 'no piece');
   if (!bytes) return { kind: 'pproof', has: false };
   const a = { v: 1, kind: 'pproof', has: true, ih: q.ih, piece: q.piece, nonce: q.nonce, node: signer.pub, at: Date.now(), h: await core.pieceProof(q.nonce, signer.pub, bytes) };
   a.sig = await signer.sign(core.proofPreimage(a));
@@ -254,6 +255,7 @@ async function answerChallenge(q) {
 // that must match what this node computes from its own copy. Passed proofs count as copies (trimming keeps rare videos)
 // and earn the prover storage receipts (MB proven, once per video per period), signed by this node at period end.
 const provedOnce = new Set();
+const dbg = process.env.PROOF_DEBUG ? (...a) => log('[proof-debug]', ...a) : () => {};
 const storage = new Map();   // epoch -> Map(provider -> Map(ih -> MB))
 async function challengeRound() {
   const host = globalThis.openTubeHost; if (!host) return;
@@ -264,11 +266,13 @@ async function challengeRound() {
   const inSwarm = (t.wires || []).map(w => byPeer.get(w.peerId)).filter(Boolean);
   const others = [...engine.nodes.values()].filter(n => n.roles.includes('host') && Date.now() - n.at < 120000).map(n => n.node);
   const targets = [...new Set([...inSwarm, ...others.sort(() => Math.random() - 0.5)])].filter(k => k !== signer.pub).slice(0, 4);
+  dbg('round', ih.slice(0, 8), 'nodes', engine.nodes.size, 'swarm', inSwarm.length, 'targets', targets.length);
   for (const key of targets) {
     const index = Math.floor(Math.random() * t.pieces.length), nonce = crypto.randomBytes(16).toString('hex');
     const mineBytes = await host.piece(ih, index); if (!mineBytes) return;
     const expect = await core.pieceProof(nonce, key, mineBytes);
     engine.route(key, { kind: 'pchal', ih, piece: index, nonce }, core.PROOF.answerMs).then(async (a) => {
+      dbg('answer from', key.slice(0, 8), a ? JSON.stringify(a).slice(0, 120) : 'none');
       if (!a || a.has === false) return;   // doesn't have it (or didn't answer in time)
       const ok = a.node === key && a.nonce === nonce && a.piece === index && a.h === expect && await core.verify(key, core.proofPreimage(a), a.sig);
       host.noteProof(ih, key, ok);
