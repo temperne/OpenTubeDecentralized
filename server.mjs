@@ -46,6 +46,8 @@ const keyFile = path.join(DATA, 'key.json');
 if (!fs.existsSync(keyFile)) fs.writeFileSync(keyFile, JSON.stringify(await core.newIdentity()), { mode: 0o600 });
 const signer = await core.signer(JSON.parse(fs.readFileSync(keyFile, 'utf8')));
 const nodePeerId = (pub) => crypto.createHash('sha1').update('opentube-node:' + pub).digest('hex');   // this node's WebTorrent peer ID
+// The owner's grant (from the My node command): this node is theirs.
+const GRANT = (() => { try { return process.env.NODE_GRANT ? JSON.parse(Buffer.from(process.env.NODE_GRANT, 'base64url').toString('utf8')) : null; } catch { return null; } })();
 const blocksFile = path.join(DATA, 'blocks.jsonl');
 const blockLog = fs.createWriteStream(blocksFile, { flags: 'a' });
 
@@ -182,7 +184,7 @@ if (process.env.RTMP_PORT) {
 if (process.env.VIDEO_DIR && process.env.HOST_USER) {
   try {
     const { startHost } = await import('./host.mjs');
-    globalThis.openTubeHost = await startHost({ engine, nodeKey: signer.pub, user: process.env.HOST_USER, videoDir: path.resolve(process.env.VIDEO_DIR), site: process.env.NODE_SITE || `http://localhost:${PORT}`, capGB: Number(process.env.CAP_GB) || 5, log });
+    globalThis.openTubeHost = await startHost({ engine, nodeKey: signer.pub, tabs: pieceTabs(), user: process.env.HOST_USER, videoDir: path.resolve(process.env.VIDEO_DIR), site: process.env.NODE_SITE || `http://localhost:${PORT}`, capGB: Number(process.env.CAP_GB) || 5, log });
   } catch (e) { log('video hosting unavailable:', e.message, '(npm install webtorrent next to server.mjs)'); }
 }
 
@@ -215,6 +217,51 @@ var receipts = (() => {
   }, 60000);
   return { take };
 })();
+
+// ---- pay per piece (core: PIECE). Viewers' tabs for the pieces this node sends are cashed in once a minute; the node
+// pays (from its own key) for pieces it downloads, except for channels its owner hosts. What it earns beyond a small
+// reserve goes to its owner every 10 minutes.
+function pieceTabs() {
+  const index = { at: 0, map: new Map() };
+  const find = (ih) => {
+    if (Date.now() - index.at > 10000 || !index.map.has(ih)) {
+      index.map.clear(); index.at = Date.now();
+      for (const c of engine.chains.values()) if (c !== engine.main && c.genesis.payload.kind === 'channel') for (const b of engine.derive(c.id)?.videos || []) index.map.set(b.payload.infohash, { chain: c.id, block: b });
+    }
+    return index.map.get(ih) || null;
+  };
+  const hosts = (k, chain) => {   // a registered host, or the channel's owner (by their published list), or a node of either
+    const users = [k, engine.nodes.get(k)?.grant.user].filter(Boolean), hs = engine.ledger.hosts.get(chain);
+    return users.some(u => hs?.has(u) || engine.memberships.get(u)?.own?.includes(chain));
+  };
+  const user = process.env.HOST_USER;
+  const tabs = core.createPieceTabs({
+    signer, price: () => engine.ledger.prices.piece, balanceOf: (k) => engine.ledger.balance(k), log: (m) => log('[pay]', m),
+    infoFor: (ih) => {
+      const x = find(ih); if (!x) return null;
+      const owner = engine.derive(x.chain).owner, b = x.block;
+      return { chain: x.chain, video: b.hash, creator: owner,
+        free: (k) => b.ts < core.PIECE.start || k === owner || hosts(k, x.chain) || (k === signer.pub && (user === owner || hosts(user, x.chain))) };
+    }
+  });
+  const done = new Map();
+  setInterval(async () => {
+    const due = tabs.pending().filter(x => x.amt > (engine.ledger.tabsPaid.get(`${x.payer}|${x.payee}|${x.video}`) || 0) && x.amt > (done.get(x.payer + '|' + x.video) || 0));
+    for (let i = 0; i < due.length; i += core.PIECE.maxTabs) {
+      const part = due.slice(i, i + core.PIECE.maxTabs);
+      try { await engine.submitTx({ tabs: part }); for (const x of part) done.set(x.payer + '|' + x.video, x.amt); log(`[pay] cashing in ${part.length} viewer tab(s)`); }
+      catch (e) { log('[pay] couldn’t cash in tabs:', e.message); }
+    }
+  }, 60000);
+  if (GRANT) setInterval(async () => {   // pass earnings to the owner, keeping 20 coins for this node's own downloads
+    const extra = engine.ledger.balance(signer.pub) - 2000;
+    if (extra >= 500 && ![...engine.txpool.values()].some(t => t.from === signer.pub && t.pay)) {
+      try { await engine.submitTx({ pay: [{ to: GRANT.user, amt: extra }], memo: 'node earnings' }); log(`[pay] sent ${extra / 100} coins of earnings to the owner`); } catch (e) { log('[pay] couldn’t send earnings:', e.message); }
+    }
+  }, 10 * 60000);
+  globalThis.openTubeTabs = tabs;
+  return tabs;
+}
 
 // ---- control from the owner's console, and storage proofs. Both arrive as routed messages (engine.route): over a
 // direct WebSocket when the console can reach this node's address, otherwise hop by hop over the mesh.
@@ -302,7 +349,6 @@ setTimeout(async () => {
 }, 20000);
 
 // ---- "your node": started from someone's My node command, it announces itself to their My node page
-const GRANT = (() => { try { return process.env.NODE_GRANT ? JSON.parse(Buffer.from(process.env.NODE_GRANT, 'base64url').toString('utf8')) : null; } catch { return null; } })();
 if (process.env.NODE_GRANT && !(GRANT && core.validNodeGrant(GRANT))) log('NODE_GRANT is not a valid grant; not announcing this node');
 else if (GRANT) {
   const os = await import('node:os');

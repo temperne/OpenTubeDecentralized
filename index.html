@@ -65,6 +65,9 @@
   .chan-row:hover { background: var(--panel-2); text-decoration: none; }
   .fp { font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); }
   .badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
+  .tagbox { display: inline-flex; align-items: center; gap: 2px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px; padding: 1px 4px 1px 10px; font-size: 13px; }
+  .tagbox .tagx { background: none; border: 0; padding: 0 4px; color: var(--muted); cursor: pointer; font-size: 12px; }
+  a.tag { color: var(--accent, inherit); text-decoration: none; }
   .badge.ok { color: var(--ok); border-color: var(--ok); } .badge.warn { color: var(--warn); border-color: var(--warn); }
   .watch { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 20px; }
   @media (max-width: 900px) { .watch { grid-template-columns: 1fr; } }
@@ -123,6 +126,7 @@
   <nav>
     <a href="#/" data-nav="home">Feed</a>
     <a href="#/explore" data-nav="explore">Explore</a>
+    <a href="#/market" data-nav="market">Market</a>
     <a href="#/wallet" data-nav="wallet">Wallet</a>
     <a href="#/mine" data-nav="mine" id="nav-mine">My channel</a>
     <a href="#/me" data-nav="me">My node</a>
@@ -250,11 +254,34 @@ class Chain {
 function validGenesis(g) {
   if (!g || g.v !== 1 || g.chain !== null || !Array.isArray(g.parents) || g.parents.length || g.height !== 0 || !isKey(g.author)) return false;
   const p = g.payload;
-  if (!p || p.type !== 'genesis' || !['channel', 'list'].includes(p.kind)) return false;
+  if (!p || p.type !== 'genesis' || !['channel', 'list', 'group'].includes(p.kind)) return false;
   if (!isStr(p.name, LIMITS.name) || !p.name.trim() || !isStr(p.about, LIMITS.about)) return false;
   if (p.kind === 'channel' && (!isImg(p.avatar) || !['anyone', 'approved', 'off'].includes(p.comments))) return false;
   if (p.kind === 'list' && p.ranking !== undefined && p.ranking !== true) return false;
+  if (p.kind === 'group' && (!isImg(p.avatar) || !['open', 'approved'].includes(p.join))) return false;   // open: anyone may post; approved: members the owner approved
   return true;
+}
+// ---- groups: a chain where members post. The owner sets the rules (open or approved members, allow/revoke) like a
+// channel's comments; members' posts, comments and likes are blocks on the group's chain (with anti-spam work).
+function groupPermitted(chain, b) {
+  const owner = chain.owner, history = chain.ancestors(b.parents);
+  let join = chain.genesis.payload.join; const allowed = new Set(), revoked = new Set();
+  const ownerBlocks = [...history].map(x => chain.blocks.get(x)).filter(x => x.author === owner && x.hash !== chain.id).sort((x, y) => x.height - y.height || x.ts - y.ts);
+  for (const x of ownerBlocks) {
+    const q = x.payload;
+    if (q.type === 'profile' && q.join) join = q.join;
+    if (q.type === 'allow') { allowed.add(q.key); revoked.delete(q.key); }
+    if (q.type === 'revoke') { revoked.add(q.key); allowed.delete(q.key); }
+  }
+  if (revoked.has(b.author)) return false;
+  if (b.payload.target !== undefined) {   // comments, likes and hides attach to something already in the group
+    if (!history.has(b.payload.target)) return false;
+    const t = chain.blocks.get(b.payload.target);
+    if (b.payload.type === 'hide') return t.author === b.author;
+    if (b.payload.type === 'vote') return ['post', 'comment'].includes(t.payload.type);
+    if (t.payload.type !== 'post') return false;
+  }
+  return join === 'open' || allowed.has(b.author);
 }
 async function checkSigned(b) {
   if (!b || typeof b !== 'object' || !isHex(b.hash, 64) || typeof b.sig !== 'string' || !Number.isSafeInteger(b.nonce) || !Number.isSafeInteger(b.ts) || !Number.isSafeInteger(b.height)) return false;
@@ -263,10 +290,23 @@ async function checkSigned(b) {
   if (await hashBlock(b) !== b.hash) return false;
   return verify(b.author, b.hash, b.sig);
 }
+// Tags describe a video or an ad ("cooking", "pc-games"); ads also name what kind of product they're for. Viewers can say
+// they're not interested in a tag or category; that choice stays on their device and only filters what they see.
+const TAG_RE = /^[a-z0-9][a-z0-9-]{0,23}$/;
+const AD_CATEGORIES = ['apparel', 'autos', 'beauty', 'books', 'education', 'electronics', 'entertainment', 'finance', 'food', 'games', 'health', 'home', 'jobs', 'pets', 'services', 'software', 'sports', 'travel', 'other'];
+const validTags = (t) => t === undefined || (Array.isArray(t) && t.length <= 8 && t.every(x => typeof x === 'string' && TAG_RE.test(x)) && new Set(t).size === t.length);
 function validPayload(chain, b, CFG) {
   const p = b.payload; if (!p || typeof p !== 'object') return false;
   const owner = b.author === chain.owner;
   const kind = chain.genesis.payload.kind;
+  if (!owner && kind === 'group') {
+    if (zeroBits(b.hash) < CFG.commentDifficulty) return false;
+    if (p.type === 'post') return isStr(p.text, LIMITS.text) && p.text.trim().length > 0 && (p.image === undefined || isImg(p.image)) && isStr(p.name ?? '', LIMITS.name) && groupPermitted(chain, b);
+    if (p.type === 'comment') return isHex(p.target, 64) && isStr(p.text, LIMITS.comment) && p.text.trim().length > 0 && isStr(p.name ?? '', LIMITS.name) && groupPermitted(chain, b);
+    if (p.type === 'hide') return isHex(p.target, 64) && groupPermitted(chain, b);
+    if (p.type === 'vote') return isHex(p.target, 64) && [1, 0, -1].includes(p.v) && groupPermitted(chain, b);
+    return false;
+  }
   if (!owner) {
     if (kind !== 'channel' || zeroBits(b.hash) < CFG.commentDifficulty) return false;
     if (p.type === 'comment') return isHex(p.target, 64) && isStr(p.text, LIMITS.comment) && p.text.trim().length > 0 && isStr(p.name ?? '', LIMITS.name) && permittedAt(chain, b);
@@ -276,23 +316,24 @@ function validPayload(chain, b, CFG) {
   }
   switch (p.type) {
     case 'video': return kind === 'channel' && isStr(p.title, LIMITS.title) && isStr(p.desc, LIMITS.text) && isHex(p.infohash, 40) && isStr(p.file, 200) && Number.isSafeInteger(p.size) && isImg(p.thumb) && (p.comments === undefined || ['anyone', 'approved', 'off'].includes(p.comments))
-      && (p.stream === undefined || isHex(p.stream, 64));   // the recording of a live stream
+      && (p.stream === undefined || isHex(p.stream, 64)) && validTags(p.tags);   // stream: the recording of a live stream
     // A live stream starts. Its media goes through the live hub (see createLiveHub), signed by this key or by `relay`
     // (a home node the owner lets sign for this stream, e.g. for OBS ingest). Chat is comments on this block.
     case 'live': return kind === 'channel' && isStr(p.title, LIMITS.title) && p.title.trim().length > 0 && isHex(p.stream, 64) && isStr(p.mime, 80) && (p.relay === undefined || isKey(p.relay));
     case 'liveend': return kind === 'channel' && isHex(p.stream, 64) && ['published', 'discarded', 'ended'].includes(p.outcome);
     case 'settings': return kind === 'channel' && isHex(p.target, 64) && ['default', 'anyone', 'approved', 'off'].includes(p.comments);
-    case 'post': return isStr(p.text, LIMITS.text) && p.text.trim().length > 0;
+    case 'post': return isStr(p.text, LIMITS.text) && p.text.trim().length > 0 && (p.image === undefined || isImg(p.image));
     case 'comment': return isHex(p.target, 64) && isStr(p.text, LIMITS.comment) && p.text.trim().length > 0;
     case 'hide': return isHex(p.target, 64);
     case 'allow': case 'revoke': return isKey(p.key);
-    case 'profile': return (p.name === undefined || (isStr(p.name, LIMITS.name) && p.name.trim().length > 0)) && (p.about === undefined || isStr(p.about, LIMITS.about)) && (p.avatar === undefined || isImg(p.avatar)) && (p.comments === undefined || ['anyone', 'approved', 'off'].includes(p.comments));
+    case 'profile': return (p.join === undefined || (kind === 'group' && ['open', 'approved'].includes(p.join))) && (p.name === undefined || (isStr(p.name, LIMITS.name) && p.name.trim().length > 0)) && (p.about === undefined || isStr(p.about, LIMITS.about)) && (p.avatar === undefined || isImg(p.avatar)) && (p.comments === undefined || ['anyone', 'approved', 'off'].includes(p.comments));
     case 'add': return kind === 'list' && isHex(p.target, 64) && isStr(p.note ?? '', LIMITS.about);
-    case 'vote': return kind === 'channel' && isHex(p.target, 64) && [1, 0, -1].includes(p.v);
+    case 'vote': return (kind === 'channel' || kind === 'group') && isHex(p.target, 64) && [1, 0, -1].includes(p.v);
     // An ad. Its terms (price per view, max views…) are signed separately by the same key so a viewer's
     // claim can carry them to the main chain without the whole block.
     case 'ad': return kind === 'channel' && isStr(p.title, LIMITS.title) && isStr(p.file, 200) && isImg(p.thumb)
-      && isStr(p.url, 300) && (p.url === '' || /^https:\/\/[^\s]+$/.test(p.url)) && termsShape(p.terms) && p.terms.advertiser === b.author && p.terms.channel === chain.id;
+      && isStr(p.url, 300) && (p.url === '' || /^https:\/\/[^\s]+$/.test(p.url)) && termsShape(p.terms) && p.terms.advertiser === b.author && p.terms.channel === chain.id
+      && validTags(p.tags) && (p.category === undefined || AD_CATEGORIES.includes(p.category));
     // Run this advertiser's ads on this channel (or, for a list, on every channel in the list).
     case 'sponsor': return isHex(p.advertiser, 64);
     default: return false;
@@ -344,9 +385,9 @@ const rankingPreimage = (r) => { const { sig, ...rest } = r; return 'opentube-ra
 // attention. Version-1 transactions (the old per-person tokens) stay valid in history and only advance `seq`.
 const COIN = {
   unit: 100, txBits: 10, starterBits: 20, starter: 1000, reward: 100, maxTxs: 200, maxOuts: 100, memo: 140, maxAmt: 1e12,
-  price0: { post: 100, view: 5, like: 10 },          // post is per GB (minimum 1 unit)
-  min: { post: 10, view: 1, like: 1 }, max: { post: 1e7, view: 1e5, like: 1e5 },
-  target: { post: 2, view: 30, like: 30 },          // GB posted, views and votes per block
+  price0: { post: 100, view: 5, like: 10, piece: 2 }, // post is per GB (minimum 1 unit); piece: one BitTorrent piece of a video
+  min: { post: 10, view: 1, like: 1, piece: 0.2 }, max: { post: 1e7, view: 1e5, like: 1e5, piece: 1e4 },
+  target: { post: 2, view: 30, like: 30, piece: 5000 },   // GB posted, views, votes and video pieces paid per block
   step: 0.125, slack: 0.75,                          // a payment may be up to 25% under the current price (prices move while it waits)
   epoch: Date.UTC(2026, 10, 19, 9)                   // videos and votes from before the coin (2026-11-19 09:00 UTC) are free
 };
@@ -382,6 +423,63 @@ async function pieceProof(nonce, key, bytes) {
   return [...new Uint8Array(await crypto.subtle.digest('SHA-256', buf))].map(b => b.toString(16).padStart(2, '0')).join('');
 }
 const proofPreimage = (a) => { const { sig, ...rest } = a; return 'opentube-proof:' + canon(rest); };
+// The "ot_pay" BitTorrent extension. Both ends say who they are ({hello: key}); the downloader sends {tab} as pieces
+// arrive. o: { signer, price() -> units per piece, infoFor(infohash) -> { chain, video, creator, free(payerKey) } | null,
+// balanceOf(key), onTab(tab), log }. Call ext.attach(torrent) for every torrent (browser and node alike).
+function createPieceTabs(o) {
+  const te = new TextEncoder(), td = new TextDecoder();
+  const tabs = new Map();   // 'payer|video' -> latest tab received (we are the payee)
+  const sent = new Map();   // 'payee|video' -> { n, amt } we've signed so far (we are the payer)
+  const stats = { paidOut: 0, earned: 0, cut: 0 };
+  function Ext(wire) { this.wire = wire; this.peerKey = null; this.ready = false; }
+  Ext.prototype.name = 'ot_pay';
+  Ext.prototype.onExtendedHandshake = function (h) { if (h?.m?.ot_pay) { this.ready = true; this.send({ hello: o.signer.pub }); } };
+  Ext.prototype.send = function (msg) { try { this.wire.extended('ot_pay', te.encode(JSON.stringify(msg))); } catch {} };
+  Ext.prototype.onMessage = function (buf) {
+    let m; try { m = JSON.parse(td.decode(buf)); } catch { return; }
+    if (isKey(m.hello) && m.hello !== o.signer.pub) this.peerKey = m.hello;
+    else if (m.tab && tabShape(m.tab) && m.tab.payee === o.signer.pub && m.tab.payer === this.peerKey) take(m.tab, this).catch(() => {});
+  };
+  async function take(x, ext) {
+    if (!(await verify(x.payer, tabPreimage(x), x.sig))) return;
+    const k = x.payer + '|' + x.video, cur = tabs.get(k);
+    if (cur && cur.amt >= x.amt) return;
+    tabs.set(k, x); ext.lastTab = Date.now(); o.onTab?.(x);
+  }
+  function attach(torrent) {
+    if (torrent._otPay) return; torrent._otPay = true;
+    const hook = (wire) => { try { wire.use(Ext); } catch {} };
+    for (const w of torrent.wires || []) if (!w.ot_pay) hook(w);   // wires that connected before we attached (no extension: they ride free)
+    torrent.on('wire', hook);
+  }
+  // Every few seconds: sign tabs for what we've received; stop serving peers whose tab is behind or unfunded.
+  async function tick(torrents) {
+    for (const t of torrents) {
+      const info = t.infoHash && o.infoFor(t.infoHash); if (!info || !t.pieceLength) continue;
+      for (const w of t.wires || []) {
+        const x = w.ot_pay; if (!x?.ready || !x.peerKey) continue;
+        // as the downloader: owe the peer for each piece's worth it sent us
+        if (!info.free(o.signer.pub)) {
+          const n = Math.floor((w.downloaded || 0) / t.pieceLength), k = x.peerKey + '|' + info.video, prev = sent.get(k) || { n: 0, amt: 0 };
+          if (n > prev.n) {
+            const amt = prev.amt + Math.max(1, Math.ceil((n - prev.n) * o.price()));
+            const tab = { v: 1, kind: 'tab', payer: o.signer.pub, payee: x.peerKey, chain: info.chain, video: info.video, creator: info.creator, n, amt, at: Date.now() };
+            tab.sig = await o.signer.sign(tabPreimage(tab)); sent.set(k, { n, amt }); stats.paidOut += amt - prev.amt;
+            x.send({ tab });
+          }
+        }
+        // as the sender: a peer that owes more than it can pay, or sends no tabs, stops getting pieces
+        if (!info.free(x.peerKey)) {
+          const servedN = Math.floor((w.uploaded || 0) / t.pieceLength), tab = tabs.get(x.peerKey + '|' + info.video);
+          const owedN = servedN - (tab?.n || 0), owedAmt = (tab?.amt || 0) + Math.max(0, owedN) * o.price();
+          if (owedN > 4 || (tab && o.balanceOf(x.peerKey) < owedAmt * PIECE.creatorShare)) { if (!w.amChoking) { w.choke(); o.log?.(`stopped sending to ${x.peerKey.slice(0, 8)}: ${owedN > 4 ? 'no payment for ' + owedN + ' pieces' : 'not enough coins'}`); } }
+        } else if (w.amChoking && !w.peerChoking) w.unchoke();
+      }
+    }
+  }
+  const pending = () => [...tabs.values()];
+  return { Ext, attach, tick, pending, tabs, sent, stats, forget: (k) => tabs.delete(k) };
+}
 // ---- controlling your nodes: signed commands from the owner's console, answered signed by the node (routed over the mesh)
 const ctlPreimage = (c) => { const { sig, ...rest } = c; return 'opentube-nodectl:' + canon(rest); };
 const receiptShape = (r) => !!r && typeof r === 'object' && r.v === 1 && r.kind === 'receipt' && Object.hasOwn(SERVE.res, r.res) && isKey(r.provider) && isKey(r.by)
@@ -392,6 +490,31 @@ const receiptShape = (r) => !!r && typeof r === 'object' && r.v === 1 && r.kind 
 const NAMES = { re: /^[a-z0-9](?:[a-z0-9._-]{1,28}[a-z0-9])$/ };
 const nameShape = (n) => !!n && typeof n === 'object' && (n.space === '@' || n.space === '~') && isHex(n.chain, 64) && (n.handle === null || (typeof n.handle === 'string' && NAMES.re.test(n.handle) && !/[._-]{2}/.test(n.handle)));
 const amtOk = (a) => Number.isSafeInteger(a) && a > 0 && a <= COIN.maxAmt;
+// ---- paying per piece. Whoever downloads a video pays the peer that sent each piece, at the network's piece price,
+// and that peer passes PIECE.creatorShare of it to the video's creator. It happens on the BitTorrent connection itself
+// (extension "ot_pay", see createPieceTabs): the downloader keeps a running TAB per peer and video ("I've received n
+// pieces from you; I owe you amt units in total"), signs it and sends it as it goes. The peer stops sending to someone
+// whose tab falls behind or who can't cover it, and cashes in the latest tabs with a `tabs` transaction; the ledger
+// pays the difference since last time (as much as the payer has). Free: your own videos, channels you host, videos from
+// before the coin. Each payer counts as one view of a video.
+//
+// Ad views become CERTIFICATES: the viewer's share of a verified ad view is held (taken from the advertiser at claim
+// time) in a certificate the viewer owns. It can be cashed in (`redeem`), given or sold (`certs`), bundled into
+// marketplace listings, and an advertiser who buys back its own certificates gets its coins back. How much an ad view
+// is worth follows how much of the ad was downloaded (claim.bytes of terms.size).
+const PIECE = { start: Date.UTC(2026, 10, 20, 2), creatorShare: 0.5, maxTabs: 50, maxCerts: 200 };
+const tabPreimage = (x) => { const { sig, ...rest } = x; return 'opentube-tab:' + canon(rest); };
+const tabShape = (x) => !!x && typeof x === 'object' && x.v === 1 && x.kind === 'tab' && isKey(x.payer) && isKey(x.payee) && x.payer !== x.payee
+  && isHex(x.chain, 64) && isHex(x.video, 64) && isKey(x.creator) && Number.isSafeInteger(x.n) && x.n > 0 && amtOk(x.amt) && Number.isSafeInteger(x.at) && typeof x.sig === 'string';
+// ---- the marketplace: listings on the main chain. Fixed price (`buy`) or auction (`bid`, the highest bid is held
+// until the end; outbid bids are refunded; the winner is settled automatically when the auction ends). A listing can
+// carry ad-view certificates, which move to the buyer; anything else (goods, gift cards, services) is delivered by the
+// seller off the network, using the contact the listing gives.
+const MARKET = { maxDays: 30, minStep: 0.05, title: 120, about: 2000, contact: 200, img: 24000 };
+const listingShape = (x) => !!x && typeof x === 'object' && ['fixed', 'auction'].includes(x.kind) && isStr(x.title, MARKET.title) && x.title.trim().length > 0 && isStr(x.about ?? '', MARKET.about)
+  && isStr(x.contact ?? '', MARKET.contact) && (x.image === undefined || (isImg(x.image) && x.image.length <= MARKET.img)) && amtOk(x.price)
+  && (x.kind === 'fixed' || (Number.isSafeInteger(x.ends) && x.ends > 0)) && (x.category === undefined || AD_CATEGORIES.includes(x.category) || x.category === 'adviews')
+  && (x.certs === undefined || (Array.isArray(x.certs) && x.certs.length <= PIECE.maxCerts && x.certs.every(c => isHex(c, 64)) && new Set(x.certs).size === x.certs.length)) && validTags(x.tags);
 const postCost = (price, size) => Math.max(1, Math.ceil(price * size / 1e9));
 const priceOf = (L, k) => Math.max(1, Math.ceil(L.prices[k]));   // what to pay now for a view or a vote (whole units)
 class Ledger {
@@ -399,8 +522,8 @@ class Ledger {
     this.bal = new Map(src?.bal); this.seq = new Map(src?.seq); this.starters = new Set(src?.starters);
     this.paid = new Map(src?.paid);          // 'post:<video>' | 'view:<video>:<viewer>' | 'vote:<vote block>' -> { from, amt, to }
     this.hosts = new Map([...(src?.hosts || [])].map(([k, v]) => [k, new Set(v)]));   // chain -> Set(host keys)
-    this.prices = { ...(src?.prices || COIN.price0) };
-    this.use = { post: 0, view: 0, like: 0 }; this.fees = 0;   // this block's load and unclaimed fees
+    this.prices = { ...COIN.price0, ...(src?.prices || {}) };
+    this.use = { post: 0, view: 0, like: 0, piece: 0 }; this.fees = 0;   // this block's load and unclaimed fees
     this.minted = src?.minted || 0; this.burned = src?.burned || 0; this.txCount = src?.txCount || 0;
     this.claimed = new Set(src?.claimed); this.slotUsed = new Set(src?.slotUsed); this.adViews = new Map(src?.adViews); this.adPaid = new Map(src?.adPaid);
     this.adBusy = new Map(src?.adBusy);
@@ -410,6 +533,9 @@ class Ledger {
     this.receipts = new Set(src?.receipts); this.rcptUse = new Map(src?.rcptUse); this.poolFees = new Map(src?.poolFees);
     this.settled = new Set(src?.settled); this.earned = new Map([...(src?.earned || [])].map(([k, v]) => [k, [...v]])); this.clock = src?.clock || 0;   // viewer -> first time slot after the last ad they were paid for
     this.names = new Map(src?.names); this.nameOf = new Map(src?.nameOf);   // '@cooking' -> { chain, key }; chain -> '@cooking'
+    this.tabsPaid = new Map(src?.tabsPaid); this.viewers = new Set(src?.viewers);   // 'payer|payee|video' -> units paid; 'video|viewer' seen
+    this.certs = new Map([...(src?.certs || [])].map(([k, v]) => [k, { ...v }]));   // ad-view certificate id -> { owner, adv, tid, amt, ts, video }
+    this.listings = new Map([...(src?.listings || [])].map(([k, v]) => [k, { ...v, certs: [...(v.certs || [])] }]));   // marketplace
   }
   balance(k) { return this.bal.get(k) || 0; }
   add(k, d) { const v = this.balance(k) + d; if (v) this.bal.set(k, v); else this.bal.delete(k); }
@@ -434,6 +560,32 @@ class Ledger {
       return null;   // individual receipts that don't count are skipped in apply
     }
     if (t.host) return null;
+    if (t.tabs) return t.tabs.every(x => x.payee === t.from) ? null : 'tabs for someone else';
+    if (t.redeem || t.certs) {
+      const ids = t.redeem?.ids || t.certs.ids;
+      return ids.every(id => this.certs.get(id)?.owner === t.from) ? null : 'you don’t own those ad views';
+    }
+    if (t.list) {
+      const x = t.list;
+      if (x.kind === 'auction' && (x.ends <= t.ts || x.ends > t.ts + MARKET.maxDays * 86400000)) return 'auctions end between now and 30 days from now';
+      if ((x.certs || []).some(id => this.certs.get(id)?.owner !== t.from)) return 'you don’t own those ad views';
+      return null;
+    }
+    if (t.unlist) { const L = this.listings.get(t.unlist.id); return !L || L.seller !== t.from ? 'not your listing' : L.high ? 'it already has a bid' : null; }
+    if (t.buy) {
+      const L = this.listings.get(t.buy.id);
+      if (!L || L.kind !== 'fixed') return 'that listing isn’t for sale';
+      if (L.seller === t.from) return 'it’s your own listing';
+      return this.balance(t.from) < L.price ? 'not enough coins' : null;
+    }
+    if (t.bid) {
+      const L = this.listings.get(t.bid.id);
+      if (!L || L.kind !== 'auction' || L.ends <= t.ts) return 'that auction is over';
+      if (L.seller === t.from) return 'it’s your own auction';
+      const min = L.high ? L.high.amt + Math.max(1, Math.ceil(L.high.amt * MARKET.minStep)) : L.price;
+      if (t.bid.amt < min) return `the lowest bid now is ${min} units`;
+      return this.balance(t.from) < t.bid.amt ? 'not enough coins' : null;
+    }
     if (t.claim) {
       const tid = claimTid.get(t), c = t.claim, adv = c.terms.advertiser;
       if (!tid) return 'claim not verified';
@@ -481,11 +633,41 @@ class Ledger {
       const set = this.hosts.get(t.host.chain) || this.hosts.set(t.host.chain, new Set()).get(t.host.chain);
       if (t.host.on) set.add(t.from); else { set.delete(t.from); if (!set.size) this.hosts.delete(t.host.chain); }
     } else if (t.claim) {
-      const tid = claimTid.get(t), c = t.claim, adv = c.terms.advertiser, p = c.terms.perView, half = Math.floor(p / 2);
-      this.add(adv, -p); this.add(t.from, half); this.add(c.creator, p - half);
+      const tid = claimTid.get(t), c = t.claim, adv = c.terms.advertiser;
+      const p = c.bytes === undefined ? c.terms.perView : Math.max(1, Math.floor(c.terms.perView * Math.min(c.bytes, c.terms.size) / c.terms.size)), half = Math.floor(p / 2);
+      this.add(adv, -p); this.add(c.creator, p - half);
+      if (t.ts >= PIECE.start) this.certs.set(t.hash, { owner: t.from, adv, tid, amt: half, ts: t.ts, video: c.video, viewer: t.from });   // the viewer's half, held in a certificate
+      else this.add(t.from, half);
       this.claimed.add(tid + '|' + t.from); this.slotUsed.add(t.from + '|' + c.slot);
       this.adBusy.set(t.from, c.slot + Math.max(1, Math.ceil(c.terms.duration * 1000 / ADS.slotMs)));
       this.adViews.set(tid, (this.adViews.get(tid) || 0) + 1); this.adPaid.set(tid, (this.adPaid.get(tid) || 0) + p);
+    } else if (t.tabs) {
+      for (const x of t.tabs) {
+        const k = `${x.payer}|${x.payee}|${x.video}`, prev = this.tabsPaid.get(k) || 0;
+        const pay = Math.min(x.amt - prev, this.balance(x.payer)); if (pay <= 0) continue;
+        this.add(x.payer, -pay);
+        const cut = this.feeCut(t, pay), creator = x.creator === x.payee ? 0 : Math.floor((pay - cut) * PIECE.creatorShare);
+        this.add(x.creator, creator); this.add(x.payee, pay - cut - creator);
+        this.tabsPaid.set(k, prev + pay); this.use.piece += Math.max(1, Math.round(x.n * pay / x.amt));
+        const vk = x.video + '|' + x.payer;
+        if (!this.viewers.has(vk)) { this.viewers.add(vk); this.views.set(x.video, (this.views.get(x.video) || 0) + 1); }
+      }
+    } else if (t.redeem) {
+      for (const id of t.redeem.ids) { const c = this.certs.get(id); this.add(t.from, c.amt); this.certs.delete(id); }
+    } else if (t.certs) {
+      for (const id of t.certs.ids) this.certs.get(id).owner = t.certs.to;
+    } else if (t.list) {
+      for (const id of t.list.certs || []) this.certs.get(id).owner = 'listing:' + t.hash;   // held by the listing
+      this.listings.set(t.hash, { ...t.list, certs: [...(t.list.certs || [])], seller: t.from, ts: t.ts, high: null, bids: 0, state: 'open' });
+    } else if (t.unlist) {
+      const L = this.listings.get(t.unlist.id); this.closeListing(t.unlist.id, L, null, 'withdrawn');
+    } else if (t.buy) {
+      const L = this.listings.get(t.buy.id);
+      this.add(t.from, -L.price); this.add(L.seller, L.price - this.feeCut(t, L.price)); this.closeListing(t.buy.id, L, t.from, 'sold');
+    } else if (t.bid) {
+      const L = this.listings.get(t.bid.id);
+      if (L.high) this.add(L.high.by, L.high.amt);   // the outbid bidder gets their coins back
+      this.add(t.from, -t.bid.amt); L.high = { by: t.from, amt: t.bid.amt, ts: t.ts }; L.bids++;
     } else if (t.pay) { for (const o of t.pay) { this.add(t.from, -o.amt); this.add(o.to, o.amt); } }
     else if (t.post) {
       const hosts = this.hostsOf(t.post.chain).filter(k => k !== t.from);
@@ -507,6 +689,17 @@ class Ledger {
       this.paid.set('vote:' + t.vote.target, { from: t.from, amt: t.vote.amt, to: t.vote.v > 0 ? t.vote.to : null }); this.use.like++;
     }
     return null;
+  }
+  closeListing(id, L, buyer, state) {   // certificates go to the buyer (or back to the seller); the listing stays as a record
+    for (const c of L.certs) { const x = this.certs.get(c); if (x) x.owner = buyer || L.seller; }
+    L.state = state; L.buyer = buyer;
+  }
+  settleAuctions(now) {
+    for (const [id, L] of this.listings) {
+      if (L.state !== 'open' || L.kind !== 'auction' || L.ends > now) continue;
+      if (L.high) { const cut = this.feeCut({ ts: L.ends }, L.high.amt); this.add(L.seller, L.high.amt - cut); this.closeListing(id, L, L.high.by, 'sold'); }
+      else this.closeListing(id, L, null, 'ended');
+    }
   }
   // After a block's transactions: pay its miner, then move prices toward the target load.
   feeCut(t, amt) {   // the share of a payment that goes to the resource pools of its period
@@ -542,16 +735,21 @@ class Ledger {
     }
   }
   endBlock(miner, ts = 0) {
-    if (ts > this.clock) { this.clock = ts; this.settle(ts); }
+    if (ts > this.clock) { this.clock = ts; this.settle(ts); this.settleAuctions(ts); }
     if (isKey(miner)) { this.add(miner, COIN.reward + this.fees); this.minted += COIN.reward; }
     else this.burned += this.fees;
-    for (const k of ['post', 'view', 'like']) {
+    for (const k of ['post', 'view', 'like', 'piece']) {
       const f = Math.max(-1, Math.min(1, (this.use[k] - COIN.target[k]) / COIN.target[k]));
       this.prices[k] = Math.min(COIN.max[k], Math.max(COIN.min[k], Math.round(this.prices[k] * (1 + COIN.step * f) * 1000) / 1000));   // kept to 0.001 unit
     }
-    this.use = { post: 0, view: 0, like: 0 }; this.fees = 0;
+    this.use = { post: 0, view: 0, like: 0, piece: 0 }; this.fees = 0;
   }
-  supply() { let s = 0; for (const v of this.bal.values()) s += v; return s; }
+  supply() {   // coins in wallets, plus those held in ad-view certificates and in the high bids of open auctions
+    let s = 0; for (const v of this.bal.values()) s += v;
+    for (const c of this.certs.values()) s += c.amt;
+    for (const L of this.listings.values()) if (L.state === 'open' && L.high) s += L.high.amt;
+    return s;
+  }
 }
 
 // ---- ads and proof of watching
@@ -578,7 +776,7 @@ function witnessShape(w) {
 }
 const claimTid = new WeakMap();   // claim tx -> verified terms id (set by checkTx)
 function claimShape(c) {
-  return !!c && typeof c === 'object' && termsShape(c.terms) && Number.isSafeInteger(c.slot) && isHex(c.video, 64) && isKey(c.creator)
+  return !!c && typeof c === 'object' && termsShape(c.terms) && Number.isSafeInteger(c.slot) && isHex(c.video, 64) && isKey(c.creator) && (c.bytes === undefined || (Number.isSafeInteger(c.bytes) && c.bytes > 0))
     && Array.isArray(c.witnesses) && c.witnesses.length <= ADS.maxWitnesses && c.witnesses.every(witnessShape);
 }
 async function checkClaim(t) {
@@ -608,7 +806,7 @@ function txShape(t) {
     if (!Array.isArray(outs) || !Array.isArray(burns) || outs.length > 100 || burns.length > 20 || !(outs.length + burns.length)) return false;
     return outs.every(o => o && isKey(o.to) && isKey(o.token) && amtOk(o.amt) && o.to !== t.from) && burns.every(b => b && isKey(b.token) && b.token !== t.from && amtOk(b.amt));
   }
-  const acts = ['pay', 'starter', 'post', 'view', 'vote', 'host', 'claim', 'name', 'serve'].filter(k => t[k] !== undefined);
+  const acts = ['pay', 'starter', 'post', 'view', 'vote', 'host', 'claim', 'name', 'serve', 'tabs', 'redeem', 'certs', 'list', 'unlist', 'buy', 'bid'].filter(k => t[k] !== undefined);
   if (acts.length !== 1 || t.outs !== undefined || t.burns !== undefined) return false;
   const x = t[acts[0]];
   switch (acts[0]) {
@@ -620,6 +818,12 @@ function txShape(t) {
     case 'host': return !!x && isHex(x.chain, 64) && typeof x.on === 'boolean';
     case 'claim': return claimShape(x);
     case 'name': return nameShape(x);
+    case 'tabs': return Array.isArray(x) && x.length >= 1 && x.length <= PIECE.maxTabs && x.every(tabShape) && new Set(x.map(y => `${y.payer}|${y.video}`)).size === x.length;
+    case 'redeem': return !!x && Array.isArray(x.ids) && x.ids.length >= 1 && x.ids.length <= PIECE.maxCerts && x.ids.every(i => isHex(i, 64)) && new Set(x.ids).size === x.ids.length;
+    case 'certs': return !!x && isKey(x.to) && x.to !== t.from && Array.isArray(x.ids) && x.ids.length >= 1 && x.ids.length <= PIECE.maxCerts && x.ids.every(i => isHex(i, 64)) && new Set(x.ids).size === x.ids.length;
+    case 'list': return listingShape(x);
+    case 'unlist': case 'buy': return !!x && isHex(x.id, 64);
+    case 'bid': return !!x && isHex(x.id, 64) && amtOk(x.amt);
     case 'serve': return !!x && Number.isSafeInteger(x.epoch) && Array.isArray(x.receipts) && x.receipts.length >= 1 && x.receipts.length <= SERVE.maxReceipts && x.receipts.every(receiptShape)
       && new Set(x.receipts.map(r => r.res + '|' + r.by)).size === x.receipts.length && (x.grant === undefined || validNodeGrant(x.grant));
   }
@@ -630,6 +834,7 @@ async function checkTx(t) {
   if (!txShape(t) || !isHex(t.hash, 64) || typeof t.sig !== 'string' || !Number.isSafeInteger(t.nonce)) return false;
   if (canon(t).length > 40000 || zeroBits(t.hash) < (t.starter ? COIN.starterBits : COIN.txBits) || await hashBlock(t) !== t.hash) return false;
   if (!(await verify(t.from, t.hash, t.sig))) return false;
+  if (t.tabs) for (const x of t.tabs) if (!(await verify(x.payer, tabPreimage(x), x.sig))) return false;   // every tab signed by its payer
   if (t.serve) {   // every receipt signed by its receiver; a grant (if any) signed by the owner who gets paid
     for (const r of t.serve.receipts) if (!(await verify(r.by, receiptPreimage(r), r.sig))) return false;
     if (t.serve.grant) { if (!(await verify(t.serve.grant.user, nodeGrantPreimage(t.serve.grant), t.serve.grant.sig))) return false; serveGrants.set(t, t.serve.grant.user); }
@@ -937,7 +1142,7 @@ function derive(c) {
     const p = b.payload;
     if (p.type === 'video' && p.comments) videoPolicy.set(b.hash, p.comments);
     if (p.type === 'settings') { if (p.comments === 'default') videoPolicy.delete(p.target); else videoPolicy.set(p.target, p.comments); }
-    if (p.type === 'profile') for (const k of ['name', 'about', 'avatar', 'comments']) if (p[k] !== undefined) profile[k] = p[k];
+    if (p.type === 'profile') for (const k of ['name', 'about', 'avatar', 'comments', 'join']) if (p[k] !== undefined) profile[k] = p[k];
     if (p.type === 'allow') allowed.add(p.key);
     if (p.type === 'revoke') { allowed.delete(p.key); revokes.push({ key: p.key, before: c.ancestors([b.hash]) }); }
   }
@@ -947,8 +1152,10 @@ function derive(c) {
     const pol = policyFor(target);
     return pol === 'anyone' || (pol === 'approved' && allowed.has(key));
   };
+  const isGroup = c.genesis.payload.kind === 'group';
   const permitted = (b) => {
     if (b.author === owner) return true;
+    if (isGroup) return !revokes.some(r => r.key === b.author && !r.before.has(b.hash));   // validity (membership at the time) was checked on insert
     if (revokes.some(r => r.key === b.author && !r.before.has(b.hash))) return false;
     if (b.payload.type === 'hide' || b.payload.type === 'vote') return true;  // own-comment hides and votes need no comment permission
     return allows(b.author, b.payload.target);
@@ -963,7 +1170,7 @@ function derive(c) {
   return (c._derived = {
     version: c.version, id: c.id, kind: c.genesis.payload.kind, owner, profile, allowed, revoked: new Set(revokes.map(r => r.key)), hidden,
     videos: live.filter(b => b.payload.type === 'video' && b.author === owner).reverse(),
-    posts: live.filter(b => b.payload.type === 'post' && b.author === owner).reverse(),
+    posts: live.filter(b => b.payload.type === 'post' && (isGroup || b.author === owner)).reverse(),
     adds: live.filter(b => b.payload.type === 'add' && b.author === owner).reverse(),
     ads: live.filter(b => b.payload.type === 'ad' && b.author === owner).reverse(),
     sponsors: live.filter(b => b.payload.type === 'sponsor' && b.author === owner).reverse(),
@@ -979,7 +1186,8 @@ function derive(c) {
     commentsFor: (target) => visible.filter(b => b.payload.type === 'comment' && b.payload.target === target),
     votes: tallyVotes(visible),
     policyFor, videoPolicy,
-    canComment: (key, target) => key === owner || (!revokes.some(r => r.key === key) && allows(key, target)),
+    canComment: (key, target) => key === owner || (!revokes.some(r => r.key === key) && (isGroup ? (profile.join === 'open' || allowed.has(key)) : allows(key, target))),
+    canPost: (key) => key === owner || (isGroup && !revokes.some(r => r.key === key) && (profile.join === 'open' || allowed.has(key))),
     blockCount: c.blocks.size
   });
 }
@@ -1158,7 +1366,8 @@ async function createEngine(o) {
   function history(key, limit = 200) {
     const res = [];
     const touches = (t) => t.v === 2 && (t.from === key || (t.pay || []).some(x => x.to === key) || t.view?.to === key || (t.vote?.to === key && t.vote.v > 0)
-      || t.claim?.creator === key || t.claim?.terms.advertiser === key);
+      || t.claim?.creator === key || t.claim?.terms.advertiser === key || t.certs?.to === key
+      || (t.tabs || []).some(x => x.payer === key || x.payee === key || x.creator === key));
     for (const t of txpool.values()) if (touches(t)) res.push({ tx: t, pending: true });
     for (let b = main.best; b && b.hash !== MAIN_ID && res.length < limit; b = main.blocks.get(b.parents[0])) {
       for (const t of [...(b.payload.txs || [])].reverse()) if (touches(t)) res.push({ tx: t, height: b.height, ts: b.ts });
@@ -1407,7 +1616,7 @@ async function createEngine(o) {
   });
 }
 
-globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
+globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
 })();
 </script>
 
@@ -1545,6 +1754,21 @@ async function checkKeyPair(k) {
 }
 const settings = Object.assign({ name: 'viewer-' + fp(me.pub), hostCapGB: 5 }, await kv.get('settings'));
 const saveSettings = () => kv.set('settings', settings);
+// ---- tags and "not interested" (kept only in this browser's settings, never sent anywhere)
+const { TAG_RE, AD_CATEGORIES } = globalThis.OpenTubeCore;
+settings.muted = Object.assign({ tags: [], cats: [] }, settings.muted);
+const parseTags = (text) => [...new Set(String(text || '').toLowerCase().split(/[\s,#]+/).map(t => t.replace(/[^a-z0-9-]/g, '').replace(/^-+/, '').slice(0, 24)).filter(t => TAG_RE.test(t)))].slice(0, 8);
+const mutedTag = (t) => settings.muted.tags.includes(t);
+const isMutedVideo = (chainId, b) => !isMine(derive(chainId)?.owner) && (b.payload.tags || []).some(mutedTag);
+const isMutedAd = (p) => (p.category && settings.muted.cats.includes(p.category)) || (p.tags || []).some(mutedTag);
+function setMuted(kind, value, on) {
+  const list = settings.muted[kind], i = list.indexOf(value);
+  if (on && i < 0) list.push(value); if (!on && i >= 0) list.splice(i, 1);
+  saveSettings(); scheduleRender();
+}
+const tagLink = (t) => h('a', { class: 'tag', href: `#/tag/${t}` }, '#' + t);
+const CAT_NAMES = { apparel: 'Clothing & apparel', autos: 'Cars & vehicles', beauty: 'Beauty', books: 'Books', education: 'Education', electronics: 'Electronics', entertainment: 'Entertainment',
+  finance: 'Finance', food: 'Food & drink', games: 'Games', health: 'Health', home: 'Home & garden', jobs: 'Jobs', pets: 'Pets', services: 'Services', software: 'Software & apps', sports: 'Sports', travel: 'Travel', other: 'Other' };
 const subs = Object.assign({}, await kv.get('subs'));            // chainId -> 'sub' | 'join'
 const saveSubs = () => kv.set('subs', subs);
 
@@ -1716,6 +1940,45 @@ const MIRROR = isKey(params.get('mirror')) ? params.get('mirror') : null;  // se
 // ---------------------------------------------------------------- video transport (WebTorrent)
 const wt = new WebTorrent();
 wt.on('error', (e) => console.warn('webtorrent', e));
+// ---- paying per piece (core: PIECE, createPieceTabs). Every torrent speaks "ot_pay": we sign a running tab for each
+// peer that sends us pieces of a video, and stop sending to peers who don't pay us. Free: your own videos, channels you
+// host, peers who host it, videos from before the coin, ads.
+const { PIECE } = globalThis.OpenTubeCore;
+const videoIndex = { at: 0, map: new Map() };   // infohash -> { chain, block }
+function videoByInfohash(ih) {
+  if (Date.now() - videoIndex.at > 5000 || !videoIndex.map.has(ih)) {
+    videoIndex.map.clear(); videoIndex.at = Date.now();
+    for (const c of chains.values()) if (c !== main && c.genesis.payload.kind === 'channel') for (const b of derive(c.id)?.videos || []) videoIndex.map.set(b.payload.infohash, { chain: c.id, block: b });
+  }
+  return videoIndex.map.get(ih) || null;
+}
+const hostsVideo = (key, chain) => {   // a registered host of the channel or its owner's node (a node's grant names its user)
+  const users = [key, E.nodes.get(key)?.grant.user].filter(Boolean), hs = E.ledger.hosts.get(chain);
+  return users.some(u => hs?.has(u) || E.memberships.get(u)?.own?.includes(chain));
+};
+const tabsEngine = globalThis.OpenTubeCore.createPieceTabs({
+  signer: me, price: () => E.ledger.prices.piece, balanceOf: (k) => E.ledger.balance(k),
+  log: (m) => E.logEvent('video', m),
+  infoFor: (ih) => {
+    const x = videoByInfohash(ih); if (!x) return null;   // not a video (an ad, say): free
+    const owner = derive(x.chain).owner, b = x.block;
+    return { chain: x.chain, video: b.hash, creator: owner,
+      free: (k) => b.ts < PIECE.start || k === owner || hostsVideo(k, x.chain) || (k === me.pub && (isMine(owner) || subs[x.chain] === 'join' || hosting.has(ih))) };
+  }
+});
+wt.on('add', (t) => tabsEngine.attach(t));
+setInterval(() => tabsEngine.tick(wt.torrents).catch(e => console.warn('tabs', e)), 4000);
+// Cash in the tabs others signed to us, once a minute (only what's new since the last settlement).
+const tabsSubmitted = new Map();
+setInterval(async () => {
+  const due = tabsEngine.pending().filter(x => x.amt > (E.ledger.tabsPaid.get(`${x.payer}|${x.payee}|${x.video}`) || 0) && x.amt > (tabsSubmitted.get(x.payer + '|' + x.video) || 0));
+  for (let i = 0; i < due.length; i += PIECE.maxTabs) {
+    const part = due.slice(i, i + PIECE.maxTabs);
+    try { await E.submitTx({ tabs: part }, me); for (const x of part) tabsSubmitted.set(x.payer + '|' + x.video, x.amt); }
+    catch (e) { console.warn('cashing in tabs', e.message); }
+  }
+}, 60000);
+const paidFor = (videoHash) => { let n = 0, amt = 0; for (const [k, v] of tabsEngine.sent) if (k.endsWith('|' + videoHash)) { n += v.n; amt += v.amt; } return { n, amt }; };
 
 // ---------------------------------------------------------------- paying nodes for what they give you (core: SERVE)
 // This browser keeps count, per node, of what it got from it in each 10-minute period: video bytes (from the node's
@@ -2596,6 +2859,7 @@ function unpaidCard(id, b) {
 const viewsOf = (hash) => (E.ledger.views.get(hash) || 0) + [...E.txpool.values()].filter(t => t.v === 2 && t.view?.video === hash).length;
 const fmtViews = (n) => n === 1 ? '1 view' : (n >= 1e6 ? (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M' : n >= 1e4 ? Math.round(n / 1e3) + 'K' : n.toLocaleString()) + ' views';
 function videoCard(chainId, b) {
+  if (isMutedVideo(chainId, b)) return null;   // you said you're not interested in one of its tags
   const v = b.payload, d = derive(chainId);
   const th = h('div', { class: 'thumb' }); if (v.thumb) th.style.backgroundImage = `url("${v.thumb}")`; else th.textContent = '▶';
   return h('a', { class: 'card', href: `#/v/${chainId}/${b.hash}` }, th,
@@ -2639,8 +2903,8 @@ function chanRow(id) {
   const reg = E.directory.get(id);
   return h('a', { class: 'chan-row', href: `#/c/${id}` }, avatar(p.avatar, p.name, 'sm'),
     h('div', { style: 'min-width:0;flex:1' }, h('div', {}, h('b', {}, p.name), ' ', nameOf(id) ? h('span', { class: 'sub' }, nameOf(id) + ' ') : null, h('span', { class: 'fp' }, '·' + fp(g.author))),
-      h('div', { class: 'sub', style: 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis' }, p.about || (p.kind === 'list' ? 'List' : 'Channel'))),
-    h('span', { class: 'badge' + (reg ? '' : ' warn') }, p.kind === 'list' ? 'list' : 'channel', reg ? '' : ' · pending'),
+      h('div', { class: 'sub', style: 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis' }, p.about || ({ list: 'List', group: 'Group' }[p.kind] || 'Channel'))),
+    h('span', { class: 'badge' + (reg ? '' : ' warn') }, p.kind || 'channel', reg ? '' : ' · pending'),
     subs[id] ? h('span', { class: 'badge ok' }, subs[id] === 'join' ? 'joined' : 'subscribed') : null);
 }
 
@@ -2689,6 +2953,8 @@ function parseRoute() {
   }
   if (p[0] === 'explore') return { name: 'explore', tab: p[1] || 'trending' };
   if (p[0] === 'me') return { name: 'me' };
+  if (p[0] === 'market') return p[1] === 'item' && isHex(p[2], 64) ? { name: 'market', tab: 'item', id: p[2] } : { name: 'market', tab: p[1] || 'items' };
+  if (p[0] === 'tag' && TAG_RE.test(p[1] || '')) return { name: 'tag', tag: p[1] };
   if (p[0] === 'mine') return { name: 'mine' };
   if (p[0] === 'new' && ['video', 'live'].includes(p[1])) return { name: 'new', what: p[1] };
   if (p[0] === 'network') return { name: 'network' };
@@ -2795,6 +3061,152 @@ function viewChips(setting, options, onChange) {
     settings[setting] = k; saveSettings(); for (const b of e.target.parentNode.children) b.classList.toggle('on', b === e.target); onChange();
   } }, label)));
 }
+// ---------------------------------------------------------------- the marketplace (core: MARKET)
+const { MARKET } = globalThis.OpenTubeCore;
+const myCerts = () => [...E.ledger.certs].filter(([, c]) => isMine(c.owner)).map(([id, c]) => ({ id, ...c }));
+const certGroups = (list) => { const m = new Map(); for (const c of list) (m.get(c.adv) || m.set(c.adv, []).get(c.adv)).push(c); return m; };
+const advName = (key) => { for (const c of chains.values()) if (c.owner === key && c.genesis.payload.kind === 'channel') return derive(c.id)?.profile.name || c.genesis.payload.name; return keyName(key); };
+const listingPrice = (L) => L.kind === 'auction' ? (L.high ? L.high.amt : L.price) : L.price;
+const endsText = (ts) => { const d = ts - Date.now(); if (d <= 0) return 'ended'; const hrs = d / 3600000; return hrs >= 48 ? `${Math.round(hrs / 24)} days left` : hrs >= 1 ? `${Math.round(hrs)} h left` : `${Math.max(1, Math.round(d / 60000))} min left`; };
+function listingCard([id, L]) {
+  const th = h('div', { class: 'thumb' }); if (L.image) th.style.backgroundImage = `url("${L.image}")`; else th.textContent = L.certs.length ? '🎟' : '🛍';
+  const what = L.kind === 'auction' ? `${L.high ? 'bid' : 'starts at'} ${fmtCoin(listingPrice(L))} · ${L.state === 'open' ? endsText(L.ends) : L.state}` : `${fmtCoin(L.price)} coins${L.state !== 'open' ? ' · ' + L.state : ''}`;
+  return h('a', { class: 'card', href: `#/market/item/${id}` }, th,
+    h('div', { class: 'meta' }, h('h3', { title: L.title }, L.title), h('div', { class: 'sub' }, what),
+      h('div', { class: 'sub' }, keyName(L.seller), L.certs.length ? ` · ${L.certs.length} ad view${L.certs.length === 1 ? '' : 's'}` : '', L.category && L.category !== 'adviews' ? ' · ' + CAT_NAMES[L.category] : '')));
+}
+function marketNew() {
+  const kind = h('select', {}, h('option', { value: 'fixed' }, 'Fixed price'), h('option', { value: 'auction' }, 'Auction'));
+  const title = h('input', { type: 'text', maxLength: MARKET.title, placeholder: 'What are you selling?' });
+  const about = h('textarea', { maxLength: MARKET.about, placeholder: 'Description, condition, delivery…' });
+  const price = h('input', { type: 'text', inputMode: 'decimal', placeholder: 'Price in coins (auction: starting bid)' });
+  const days = h('input', { type: 'number', min: 1, max: MARKET.maxDays, value: 7, style: 'width:80px' });
+  const contact = h('input', { type: 'text', maxLength: MARKET.contact, placeholder: 'How the buyer reaches you (email, site, shop link) — public' });
+  const cat = h('select', {}, h('option', { value: '' }, 'Category (optional)'), AD_CATEGORIES.map(c => h('option', { value: c }, CAT_NAMES[c])));
+  const tags = h('input', { type: 'text', placeholder: 'Tags (optional)' });
+  const img = h('input', { type: 'file', accept: 'image/*' });
+  const daysRow = h('div', { class: 'row hidden' }, h('span', {}, 'Ends in'), days, h('span', {}, 'days'));
+  kind.onchange = () => daysRow.classList.toggle('hidden', kind.value !== 'auction');
+  // ad-view certificates you can bundle into the listing
+  const groups = certGroups(myCerts()), picks = new Map();
+  const certBox = groups.size ? h('div', {}, h('label', {}, 'Include ad views (they go to the buyer)'),
+    [...groups].map(([adv, list]) => { const cb = h('input', { type: 'checkbox' }); picks.set(adv, { cb, list });
+      return h('label', { style: 'display:flex;gap:8px;align-items:center;font-weight:400' }, cb, `${list.length} view${list.length === 1 ? '' : 's'} of ${advName(adv)}’s ads (worth ${fmtCoin(list.reduce((n, c) => n + c.amt, 0))} coins if cashed in)`); })) : null;
+  const status = h('span', { class: 'sub' });
+  const btn = h('button', { class: 'primary', onclick: async () => {
+    const amt = coinsToUnits(price.value); if (!title.value.trim() || !amt) return toast('Give it a title and a price');
+    const certs = [...picks.values()].filter(x => x.cb.checked).flatMap(x => x.list.map(c => c.id)).slice(0, globalThis.OpenTubeCore.PIECE.maxCerts);
+    let image; if (img.files[0]) { image = await imageFileToDataUrl(img.files[0], 320); if (image.length > MARKET.img) image = await imageFileToDataUrl(img.files[0], 200); }
+    const x = { kind: kind.value, title: title.value.trim(), price: amt, ...(about.value.trim() ? { about: about.value.trim() } : {}), ...(contact.value.trim() ? { contact: contact.value.trim() } : {}),
+      ...(kind.value === 'auction' ? { ends: Date.now() + Math.min(MARKET.maxDays, Math.max(1, Number(days.value) || 7)) * 86400000 } : {}),
+      ...(certs.length ? { certs, category: 'adviews' } : cat.value ? { category: cat.value } : {}), ...(parseTags(tags.value).length ? { tags: parseTags(tags.value) } : {}), ...(image ? { image } : {}) };
+    btn.disabled = true;
+    try { await sendTx({ list: x }, me.pub, status); toast('Listed. It shows on the market once the next block confirms it.'); kept.delete('market-new'); location.hash = '#/market/mine'; }
+    catch { btn.disabled = false; }
+  } }, 'List it');
+  return h('div', { class: 'panel', style: 'max-width:720px' }, h('h3', { style: 'margin-top:0' }, 'Sell something'),
+    h('p', { class: 'sub', style: 'margin-top:0' }, 'Listings live on the main chain. Coins move through the network (10% of each sale feeds the network’s resource pools). Ad views move automatically. Anything else (goods, gift cards, services, cash or PayPal deals) is delivered by you, using the contact you give.'),
+    h('label', {}, 'Type'), kind, daysRow, h('label', {}, 'Title'), title, h('label', {}, 'Description'), about, h('label', {}, 'Price'), price, h('label', {}, 'Contact'), contact,
+    h('div', { class: 'split', style: 'gap:10px;margin-top:10px' }, cat, tags), h('label', {}, 'Picture (optional)'), img, certBox,
+    h('div', { class: 'row', style: 'margin-top:12px' }, btn, status));
+}
+function marketItem(id) {
+  const L = E.ledger.listings.get(id);
+  if (!L) return h('div', { class: 'empty' }, [...E.txpool.values()].some(t => t.hash === id) ? 'This listing is waiting for the next block.' : 'Unknown listing (it may not have synced yet).');
+  const status = h('span', { class: 'sub' }), mine = isMine(L.seller), open = L.state === 'open' && (L.kind === 'fixed' || L.ends > Date.now());
+  const certVal = L.certs.reduce((n, c) => n + (E.ledger.certs.get(c)?.amt || 0), 0);
+  const certAdv = [...new Set(L.certs.map(c => E.ledger.certs.get(c)?.adv).filter(Boolean))];
+  const bidIn = h('input', { type: 'text', inputMode: 'decimal', style: 'width:140px', placeholder: 'Your bid' });
+  const min = L.high ? L.high.amt + Math.max(1, Math.ceil(L.high.amt * MARKET.minStep)) : L.price;
+  if (L.kind === 'auction') bidIn.value = (min / 100).toFixed(2);
+  const actions = !open ? h('div', { class: 'sub' }, L.state === 'sold' ? `Sold to ${keyName(L.buyer)}.` : L.state === 'withdrawn' ? 'Withdrawn by the seller.' : 'Ended without bids.')
+    : mine ? (L.high ? h('div', { class: 'sub' }, 'You can’t withdraw it: it has a bid.') : h('button', { onclick: (e) => { e.target.disabled = true; sendTx({ unlist: { id } }, me.pub, status).catch(() => {}); } }, 'Withdraw listing'))
+    : L.kind === 'fixed' ? h('button', { class: 'primary', onclick: (e) => { if (!confirm(`Buy “${L.title}” for ${fmtCoin(L.price)} coins?`)) return; e.target.disabled = true; sendTx({ buy: { id } }, me.pub, status).catch(() => { e.target.disabled = false; }); } }, `Buy for ${fmtCoin(L.price)} coins`)
+    : h('div', { class: 'row' }, bidIn, h('button', { class: 'primary', onclick: (e) => { const a = coinsToUnits(bidIn.value); if (!a || a < min) return toast(`Bid at least ${fmtCoin(min)} coins`); e.target.disabled = true; sendTx({ bid: { id, amt: a } }, me.pub, status).catch(() => { e.target.disabled = false; }); } }, 'Place bid'),
+      h('span', { class: 'sub' }, `at least ${fmtCoin(min)} · held until the end, refunded if someone outbids you`));
+  return h('div', { class: 'split' },
+    h('div', {}, L.image ? h('img', { src: L.image, style: 'max-width:100%;border-radius:12px' }) : h('div', { class: 'thumb', style: 'font-size:64px;display:grid;place-items:center;aspect-ratio:16/9' }, L.certs.length ? '🎟' : '🛍')),
+    h('div', { class: 'panel' }, h('h2', { style: 'margin-top:0' }, L.title),
+      h('div', { class: 'sub' }, `${L.kind === 'auction' ? 'Auction' : 'Fixed price'} · listed by `, h('a', { href: `#/wallet/${L.seller}` }, keyName(L.seller)), ` · ${ago(L.ts)}`),
+      h('div', { class: 'bal', style: 'margin:10px 0' }, fmtCoin(listingPrice(L)), h('span', { class: 'sub', style: 'font-size:14px' }, L.kind === 'auction' ? (L.high ? ` coins · high bid by ${keyName(L.high.by)} · ${L.bids} bid(s)` : ' coins starting bid') : ' coins')),
+      L.kind === 'auction' ? h('div', { class: 'sub' }, L.state === 'open' ? endsText(L.ends) + ` (ends ${new Date(L.ends).toLocaleString()})` : '') : null,
+      L.certs.length ? h('div', { class: 'panel', style: 'margin:10px 0' }, `🎟 ${L.certs.length} verified ad view${L.certs.length === 1 ? '' : 's'} of ${certAdv.map(advName).join(', ')}'s ads. They move to the buyer automatically and can be cashed in for ${fmtCoin(certVal)} coins, or sold back to the advertiser.`) : null,
+      L.about ? h('p', { class: 'pre' }, L.about) : null,
+      L.contact ? h('div', { class: 'sub' }, 'Contact: ', L.contact) : null,
+      (L.tags || []).length ? h('div', { class: 'row', style: 'gap:6px;margin-top:6px' }, L.tags.map(t => h('span', { class: 'tagbox', style: 'padding-right:10px' }, '#' + t))) : null,
+      h('div', { style: 'margin-top:12px' }, actions, ' ', status)));
+}
+function adBoard() {
+  const rows = [];
+  for (const c of chains.values()) if (c !== main && c.genesis.payload.kind === 'channel') for (const b of derive(c.id)?.ads || []) rows.push({ chain: c.id, b });
+  const mineCh = myChannels().filter(id => genesisFor(id)?.payload.kind === 'channel');
+  return h('div', {}, h('p', { class: 'sub' }, 'Ads published on the channels this browser knows. Running an advertiser’s ads on your channel sponsors them: their ads play before your videos, and each verified view pays the viewer (as a certificate) and you.'),
+    rows.length ? rows.map(({ chain, b }) => {
+      const p = b.payload, t = p.terms, sel = h('select', { style: 'width:auto' }, mineCh.map(id => h('option', { value: id }, channelTitle(id))));
+      return h('div', { class: 'item row', style: 'justify-content:space-between' },
+        h('div', {}, h('b', {}, p.title), ' ', h('span', { class: 'sub' }, `· ${derive(chain).profile.name} · ${p.category ? CAT_NAMES[p.category] : 'uncategorized'} · ${fmtCoin(t.perView)} coins per full view · up to ${t.maxViews} views · ${t.duration} s`),
+          (p.tags || []).length ? h('div', { class: 'sub' }, p.tags.map(x => '#' + x).join(' ')) : null),
+        mineCh.length && !isMine(derive(chain).owner) ? h('div', { class: 'row' }, sel, h('button', { class: 'small', onclick: async () => { await append(sel.value, { type: 'sponsor', advertiser: chain }); toast(`${derive(chain).profile.name}’s ads now run on ${channelTitle(sel.value)}`); } }, 'Run on my channel')) : null);
+    }) : h('div', { class: 'empty' }, 'No ads known yet. Advertisers create them on their channel’s Advertise tab.'));
+}
+views.market = { render() {
+  const tab = route.tab, all = [...E.ledger.listings].sort((a, b) => b[1].ts - a[1].ts);
+  const live = all.filter(([, L]) => L.state === 'open' && (L.kind === 'fixed' || L.ends > Date.now()));
+  const tabs = [['items', 'For sale'], ['auctions', 'Auctions'], ['adviews', 'Ad views'], ['ads', 'Ad board'], ['mine', 'Mine'], ['new', '＋ Sell something']];
+  const grid = (list, empty) => list.length ? h('div', { class: 'grid' }, list.map(listingCard)) : h('div', { class: 'empty' }, empty);
+  let body;
+  if (tab === 'item') body = marketItem(route.id);
+  else if (tab === 'new') body = keep('market-new', marketNew);
+  else if (tab === 'ads') body = adBoard();
+  else if (tab === 'auctions') body = grid(live.filter(([, L]) => L.kind === 'auction'), 'No auctions running.');
+  else if (tab === 'adviews') body = h('div', {}, h('p', { class: 'sub' }, 'Bundles of verified ad views. Creators collect them from their viewers and sell them back to the advertiser (or anyone). Each one can be cashed in for the coins it holds.'), grid(live.filter(([, L]) => L.certs.length), 'No ad-view bundles for sale.'));
+  else if (tab === 'mine') body = h('div', {}, h('h3', {}, 'Your listings'), grid(all.filter(([, L]) => isMine(L.seller)), 'You haven’t listed anything.'),
+    h('h3', {}, 'Your bids and purchases'), grid(all.filter(([, L]) => (L.high && isMine(L.high.by)) || (L.buyer && isMine(L.buyer))), 'None yet.'));
+  else body = grid(live.filter(([, L]) => L.kind === 'fixed'), 'Nothing for sale yet. Be the first: ＋ Sell something.');
+  return h('div', {}, h('h2', { style: 'margin:0' }, 'Market'),
+    h('div', { class: 'tabs', style: 'flex-wrap:wrap' }, tabs.map(([k, l]) => h('a', { href: `#/market/${k}`, class: tab === k ? 'active' : '' }, l))), body);
+} };
+function adViewsPanel() {
+  const groups = certGroups(myCerts()), status = h('span', { class: 'sub' });
+  const total = myCerts().reduce((n, c) => n + c.amt, 0);
+  return h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Ad views'),
+    h('p', { class: 'sub', style: 'margin-top:0' }, 'Each verified ad you watch gives you a certificate holding your share of what the advertiser paid. Cash them in, give them to a creator, or bundle them and sell them on the market (advertisers buy back their own).'),
+    groups.size ? [...groups].map(([adv, list]) => {
+      const sum = list.reduce((n, c) => n + c.amt, 0), ids = list.map(c => c.id).slice(0, globalThis.OpenTubeCore.PIECE.maxCerts);
+      return h('div', { class: 'item row', style: 'justify-content:space-between' }, h('div', {}, h('b', {}, `${list.length} × ${advName(adv)}`), h('span', { class: 'sub' }, ` · worth ${fmtCoin(sum)} coins`)),
+        h('div', { class: 'row' },
+          h('button', { class: 'small', onclick: () => sendTx({ redeem: { ids } }, list[0].owner, status).catch(() => {}) }, 'Cash in'),
+          h('button', { class: 'small', onclick: () => { const to = resolveRecipient(prompt('Give these ad views to (user ID or channel ID):') || ''); if (!to) return toast('Not a user or channel ID'); sendTx({ certs: { ids, to } }, list[0].owner, status).catch(() => {}); } }, 'Give…'),
+          h('a', { class: 'small', href: '#/market/new' }, 'Sell')));
+    }) : h('div', { class: 'sub' }, 'None yet. Watch ads before videos to earn them.'),
+    groups.size ? h('div', { class: 'sub', style: 'margin-top:6px' }, `Total: ${fmtCoin(total)} coins`) : null, status);
+}
+views.tag = { render() {
+  const t = route.tag, found = [];
+  for (const c of chains.values()) {
+    if (c === main || c.genesis.payload.kind !== 'channel') continue;
+    for (const b of derive(c.id)?.videos || []) if ((b.payload.tags || []).includes(t) && videoVisible(c.id, b)) found.push([c.id, b]);
+  }
+  found.sort((a, b) => b[1].ts - a[1].ts);
+  const muted = mutedTag(t);
+  return h('div', {},
+    h('div', { class: 'row', style: 'justify-content:space-between' }, h('h2', { style: 'margin:0' }, '#' + t),
+      h('button', { class: 'small', onclick: () => setMuted('tags', t, !muted) }, muted ? 'Show this tag again' : 'Not interested')),
+    h('p', { class: 'sub' }, muted ? 'You said you’re not interested in this tag, so its videos and ads are hidden elsewhere.' : 'Videos with this tag on the channels this browser knows. Subscribe to more channels to see more.'),
+    found.length ? h('div', { class: 'grid' }, found.map(([c, b]) => muted ? videoCardRaw(c, b) : videoCard(c, b))) : h('div', { class: 'empty' }, 'No videos with this tag yet.'));
+} };
+const videoCardRaw = (c, b) => { const m = settings.muted.tags; settings.muted.tags = []; try { return videoCard(c, b); } finally { settings.muted.tags = m; } };
+function interestsPanel() {
+  const m = settings.muted;
+  const chips = (kind, list, label) => list.map(x => h('span', { class: 'tagbox' }, h('span', {}, label(x)), h('button', { class: 'tagx', title: 'Show again', onclick: () => setMuted(kind, x, false) }, '✕')));
+  const catSel = h('select', { style: 'width:auto' }, h('option', { value: '' }, 'Add an ad category…'), AD_CATEGORIES.filter(c => !m.cats.includes(c)).map(c => h('option', { value: c }, CAT_NAMES[c])));
+  catSel.onchange = () => catSel.value && setMuted('cats', catSel.value, true);
+  const tagIn = h('input', { type: 'text', placeholder: 'Add a tag…', style: 'width:160px' });
+  return h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Not interested'),
+    h('p', { class: 'sub', style: 'margin-top:0' }, 'Videos and ads with these tags, and ads in these categories, are hidden for you. This list stays in this browser: it is never published or sent to anyone.'),
+    h('div', { class: 'row', style: 'gap:6px' }, ...chips('tags', m.tags, t => '#' + t), ...chips('cats', m.cats, c => CAT_NAMES[c] + ' ads'), m.tags.length + m.cats.length ? null : h('span', { class: 'sub' }, 'Nothing yet.')),
+    h('div', { class: 'row', style: 'margin-top:8px' }, tagIn, h('button', { class: 'small', onclick: () => { for (const t of parseTags(tagIn.value)) setMuted('tags', t, true); tagIn.value = ''; } }, 'Add'), catSel));
+}
 views.explore = { render() {
   const tab = ['trending', 'new', 'channels', 'lists'].includes(route.tab) ? route.tab : 'trending';
   const q = keep('q', () => h('input', { type: 'search', placeholder: 'Search videos, channels and lists…', oninput: () => views.explore.fill?.() }));
@@ -2806,7 +3218,7 @@ views.explore = { render() {
     const known = [...E.rankings.values()].filter(x => genesisFor(x.list));
     pickRanker.replaceChildren(...(known.length ? known.map(x => h('option', { value: x.list, selected: x.list === r.list },
       `Ranked by: ${genesisFor(x.list).payload.name} ·${fp(x.author)}`)) : [h('option', { value: '' }, 'Ranked by: this browser (no ranking list found)')]));
-    pickRanker.classList.toggle('hidden', tab === 'channels' || tab === 'lists');
+    pickRanker.classList.toggle('hidden', tab === 'channels' || tab === 'lists' || tab === 'groups');
     if (tab === 'trending' || tab === 'new') {
       let items = r.items.filter(i => match(i.t + ' ' + i.n));
       if (tab === 'trending') { const key = VIEW_KEY[settings.view] || VIEW_KEY.hot; items = [...items].sort((a, b) => key(b) - key(a) || b.ts - a.ts); }
@@ -2819,7 +3231,7 @@ views.explore = { render() {
         items.length ? h('div', { class: 'grid' }, items.slice(0, 60).map((i, n) => rankCard(i, tab === 'trending' ? n + 1 : 0)))
           : h('div', { class: 'empty' }, q.value ? 'No videos match.' : 'No videos yet.'));
     } else {
-      const kind = tab === 'channels' ? 'channel' : 'list';
+      const kind = tab === 'channels' ? 'channel' : tab === 'groups' ? 'group' : 'list';
       const score = new Map(); for (const i of r.items) score.set(i.c, (score.get(i.c) || 0) + i.s);
       const ids = [...new Set([...E.directory.keys(), ...mempool.keys()])].filter(id => {
         const g = genesisFor(id); return g.payload.kind === kind && match(g.payload.name + ' ' + g.payload.about + ' ' + g.author);
@@ -2833,7 +3245,7 @@ views.explore = { render() {
   fill();
   return h('div', {},
     h('div', { class: 'toolbar' }, q, pickRanker),
-    h('div', { class: 'tabs', style: 'margin-top:0' }, [['trending', 'Trending'], ['new', 'New'], ['channels', 'Channels'], ['lists', 'Lists']].map(([t, l]) =>
+    h('div', { class: 'tabs', style: 'margin-top:0' }, [['trending', 'Trending'], ['new', 'New'], ['channels', 'Channels'], ['lists', 'Lists'], ['groups', 'Groups']].map(([t, l]) =>
       h('a', { href: `#/explore/${t}`, class: t === tab ? 'active' : '' }, l))),
     body);
 } };
@@ -2848,7 +3260,8 @@ views.chain = { render() {
   const reg = E.directory.get(id);
   const subBtn = h('button', { class: subs[id] === 'sub' ? 'on' : '', onclick: () => setSub(id, subs[id] === 'sub' ? null : 'sub') }, subs[id] === 'sub' ? 'Subscribed ✓' : 'Subscribe');
   const joinBtn = d.kind === 'channel' ? h('button', { class: subs[id] === 'join' ? 'on' : 'primary', title: 'Joining downloads every video this channel posts and shares it with other viewers.', onclick: () => setSub(id, subs[id] === 'join' ? 'sub' : 'join') }, subs[id] === 'join' ? (canHost() ? 'Joined · hosting ✓' : 'Joined · not hosting (no folder)') : canHost() ? 'Join (host videos)' : folder.state === 'unsupported' ? 'Join (needs Chrome/Edge)' : 'Join (needs video folder)') : null;
-  const tabs = d.kind === 'channel' ? (mine ? ['videos', 'upload', 'golive', 'posts', 'about', 'advertise', 'manage'] : ['videos', 'posts', 'about'])
+  const tabs = d.kind === 'group' ? ['discussion', 'members', 'about'].concat(mine ? ['manage'] : [])
+    : d.kind === 'channel' ? (mine ? ['videos', 'upload', 'golive', 'posts', 'about', 'advertise', 'manage'] : ['videos', 'posts', 'about'])
     : (c.genesis.payload.ranking ? ['ranking', 'about'] : ['channels', 'about']).concat(mine ? ['manage'] : []);
   const tab = tabs.includes(route.tab) ? route.tab : tabs[0];
   return h('div', {},
@@ -3103,7 +3516,48 @@ views.livewatch = {
   }
 };
 const TAB_LABEL = { golive: '● Go live', upload: '＋ Upload' };
+function groupPost(id, d, b) {
+  const comments = d.commentsFor(b.hash).filter(x => !d.hidden.has(x.hash)).sort((a, z) => a.ts - z.ts);
+  const who = (x) => x.author === d.owner ? d.profile.name + ' (owner)' : (x.payload.name || 'member') + ' ·' + fp(x.author);
+  const box = h('input', { type: 'text', placeholder: 'Reply…', maxLength: LIMITS.comment, style: 'flex:1' });
+  const can = d.canComment(me.pub, b.hash) || isMine(d.owner);
+  const send = async () => { const t = box.value.trim(); if (!t) return; box.disabled = true; try { await append(id, { type: 'comment', target: b.hash, text: t, name: settings.name.slice(0, LIMITS.name) }); box.value = ''; } catch (e) { toast(e.message); } finally { box.disabled = false; } };
+  box.onkeydown = (e) => { if (e.key === 'Enter') send(); };
+  const likes = votesOf(d, b.hash).up;
+  return h('div', { class: 'item' },
+    h('div', { class: 'row', style: 'justify-content:space-between' }, h('div', {}, h('b', {}, who(b)), h('span', { class: 'sub' }, ' · ' + ago(b.ts))),
+      (isMine(b.author) || isMine(d.owner)) ? h('button', { class: 'small', onclick: () => append(id, { type: 'hide', target: b.hash }) }, 'Hide') : null),
+    h('p', { class: 'pre' }, b.payload.text), b.payload.image ? h('img', { src: b.payload.image, style: 'max-width:100%;max-height:360px;border-radius:8px' }) : null,
+    h('div', { class: 'row' }, h('button', { class: 'small', disabled: isMine(b.author), title: `Like (pays ${fmtCoin(priceNow('like'))} coins to the author)`, onclick: async (e) => {
+      e.target.disabled = true; try { const vb = await append(id, { type: 'vote', target: b.hash, v: 1 }); await payVote(id, vb, b.author); } catch (err) { toast('Like failed: ' + err.message); e.target.disabled = false; } } }, `👍 ${likes}`),
+      h('span', { class: 'sub' }, `${comments.length} repl${comments.length === 1 ? 'y' : 'ies'}`)),
+    comments.map(x => h('div', { style: 'margin:6px 0 0 18px' }, h('b', {}, who(x)), h('span', { class: 'sub' }, ' · ' + ago(x.ts)), h('div', {}, x.payload.text))),
+    can ? h('div', { class: 'row', style: 'margin:6px 0 0 18px' }, box, h('button', { class: 'small', onclick: send }, 'Reply')) : null);
+}
 const chainTab = {
+  discussion(id, d) {
+    const can = d.canPost(me.pub) || isMine(d.owner);
+    const composer = can ? keep('gpost:' + id, () => {
+      const ta = h('textarea', { placeholder: `Write to ${d.profile.name}…`, maxLength: LIMITS.text }), img = h('input', { type: 'file', accept: 'image/*' }), st = h('span', { class: 'sub' });
+      const btn = h('button', { class: 'primary', onclick: async () => {
+        if (!ta.value.trim()) return; btn.disabled = true; st.textContent = isMine(d.owner) ? '' : 'Doing anti-spam work…';
+        try {
+          const image = img.files[0] ? await imageFileToDataUrl(img.files[0], 480) : undefined;
+          await append(id, { type: 'post', text: ta.value.trim(), ...(image ? { image } : {}), ...(isMine(d.owner) ? {} : { name: settings.name.slice(0, LIMITS.name) }) });
+          ta.value = ''; img.value = ''; st.textContent = '';
+        } catch (e) { st.textContent = 'Failed: ' + e.message; } finally { btn.disabled = false; }
+      } }, 'Post');
+      return h('div', { class: 'panel' }, ta, h('div', { class: 'row', style: 'margin-top:8px' }, img, btn, st));
+    }) : h('div', { class: 'panel sub' }, d.profile.join === 'approved' ? `Only approved members can post here. Send the owner your user ID to be approved: ${me.pub}` : 'You can’t post in this group.');
+    return h('div', {}, composer, d.posts.length ? h('div', { class: 'panel' }, d.posts.map(b => groupPost(id, d, b))) : h('div', { class: 'empty' }, 'No posts yet. Say hello!'));
+  },
+  members(id, d) {
+    const posters = new Map(); for (const b of [...d.posts, ...[...chains.get(id).blocks.values()].filter(x => x.payload.type === 'comment')]) if (b.author !== d.owner) posters.set(b.author, b.payload.name || 'member');
+    return h('div', { class: 'panel' }, h('p', { class: 'sub', style: 'margin-top:0' }, d.profile.join === 'open' ? 'Anyone can post in this group.' : 'Only approved members can post. The owner approves people under Manage.'),
+      h('div', { class: 'kv' }, h('div', {}, 'Owner'), h('div', {}, d.profile.name, ' ', h('span', { class: 'fp' }, '·' + fp(d.owner))),
+        h('div', {}, 'Approved'), h('div', {}, d.allowed.size ? [...d.allowed].map(k => h('div', { class: 'fp' }, k)) : '—'),
+        h('div', {}, 'Have posted'), h('div', {}, posters.size ? [...posters].map(([k, n]) => h('div', {}, n, ' ', h('span', { class: 'fp' }, '·' + fp(k)))) : '—')));
+  },
   upload(id) { const f = keep('upload:' + id, () => uploadForm(id)); f.open = true; return f; },
   golive(id) { return keep('studio:' + id, () => liveStudio(id)); },
   videos(id, d) {
@@ -3191,6 +3645,7 @@ function uploadForm(chainId) {
   const prev = h('video', { muted: true, playsInline: true, class: 'hidden', style: 'margin-top:10px;max-width:360px' });
   const title = h('input', { type: 'text', placeholder: 'Title', maxLength: LIMITS.title });
   const desc = h('textarea', { placeholder: 'Description', maxLength: LIMITS.text });
+  const tagsIn = h('input', { type: 'text', placeholder: 'Tags, e.g. cooking, pasta, italian (up to 8)' });
   const vpol = h('select', {}, [['', 'Channel default'], ['anyone', 'Anyone'], ['approved', 'Approved users only'], ['off', 'Off']].map(([v, l]) => h('option', { value: v }, l)));
   const status = h('span', { class: 'sub' });
   const btn = h('button', { class: 'primary', disabled: true }, 'Publish to channel');
@@ -3215,7 +3670,7 @@ function uploadForm(chainId) {
     btn.disabled = true;
     try {
       const t = await addUpload(chainId, file, (m) => { status.textContent = m; });
-      const b = await append(chainId, { type: 'video', title: title.value.trim(), desc: desc.value.trim(), infohash: t.infoHash, file: file.name.slice(0, 200), size: file.size, mime: file.type.slice(0, 60), thumb: thumb || makeThumb(prev), comments: vpol.value || undefined });
+      const b = await append(chainId, { type: 'video', title: title.value.trim(), desc: desc.value.trim(), infohash: t.infoHash, file: file.name.slice(0, 200), size: file.size, mime: file.type.slice(0, 60), thumb: thumb || makeThumb(prev), comments: vpol.value || undefined, ...(parseTags(tagsIn.value).length ? { tags: parseTags(tagsIn.value) } : {}) });
       status.textContent = 'Paying the posting fee…';
       try { await payPost(chainId, b, file.size); } catch (e) { toast(`Uploaded, but not published yet: ${e.message}. Pay from your channel's Videos tab.`); }
       toast('Published. Members of your channel will start hosting it.');
@@ -3226,7 +3681,7 @@ function uploadForm(chainId) {
   if (!canHost()) return h('details', { class: 'panel' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Upload a video'),
     h('div', { style: 'margin-top:12px' }, folderPrompt('Uploading')));
   return h('details', { class: 'panel' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Upload a video'),
-    h('div', { style: 'margin-top:12px' }, h('p', { class: 'sub', style: 'margin-top:0' }, `The file is copied into “${folder.kind === 'disk' ? folder.root.name + '/' : ''}${folder.channels.get(chainId)?.folderName || cleanName(channelTitle(chainId), 'Channel')}/” and shared from there.`), drop, input, prev, h('label', {}, 'Title'), title, h('label', {}, 'Description'), desc, h('label', {}, 'Comments on this video'), vpol,
+    h('div', { style: 'margin-top:12px' }, h('p', { class: 'sub', style: 'margin-top:0' }, `The file is copied into “${folder.kind === 'disk' ? folder.root.name + '/' : ''}${folder.channels.get(chainId)?.folderName || cleanName(channelTitle(chainId), 'Channel')}/” and shared from there.`), drop, input, prev, h('label', {}, 'Title'), title, h('label', {}, 'Description'), desc, h('label', {}, 'Tags'), tagsIn, h('label', {}, 'Comments on this video'), vpol,
       h('div', { class: 'row', style: 'margin-top:12px' }, btn, status)));
 }
 function makeThumb(video, W = 320, H = 180) {
@@ -3302,7 +3757,6 @@ views.watch = {
     };
     box.onkeydown = (e) => { if (e.key === 'Enter') postBtn.click(); };
 
-    if (needsViewPay(id, b)) return paywall(id, b, d);
     const t = getTorrent(v.infohash) || wt.add(magnet(v.infohash, v.file), { announce: TRACKERS });
     watchState = { infohash: v.infohash, chain: id, started: Date.now(), title: v.title, everPeers: false };
     const ws = watchState;
@@ -3410,11 +3864,24 @@ views.watch = {
     return h('div', { class: 'watch' },
       h('div', {}, player, watchState.adPanel, h('div', { class: 'bar' }, bar), stats,
         h('h2', { style: 'margin:8px 0 4px' }, v.title),
+        (() => {   // what this video costs you so far: pieces received, paid to whoever sent them (half goes on to the creator)
+          const el = h('div', { class: 'sub' });
+          const upd = () => {
+            if (!el.isConnected && watchState) return;
+            const p = paidFor(video), free = b.ts < PIECE.start || isMine(d.owner) || subs[id] === 'join' || hosting.has(v.infohash);
+            el.textContent = free ? 'Free for you (your channel, a channel you host, or from before the coin).'
+              : `Paying ${fmtCoin(Math.ceil(E.ledger.prices.piece * 100) / 100)} coins per piece to whoever sends it (half goes to the creator) · so far ${p.n} pieces, ${fmtCoin(p.amt)} coins · you have ${fmtCoin(balanceOf(me.pub))}`;
+          };
+          upd(); const iv = setInterval(() => { if (!el.isConnected) return clearInterval(iv); upd(); }, 2000);
+          return el;
+        })(),
         h('div', { class: 'row' }, h('a', { href: `#/c/${id}`, class: 'row', style: 'color:var(--text)' }, avatar(d.profile.avatar, d.profile.name, 'sm'), h('b', {}, d.profile.name)),
           h('span', { class: 'sub' }, fmtViews(viewsOf(video)) + ' · ' + ago(b.ts) + ' · ' + fmtBytes(v.size)),
           h('span', { class: 'votes' }, upBtn, downBtn), voteStatus,
           h('button', { class: 'small', onclick: () => { const url = location.href; navigator.clipboard?.writeText(url).then(() => toast('Link copied'), () => prompt('Copy link', url)); } }, 'Copy link'),
           isMine(d.owner) ? h('button', { class: 'small', onclick: async () => { await append(id, { type: 'hide', target: video }); location.hash = `#/c/${id}`; } }, 'Hide video') : null),
+        (v.tags || []).length ? h('div', { class: 'row', style: 'margin-top:8px;gap:6px' }, v.tags.map(t => h('span', { class: 'tagbox' }, tagLink(t),
+          isMine(d.owner) ? null : h('button', { class: 'tagx', title: `Not interested in #${t}: hide videos with this tag (kept in this browser only)`, onclick: () => { setMuted('tags', t, true); toast(`You won’t see videos or ads tagged #${t}. Undo under My node → Not interested.`); } }, '✕')))) : null,
         h('div', { class: 'panel', style: 'margin-top:12px' }, h('p', { class: 'pre', style: 'margin:0' }, v.desc || 'No description.')),
         h('div', { class: 'row', style: 'justify-content:space-between;margin:18px 0 8px' }, h('h3', { style: 'margin:0' }, 'Comments'), policySel),
         h('div', { class: 'row' }, box, postBtn, postStatus), comments),
@@ -3678,7 +4145,7 @@ async function pickAd(chainId) {
     const cands = [];
     for (const a of advs) for (const b of derive(a)?.ads || []) {
       const t = b.payload.terms, tid = await E.termsId(t);
-      if ((E.ledger.adViews.get(tid) || 0) >= t.maxViews || E.ledger.balance(t.advertiser) < t.perView || isMine(t.advertiser)) continue;
+      if ((E.ledger.adViews.get(tid) || 0) >= t.maxViews || E.ledger.balance(t.advertiser) < t.perView || isMine(t.advertiser) || isMutedAd(b.payload)) continue;
       cands.push({ block: b, terms: t, tid, channel: a, name: derive(a).profile.name });
     }
     if (cands.length) return cands[Math.floor(Math.random() * cands.length)];
@@ -3698,7 +4165,7 @@ function runAd(ad, { player, panel, video, creator, alive }) {
     const status = h('span', { class: 'sub' }), syncInfo = h('span', { class: 'sub' });
     let skipped = false, ended = false;
     const finish = (res) => { if (ended) return; ended = true; adSession = null; resolve(res); };
-    const skip = h('button', { class: 'small', style: 'visibility:hidden', onclick: () => { skipped = true; player.pause(); finish({ ok: false, text: 'Ad skipped: this view earns nothing.' }); } }, 'Skip ad');
+    const skip = h('button', { class: 'small', style: 'visibility:hidden', onclick: () => { skipped = true; player.pause(); status.textContent = 'Ad skipped · counting what you watched…'; } }, 'Skip ad');
     panel.replaceChildren(h('div', { class: 'row', style: 'justify-content:space-between' },
       h('div', {}, h('span', { class: 'badge warn' }, 'Ad'), ' ', h('b', {}, p.title), h('span', { class: 'sub' }, ' · ' + ad.name),
         p.url ? h('a', { href: p.url, target: '_blank', rel: 'noopener noreferrer nofollow', style: 'margin-left:10px' }, 'Visit advertiser ↗') : null),
@@ -3742,12 +4209,13 @@ function runAd(ad, { player, panel, video, creator, alive }) {
     let sent = 0;
     for (let i = 0; i < t.duration; i++) {
       await sleepUntil(start + i * 1000 + 300);
+      if (skipped) break;   // a partial view pays for the part watched
       if (!alive() || ended) return finish({ ok: false, text: '' });
       if (!player.paused && player.currentTime >= i - 1.5 && document.visibilityState === 'visible') { E.send({ t: 'watch', s: session, k: me.pub, i, h: await hashAt(i) }); sent++; }
       status.textContent = `Ad · ${t.duration - i} s left`;
       syncInfo.textContent = `· in sync with ${inSync()} other viewer(s)`;
     }
-    await sleepUntil(start + t.duration * 1000 + (solo ? 300 : 2000));
+    if (!skipped) await sleepUntil(start + t.duration * 1000 + (solo ? 300 : 2000));
     if (!alive() || ended) return finish({ ok: false, text: '' });
     // 4. Sign what we saw; collect what others saw about us.
     const saw = [...matches].filter(([, x]) => x.size >= need).map(([k]) => k);
@@ -3756,13 +4224,14 @@ function runAd(ad, { player, panel, video, creator, alive }) {
     if (!solo) await new Promise(r => setTimeout(r, 4000));
     if (!alive()) return finish({ ok: false, text: '' });
     const ws = [...witnesses.values()].slice(0, E.ADS.maxWitnesses);
-    if (sent < need) return finish({ ok: false, text: 'Not counted: the ad was not playing (and visible) for enough of the time.' });
+    if (sent < Math.min(need, 3)) return finish({ ok: false, text: 'Not counted: the ad was not playing (and visible) for long enough.' });
     const needW = ad.terms.witnesses ?? 0;
     if (ws.length < needW) return finish({ ok: false, text: `Not counted: this ad pays only views that ${needW} other viewer(s) watched in sync with you, and nobody else was watching it right now.` });
     try {
-      await E.submitTx({ claim: { terms: t, slot, video, creator, witnesses: ws } });
-      const half = Math.floor(t.perView / 2);
-      finish({ ok: true, text: `✅ ${ws.length ? `View confirmed by ${ws.length} other viewer(s). ` : ''}You earn ${fmtCoin(half)} coins and the video’s creator earns ${fmtCoin(t.perView - half)} once the next main-chain block confirms it.` });
+      const bytes = Math.max(1, Math.floor(t.size * Math.min(sent, t.duration) / t.duration));   // the share of the ad you actually watched
+      await E.submitTx({ claim: { terms: t, slot, video, creator, witnesses: ws, bytes } });
+      const p = Math.max(1, Math.floor(t.perView * bytes / t.size)), half = Math.floor(p / 2);
+      finish({ ok: true, text: `✅ ${ws.length ? `View confirmed by ${ws.length} other viewer(s). ` : ''}${sent < t.duration ? `You watched ${Math.round(100 * sent / t.duration)}% of it. ` : ''}You get an ad-view certificate worth ${fmtCoin(half)} coins (Wallet → Ad views) and the creator earns ${fmtCoin(p - half)}, once the next block confirms it.` });
     } catch (e) { finish({ ok: false, text: 'Claim rejected: ' + e.message }); }
   });
 }
@@ -3774,6 +4243,8 @@ chainTab.advertise = (id, d) => {
     const prev = h('video', { muted: true, playsInline: true, class: 'hidden', style: 'max-width:320px;margin-top:8px' });
     const title = h('input', { type: 'text', maxLength: LIMITS.title, placeholder: 'Ad title' });
     const url = h('input', { type: 'text', maxLength: 300, placeholder: 'https://… (optional link)' });
+    const cat = h('select', {}, h('option', { value: '' }, 'Choose what it’s for…'), AD_CATEGORIES.map(c => h('option', { value: c }, CAT_NAMES[c])));
+    const adTags = h('input', { type: 'text', placeholder: 'Tags, e.g. running, shoes (up to 8)' });
     const per = h('input', { type: 'text', inputMode: 'decimal', value: '0.20' });
     const max = h('input', { type: 'number', min: 1, max: 1000000, value: 100 });
     const confirm = h('input', { type: 'checkbox' });
@@ -3788,6 +4259,7 @@ chainTab.advertise = (id, d) => {
     const btn = h('button', { class: 'primary', onclick: async () => {
       const perView = coinsToUnits(per.value), maxViews = Number(max.value);
       if (!file || !title.value.trim()) return toast('Choose an ad video and give it a title');
+      if (!cat.value) return toast('Choose what kind of product or service the ad is for');
       if (!duration || duration > E.ADS.maxDuration) return toast(`Ads must be 1–${E.ADS.maxDuration} seconds`);
       if (url.value && !/^https:\/\/\S+$/.test(url.value.trim())) return toast('The link must start with https://');
       if (!Number.isSafeInteger(perView) || perView < 2 || !Number.isSafeInteger(maxViews) || maxViews < 1) return toast('Check the price and maximum views');
@@ -3800,14 +4272,14 @@ chainTab.advertise = (id, d) => {
             hosting.set(t.infoHash, { chain: id, size: file.size }); res(t);
           }));
         const terms = await E.signTerms({ v: 1, kind: 'adterms', advertiser: d.owner, channel: id, infohash: tor.infoHash, size: file.size, duration, perView, maxViews, created: Date.now(), witnesses: confirm.checked ? 1 : 0 }, signerFor(d.owner));
-        await append(id, { type: 'ad', title: title.value.trim(), file: file.name.slice(0, 200), thumb: thumb || makeThumb(prev), url: url.value.trim(), terms });
+        await append(id, { type: 'ad', title: title.value.trim(), file: file.name.slice(0, 200), thumb: thumb || makeThumb(prev), url: url.value.trim(), terms, category: cat.value, ...(parseTags(adTags.value).length ? { tags: parseTags(adTags.value) } : {}) });
         toast('Ad published. Channels and lists that sponsor you will start running it.');
         kept.delete('adform'); scheduleRender();
       } catch (e) { status.textContent = 'Failed: ' + e.message; btn.disabled = false; }
     } }, 'Publish ad');
     return h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Create an ad'),
       h('p', { class: 'sub' }, `Ads are paid from this channel’s coins. Each verified view pays the price per view: half to the viewer, half to the creator of the video it ran with. Add coins to this channel from the Wallet (send to its ID).`),
-      input, prev, h('label', {}, 'Title'), title, h('label', {}, 'Link'), url,
+      input, prev, h('label', {}, 'Title'), title, h('label', {}, 'Link'), url, h('label', {}, 'What it’s for'), cat, h('label', {}, 'Tags'), adTags,
       h('div', { class: 'split', style: 'gap:10px' }, h('div', {}, h('label', {}, 'Coins per verified view'), per), h('div', {}, h('label', {}, 'Maximum views'), max)),
       h('label', { style: 'display:flex;gap:8px;align-items:center;font-weight:400' }, confirm, 'Pay a view only when another viewer watched it in sync and confirms it (safer against bots, but on a small network most views won’t pay)'),
       h('div', { class: 'row', style: 'margin-top:12px' }, btn, status));
@@ -3908,6 +4380,17 @@ function describeTx(entry, key) {
   if (t.vote) rows.push(mine ? row(-1, t.vote.amt, [t.vote.v > 0 ? '👍 liked' : '👎 disliked', ' on ', chainLink(t.vote.chain)], t.vote.v < 0 ? ' (burned)' : '') : row(1, t.vote.amt, [who(t.from), ' liked your post']));
   if (t.host) rows.push(h('div', {}, t.host.on ? 'Registered as a host of ' : 'Stopped hosting ', chainLink(t.host.chain)));
   if (t.name) rows.push(h('div', {}, t.name.handle ? `Claimed ${t.name.space}${t.name.handle}` : 'Released a name'));
+  if (t.tabs) for (const x of t.tabs) {
+    if (x.payer === key) rows.push(row(-1, x.amt, ['watched ', chainLink(x.chain), ` (${x.n} pieces from `, who(x.payee), ')'], ' tab'));
+    else if (x.payee === key) rows.push(row(1, x.amt, ['sent ', who(x.payer), ` ${x.n} pieces of a video on `, chainLink(x.chain)], ' (half to the creator)'));
+    else if (x.creator === key) rows.push(h('div', {}, 'Your video on ', chainLink(x.chain), ' was watched by ', who(x.payer), ` (${x.n} pieces)`));
+  }
+  if (t.redeem) rows.push(h('div', {}, `Cashed in ${t.redeem.ids.length} ad-view certificate${t.redeem.ids.length === 1 ? '' : 's'}`));
+  if (t.certs) rows.push(h('div', {}, `Gave ${t.certs.ids.length} ad-view certificate${t.certs.ids.length === 1 ? '' : 's'} to `, who(t.certs.to)));
+  if (t.list) rows.push(h('div', {}, `Listed “${t.list.title}” on the market (${t.list.kind === 'auction' ? 'auction from' : 'for'} ${fmtCoin(t.list.price)} coins)`));
+  if (t.unlist) rows.push(h('div', {}, 'Withdrew a market listing'));
+  if (t.buy) rows.push(h('div', {}, 'Bought ', h('a', { href: `#/market/item/${t.buy.id}` }, 'a market listing')));
+  if (t.bid) rows.push(row(-1, t.bid.amt, ['bid on ', h('a', { href: `#/market/item/${t.bid.id}` }, 'an auction')], ' (held until it ends; refunded if outbid)'));
   if (t.serve) rows.push(h('div', {}, `Node submitted ${t.serve.receipts.length} usage receipt${t.serve.receipts.length === 1 ? '' : 's'} for ${periodText(t.serve.epoch)}`, t.serve.grant ? [' (paid to ', who(t.serve.grant.user), ')'] : ''));
   if (t.claim) {
     const p = t.claim.terms.perView, half = Math.floor(p / 2);
@@ -3921,7 +4404,7 @@ function describeTx(entry, key) {
 // with a pay button); watching someone else's video pays them first (free for hosts of the video and older videos).
 const votesOf = (dd, target) => globalThis.OpenTubeCore.paidTally(dd.votes.get(target), (b) => E.isPaid('vote:' + b.hash, b.author)) || { up: 0, down: 0, by: new Map() };
 const videoVisible = (id, b) => E.postPaid(b) || isMine(derive(id)?.owner);
-const needsViewPay = (id, b) => b.ts >= COIN_UI.epoch && !isMine(derive(id).owner) && !hosting.has(b.payload.infohash) && !E.isPaid(`view:${b.hash}:${me.pub}`);
+const needsViewPay = () => false;   // watching is paid per piece now, to whoever sends each piece (see tabsEngine)
 function payVote(chainId, vb, to) {
   if (!vb.payload.v || vb.author === to) return null;   // liking yourself pays nothing and doesn't count
   return E.submitTx({ vote: { chain: chainId, target: vb.hash, to, v: vb.payload.v, amt: priceNow('like') } }, signerFor(vb.author));
@@ -4040,6 +4523,7 @@ views.wallet = { render() {
         h('div', {}, 'Post a video'), h('div', {}, fmtCoin(Math.max(1, Math.ceil(L.prices.post))) + ' coins per GB'),
         h('div', {}, 'Confirming a block earns'), h('div', {}, fmtCoin(COIN_UI.reward) + ' coins'))),
     form,
+    adViewsPanel(),
     earningsPanel(myAccounts()),
     h('div', { class: 'panel' }, h('div', { class: 'row', style: 'justify-content:space-between' }, h('h3', { style: 'margin:0' }, 'Activity'), histSel),
       hist.length ? hist.map(x => describeTx(x, histKey.key)) : h('div', { class: 'sub', style: 'margin-top:8px' }, 'No transactions yet.')),
@@ -4202,19 +4686,22 @@ function folderPanel() {
 }
 views.me = { render() {
   const owned = [...new Set([...E.directory.keys(), ...mempool.keys(), ...chains.keys()])].filter(id => id !== MAIN_ID && isMine(genesisFor(id)?.author));
-  const kind = h('select', {}, h('option', { value: 'channel' }, 'Channel'), h('option', { value: 'list' }, 'List (curated channels)'));
+  const kind = h('select', {}, h('option', { value: 'channel' }, 'Channel'), h('option', { value: 'list' }, 'List (curated channels)'), h('option', { value: 'group' }, 'Group (members post and talk)'));
+  const joinSel = h('select', {}, h('option', { value: 'open' }, 'Anyone can join and post'), h('option', { value: 'approved' }, 'Only members I approve can post'));
   const name = h('input', { type: 'text', maxLength: LIMITS.name, placeholder: 'Name' });
   const about = h('textarea', { maxLength: LIMITS.about, placeholder: 'What is it about?' });
   const policy = h('select', {}, [['anyone', 'Anyone can comment'], ['approved', 'Only approved users'], ['off', 'Comments off']].map(([v, l]) => h('option', { value: v }, l)));
   const avatarIn = h('input', { type: 'file', accept: 'image/*' });
-  const chanOnly = h('div', {}, h('label', {}, 'Avatar'), avatarIn, h('label', {}, 'Comments'), policy);
-  kind.onchange = () => chanOnly.classList.toggle('hidden', kind.value !== 'channel');
+  const policyRow = h('div', {}, h('label', {}, 'Comments'), policy), joinRow = h('div', { class: 'hidden' }, h('label', {}, 'Who can post'), joinSel);
+  const chanOnly = h('div', {}, h('label', {}, 'Avatar'), avatarIn, policyRow, joinRow);
+  kind.onchange = () => { chanOnly.classList.toggle('hidden', kind.value === 'list'); policyRow.classList.toggle('hidden', kind.value !== 'channel'); joinRow.classList.toggle('hidden', kind.value !== 'group'); };
   const create = h('button', { class: 'primary' }, 'Create & register');
   create.onclick = async () => {
     if (!name.value.trim()) return toast('Give it a name');
     create.disabled = true;
     const payload = { type: 'genesis', kind: kind.value, name: name.value.trim(), about: about.value.trim() };
     if (kind.value === 'channel') { payload.avatar = avatarIn.files[0] ? await imageFileToDataUrl(avatarIn.files[0]) : ''; payload.comments = policy.value; }
+    if (kind.value === 'group') { payload.avatar = avatarIn.files[0] ? await imageFileToDataUrl(avatarIn.files[0]) : ''; payload.join = joinSel.value; }
     let g;
     try {
       const key = await newIdentity();           // a fresh key pair just for this channel/list
@@ -4241,6 +4728,7 @@ views.me = { render() {
         h('button', { class: 'primary', onclick: backupAllKeys }, 'Back up all keys'),
         h('button', { onclick: () => importIn.click() }, 'Import keys'), importIn)),
     folderPanel(),
+    interestsPanel(),
     (() => { const b = keep('nodes', () => nodesPanel()); b.refresh(); return b; })(),
     h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Your channels & lists'),
       owned.length ? owned.map(id => { const owner = genesisFor(id).author; return h('div', { class: 'row' }, h('div', { style: 'flex:1;min-width:220px' }, chanRow(id)),

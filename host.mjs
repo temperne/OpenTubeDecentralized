@@ -25,13 +25,17 @@ export async function publicTrackers() {
 }
 const MIN_COPIES = 2;   // other proven copies a video needs before trimming may remove ours
 
-export async function startHost({ engine, nodeKey, user, videoDir, site, capGB = 5, log = console.log }) {
+export async function startHost({ engine, nodeKey, user, videoDir, site, capGB = 5, tabs = null, log = console.log }) {
   const { default: WebTorrent } = await import('webtorrent');
   // DHT and TCP/UDP trackers too: ordinary BitTorrent apps can share these videos with this node, and it bridges them to browsers.
   const { createHash } = await import('node:crypto');
   const peerId = nodeKey ? createHash('sha1').update('opentube-node:' + nodeKey).digest('hex') : undefined;   // browsers recognize this node's bytes
   const client = new WebTorrent({ dht: true, lsd: false, natUpnp: false, natPmp: false, peerId });
   client.on('error', (e) => log('[host] webtorrent:', e.message));
+  if (tabs) {   // pay per piece (core: createPieceTabs): viewers pay this node for the pieces it sends, and it pays for what it downloads
+    client.on('add', (t) => tabs.attach(t));
+    setInterval(() => tabs.tick(client.torrents).catch(e => log('[host] tabs:', e.message)), 4000);
+  }
   const listed = await publicTrackers();
   const trackers = [...new Set([site ? site.replace(/^http/, 'ws') + '/tracker' : null, ...(engine.CFG.trackers || []), ...listed].filter(Boolean))];
   await fsp.mkdir(videoDir, { recursive: true });
