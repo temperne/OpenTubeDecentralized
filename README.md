@@ -172,6 +172,26 @@ Anything that isn't coins or certificates (goods, gift cards, services) is deliv
 
 A **group** is a chain kind where members post. Create one under *My node* and choose whether anyone can post or only members you approve (*Manage → approve*). Posts, which can include a picture, plus replies and likes are blocks on the group's chain, so anyone who subscribes keeps a copy. Likes pay the author. Find groups under *Explore → Groups*.
 
+## Friends (private, encrypted)
+
+*Friends* is your own page that only your friends can read:
+
+- **Starting it:** *Start my friends page* registers a chain under your personal key. Its genesis carries your public **encryption key** (ECDH P-256), which lives with your identity and is in your key backup.
+- **Adding friends:** add a friend by their user ID. They see your posts once they add you too. The list stays in your browser.
+- **Posting:** each post (text and an optional picture) is **sealed**. The content is encrypted with a fresh key, and that key is wrapped for every friend using the ECDH secret between your key and theirs. Only the people it was written for can open it.
+- **Replies:** a reply goes on the same chain, sealed to the same people.
+- **Backups:** anyone can keep a copy of the chain, so friends and every node back up your page, but nobody else can read it. A non-friend sees only "🔒 not shared with you".
+- **What's public:** nothing in a post is readable; still public are that a post exists, when it was posted, and how many people it was sealed to.
+
+## Public posts (a feed for everyone)
+
+*Posts* is a public feed, like a microblog:
+
+- **One chain per month:** the genesis is built from the month alone, so every node derives the same chain ID without registering it, and nobody owns it.
+- **Posting:** anyone posts (with anti-spam work). A **new post** goes on the current month's chain. A **reply** goes on the chain of the post it answers, however old, so a thread stays together.
+- **Syncing:** nodes keep every month. A browser syncs only the months it opens (*older ›*).
+- **Likes** pay the author, as elsewhere.
+
 ## Tags and "not interested"
 
 Videos and ads carry up to 8 tags, and ads a product category. Click a tag to see its videos (`#/tag/name`). Click ✕ next to a tag on a video, or set categories under *My node → Not interested*, and videos and ads with those tags or categories are hidden for you. That list stays in your browser; it's never published.

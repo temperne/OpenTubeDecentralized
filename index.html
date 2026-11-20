@@ -126,6 +126,8 @@
   <nav>
     <a href="#/" data-nav="home">Feed</a>
     <a href="#/explore" data-nav="explore">Explore</a>
+    <a href="#/square" data-nav="square">Posts</a>
+    <a href="#/friends" data-nav="friends">Friends</a>
     <a href="#/market" data-nav="market">Market</a>
     <a href="#/wallet" data-nav="wallet">Wallet</a>
     <a href="#/mine" data-nav="mine" id="nav-mine">My channel</a>
@@ -254,12 +256,37 @@ class Chain {
 function validGenesis(g) {
   if (!g || g.v !== 1 || g.chain !== null || !Array.isArray(g.parents) || g.parents.length || g.height !== 0 || !isKey(g.author)) return false;
   const p = g.payload;
-  if (!p || p.type !== 'genesis' || !['channel', 'list', 'group'].includes(p.kind)) return false;
+  if (!p || p.type !== 'genesis' || !['channel', 'list', 'group', 'circle', 'square'].includes(p.kind)) return false;
+  if (p.kind === 'square') return validSquareGenesis(g);
   if (!isStr(p.name, LIMITS.name) || !p.name.trim() || !isStr(p.about, LIMITS.about)) return false;
   if (p.kind === 'channel' && (!isImg(p.avatar) || !['anyone', 'approved', 'off'].includes(p.comments))) return false;
   if (p.kind === 'list' && p.ranking !== undefined && p.ranking !== true) return false;
   if (p.kind === 'group' && (!isImg(p.avatar) || !['open', 'approved'].includes(p.join))) return false;   // open: anyone may post; approved: members the owner approved
+  if (p.kind === 'circle' && !(typeof p.enc === 'string' && /^[A-Za-z0-9_-]{80,100}$/.test(p.enc))) return false;   // your friends page: enc = your public encryption key
   return true;
+}
+// ---- friends ("circle" chains). Each person may have one, created with their PERSONAL key; its genesis carries their
+// public encryption key (ECDH P-256). Everything on it is SEALED: the content (text, picture) is encrypted with a fresh
+// key, and that key is wrapped for each friend (with the ECDH secret between the author's and that friend's keys), so
+// only the people it was written for can read it. Friends reply on the same chain, sealed to the same people. Anyone
+// can keep (and so back up) the chain, but only friends can read it; nodes keep every chain, friends' included.
+const SEAL = { keys: 200, ct: 280000 };
+const sealedShape = (p) => isStr(p.iv, 40) && typeof p.ct === 'string' && p.ct.length <= SEAL.ct && Array.isArray(p.keys) && p.keys.length >= 1 && p.keys.length <= SEAL.keys
+  && p.keys.every(k => k && isStr(k.t, 24) && isStr(k.iv, 40) && isStr(k.w, 100)) && (p.target === undefined || isHex(p.target, 64));
+// ---- the public feed ("square" chains): one chain per month, the same for everyone. Its genesis is built from the
+// month alone (author SQUARE.key, which nobody holds), so every node derives the same chain ID without registering it.
+// Anyone posts there (with the anti-spam work). A new post goes on the current month's chain; a reply goes on the
+// chain of the post it answers, however old. Nodes keep every month; a browser keeps only the months it has looked at.
+const SQUARE = { key: 'A'.repeat(43), first: [2026, 10], text: 1000 };
+const monthKey = (ts) => { const d = new Date(ts); return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0'); };
+const monthStart = (m) => { const [y, mo] = m.split('-').map(Number); return Date.UTC(y, mo - 1, 1); };
+const squareGenesisBody = (m) => ({ v: 1, chain: null, parents: [], height: 0, ts: monthStart(m), author: SQUARE.key, payload: { type: 'genesis', kind: 'square', name: 'Public posts ' + m, about: '', month: m }, nonce: 0 });
+const validSquareGenesis = (g) => g.author === SQUARE.key && g.sig === 'square' && /^\d{4}-\d{2}$/.test(g.payload.month) && g.ts === monthStart(g.payload.month) && g.payload.name === 'Public posts ' + g.payload.month && g.payload.about === '' && g.nonce === 0;
+async function squareGenesis(m) { const g = squareGenesisBody(m); g.hash = await hashBlock(g); g.sig = 'square'; return g; }
+function squareMonths(now = Date.now()) {   // every month from the first until next month
+  const out = []; let [y, mo] = SQUARE.first; const end = new Date(now); const ey = end.getUTCFullYear(), em = end.getUTCMonth() + 1;
+  while (y < ey || (y === ey && mo <= em)) { out.push(y + '-' + String(mo + 1).padStart(2, '0')); mo++; if (mo > 11) { mo = 0; y++; } }
+  return out;
 }
 // ---- groups: a chain where members post. The owner sets the rules (open or approved members, allow/revoke) like a
 // channel's comments; members' posts, comments and likes are blocks on the group's chain (with anti-spam work).
@@ -299,6 +326,20 @@ function validPayload(chain, b, CFG) {
   const p = b.payload; if (!p || typeof p !== 'object') return false;
   const owner = b.author === chain.owner;
   const kind = chain.genesis.payload.kind;
+  if (kind === 'square') {   // nobody owns it: everything is a member's block with anti-spam work
+    if (owner || zeroBits(b.hash) < CFG.commentDifficulty) return false;
+    const month = chain.genesis.payload.month, start = monthStart(month), next = new Date(start); next.setUTCMonth(next.getUTCMonth() + 1);
+    if (p.type === 'post') return isStr(p.text, SQUARE.text) && p.text.trim().length > 0 && isStr(p.name ?? '', LIMITS.name) && (p.image === undefined || isImg(p.image)) && b.ts >= start - 600000 && b.ts < next.getTime() + 600000;
+    if (p.type === 'comment') return isHex(p.target, 64) && chain.ancestors(b.parents).has(p.target) && isStr(p.text, SQUARE.text) && p.text.trim().length > 0 && isStr(p.name ?? '', LIMITS.name);
+    if (p.type === 'vote') return isHex(p.target, 64) && chain.ancestors(b.parents).has(p.target) && [1, 0, -1].includes(p.v);
+    if (p.type === 'hide') return isHex(p.target, 64) && chain.blocks.get(p.target)?.author === b.author;
+    return false;
+  }
+  if (kind === 'circle') {
+    if (p.type === 'sealed') return sealedShape(p) && (owner ? true : p.target !== undefined && zeroBits(b.hash) >= CFG.commentDifficulty && chain.ancestors(b.parents).has(p.target));
+    if (p.type === 'hide') return isHex(p.target, 64) && (owner || chain.blocks.get(p.target)?.author === b.author);
+    return false;
+  }
   if (!owner && kind === 'group') {
     if (zeroBits(b.hash) < CFG.commentDifficulty) return false;
     if (p.type === 'post') return isStr(p.text, LIMITS.text) && p.text.trim().length > 0 && (p.image === undefined || isImg(p.image)) && isStr(p.name ?? '', LIMITS.name) && groupPermitted(chain, b);
@@ -1155,7 +1196,7 @@ function derive(c) {
   const isGroup = c.genesis.payload.kind === 'group';
   const permitted = (b) => {
     if (b.author === owner) return true;
-    if (isGroup) return !revokes.some(r => r.key === b.author && !r.before.has(b.hash));   // validity (membership at the time) was checked on insert
+    if (isGroup || c.genesis.payload.kind === 'square' || c.genesis.payload.kind === 'circle') return !revokes.some(r => r.key === b.author && !r.before.has(b.hash));   // validity was checked on insert
     if (revokes.some(r => r.key === b.author && !r.before.has(b.hash))) return false;
     if (b.payload.type === 'hide' || b.payload.type === 'vote') return true;  // own-comment hides and votes need no comment permission
     return allows(b.author, b.payload.target);
@@ -1164,13 +1205,14 @@ function derive(c) {
   const hidden = new Set();
   for (const b of visible) if (b.payload.type === 'hide') {
     const t = c.blocks.get(b.payload.target);
-    if (t && (b.author === owner || t.author === b.author)) hidden.add(t.hash);
+    if (t && ((b.author === owner && c.genesis.payload.kind !== 'square') || t.author === b.author)) hidden.add(t.hash);
   }
   const live = visible.filter(b => !hidden.has(b.hash));
   return (c._derived = {
     version: c.version, id: c.id, kind: c.genesis.payload.kind, owner, profile, allowed, revoked: new Set(revokes.map(r => r.key)), hidden,
     videos: live.filter(b => b.payload.type === 'video' && b.author === owner).reverse(),
-    posts: live.filter(b => b.payload.type === 'post' && (isGroup || b.author === owner)).reverse(),
+    posts: live.filter(b => b.payload.type === 'post' && (isGroup || c.genesis.payload.kind === 'square' || b.author === owner)).reverse(),
+    sealed: live.filter(b => b.payload.type === 'sealed').reverse(),
     adds: live.filter(b => b.payload.type === 'add' && b.author === owner).reverse(),
     ads: live.filter(b => b.payload.type === 'ad' && b.author === owner).reverse(),
     sponsors: live.filter(b => b.payload.type === 'sponsor' && b.author === owner).reverse(),
@@ -1218,7 +1260,10 @@ async function createEngine(o) {
   const txpool = E.txpool;
 
   const headsOf = (c) => c === main ? [main.best.hash] : [...c.heads];
-  const genesisFor = (id) => chains.get(id)?.genesis || E.directory.get(id)?.genesis || mempool.get(id) || null;
+  const squares = new Map();   // chain id -> genesis of a month's public feed (derived, never registered)
+  for (const m of squareMonths(Date.now() + 40 * 86400000)) { const g = await squareGenesis(m); squares.set(g.hash, g); }
+  const squareId = (m) => [...squares.values()].find(g => g.payload.month === m)?.hash || null;
+  const genesisFor = (id) => chains.get(id)?.genesis || E.directory.get(id)?.genesis || mempool.get(id) || squares.get(id) || null;
   const announce = (c, to) => send({ t: 'heads', c: c.id, h: headsOf(c) }, to);
   const requestChain = (c, to) => { c.stats.lastRequest = Date.now(); send({ t: 'rq', c: c.id, w: [], h: headsOf(c) }, to); };
   function openChain(id) {
@@ -1422,7 +1467,7 @@ async function createEngine(o) {
   async function handle(m, from) {
     if (!m || typeof m !== 'object' || typeof m.t !== 'string') return;
     stats.msgsIn++; stats.lastMsgIn = Date.now();
-    const chain = typeof m.c === 'string' ? chains.get(m.c) : null;
+    const chain = typeof m.c === 'string' ? chains.get(m.c) || (o.trackAll && squares.has(m.c) ? openChain(m.c) : null) : null;   // nodes keep every month of the public feed
     if (m.t === 'heads' && chain && Array.isArray(m.h)) {
       const w = m.h.filter(x => isHex(x, 64) && !chain.has(x) && !chain.orphans.has(x)).slice(0, 64);
       chain.stats.announces++; chain.stats.lastAnnounce = Date.now(); chain.stats.unknownHeads = w;
@@ -1604,7 +1649,7 @@ async function createEngine(o) {
 
   return Object.assign(E, {
     syncState,
-    acceptRanking, publishRanking, acceptMembership, publishMembership, acceptNodeInfo, publishNodeInfo, submitTx, route, addTx, history, pendingState, LEDGER, ADS,
+    acceptRanking, publishRanking, acceptMembership, publishMembership, acceptNodeInfo, publishNodeInfo, submitTx, route, squareId, squares, addTx, history, pendingState, LEDGER, ADS,
     signTerms: async (terms, signer) => ({ ...terms, sig: await signer.sign(termsPreimage(terms)) }),
     signWitness: async (w) => ({ ...w, sig: await o.signer.sign(witnessPreimage(w)) }),
     termsId: termsIdOf, sessionId: sessionIdOf,
@@ -1616,7 +1661,7 @@ async function createEngine(o) {
   });
 }
 
-globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
+globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, SQUARE, SEAL, monthKey, squareMonths, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
 })();
 </script>
 
@@ -1711,7 +1756,7 @@ function backupAllKeys() {
   const owned = (pub) => [...new Set([...E.directory.keys(), ...mempool.keys(), ...chains.keys()])].filter(id => id !== MAIN_ID && genesisFor(id)?.author === pub);
   download(`opentube-all-keys-${new Date().toISOString().slice(0, 10)}.json`, {
     format: 'opentube-keys', created: new Date().toISOString(),
-    personal: { pub: identity.pub, priv: identity.priv, controls: personalChains() },
+    personal: { pub: identity.pub, priv: identity.priv, ...(identity.enc ? { enc: identity.enc } : {}), controls: personalChains() },
     channels: Object.values(channelKeys).map(k => {
       const id = k.chain || owned(k.pub)[0]; const g = id && genesisFor(id);
       return { chain: id || null, kind: g?.payload.kind || 'channel', name: g?.payload.name || k.name || '', pub: k.pub, priv: k.priv };
@@ -1735,7 +1780,7 @@ async function importKeyFile(text) {
     if (!(await checkKeyPair(personal))) return toast('The personal key in that file is not valid');
     const n = personal.controls?.length || 0;
     if (confirm(`Use the personal key from this file in this browser?${n ? ` It controls ${n} older channel(s)/list(s).` : ''} Your current personal key will be replaced, so back it up first if it matters.`)) {
-      await kv.set('identity', { pub: personal.pub, priv: personal.priv }); await kv.set('personalExported', true);
+      await kv.set('identity', { pub: personal.pub, priv: personal.priv, ...(personal.enc ? { enc: personal.enc } : {}) }); await kv.set('personalExported', true);
       return location.reload();
     }
   }
@@ -2954,6 +2999,8 @@ function parseRoute() {
   }
   if (p[0] === 'explore') return { name: 'explore', tab: p[1] || 'trending' };
   if (p[0] === 'me') return { name: 'me' };
+  if (p[0] === 'friends') return { name: 'friends' };
+  if (p[0] === 'square') return /^\d{4}-\d{2}$/.test(p[1] || '') && isHex(p[2], 64) ? { name: 'square', month: p[1], post: p[2] } : { name: 'square', month: /^\d{4}-\d{2}$/.test(p[1] || '') ? p[1] : null };
   if (p[0] === 'market') return p[1] === 'item' && isHex(p[2], 64) ? { name: 'market', tab: 'item', id: p[2] } : { name: 'market', tab: p[1] || 'items' };
   if (p[0] === 'tag' && TAG_RE.test(p[1] || '')) return { name: 'tag', tag: p[1] };
   if (p[0] === 'mine') return { name: 'mine' };
@@ -3182,6 +3229,179 @@ function adViewsPanel() {
     }) : h('div', { class: 'sub' }, 'None yet. Watch ads before videos to earn them.'),
     groups.size ? h('div', { class: 'sub', style: 'margin-top:6px' }, `Total: ${fmtCoin(total)} coins`) : null, status);
 }
+// ---------------------------------------------------------------- the public feed (core: SQUARE)
+const { SQUARE, monthKey } = globalThis.OpenTubeCore;
+function squareChain(m) { const id = E.squareId(m); if (!id) return null; const fresh = !chains.has(id); const c = openChain(id); if (fresh) E.requestChain(c); return c; }
+const prevMonth = (m) => { const [y, mo] = m.split('-').map(Number); const d = new Date(Date.UTC(y, mo - 2, 1)); return monthKey(d.getTime()); };
+function squareComposer(chainId, target, placeholder) {
+  const ta = h(target ? 'input' : 'textarea', { placeholder, maxLength: SQUARE.text, style: target ? 'flex:1' : '' }), st = h('span', { class: 'sub' });
+  const btn = h('button', { class: target ? 'small' : 'primary', onclick: async () => {
+    const text = ta.value.trim(); if (!text) return; btn.disabled = true; st.textContent = 'Doing anti-spam work…';
+    try { await append(chainId, { type: target ? 'comment' : 'post', ...(target ? { target } : {}), text, name: settings.name.slice(0, LIMITS.name) }); ta.value = ''; st.textContent = ''; }
+    catch (e) { st.textContent = 'Failed: ' + e.message; } finally { btn.disabled = false; }
+  } }, target ? 'Reply' : 'Post');
+  if (target) ta.onkeydown = (e) => { if (e.key === 'Enter') btn.click(); };
+  return h('div', { class: target ? 'row' : 'panel' }, ta, target ? btn : h('div', { class: 'row', style: 'margin-top:8px' }, btn, st, h('span', { class: 'sub' }, 'Public: anyone can read it, forever.')), target ? st : null);
+}
+function squareItem(m, c, b, d, full) {
+  const replies = [...c.blocks.values()].filter(x => x.payload.type === 'comment' && x.payload.target === b.hash && !d.hidden.has(x.hash)).sort((a, z) => a.ts - z.ts);
+  const likes = votesOf(d, b.hash).up;
+  return h('div', { class: 'item' },
+    h('div', {}, h('b', {}, b.payload.name || 'someone'), ' ', h('span', { class: 'fp' }, '·' + fp(b.author)), h('span', { class: 'sub' }, ' · ' + ago(b.ts))),
+    h('p', { class: 'pre', style: 'margin:4px 0' }, b.payload.text),
+    h('div', { class: 'row' },
+      h('button', { class: 'small', disabled: isMine(b.author), title: `Like (pays ${fmtCoin(priceNow('like'))} coins to the author)`, onclick: async (e) => {
+        e.target.disabled = true; try { const vb = await append(c.id, { type: 'vote', target: b.hash, v: 1 }); await payVote(c.id, vb, b.author); } catch (err) { toast('Like failed: ' + err.message); e.target.disabled = false; } } }, `👍 ${likes}`),
+      full ? null : h('a', { href: `#/square/${m}/${b.hash}`, class: 'sub' }, `${replies.length} repl${replies.length === 1 ? 'y' : 'ies'}`),
+      isMine(b.author) ? h('button', { class: 'small', onclick: () => append(c.id, { type: 'hide', target: b.hash }) }, 'Delete') : null),
+    full ? h('div', { style: 'margin-left:18px' }, replies.map(r => squareItem(m, c, r, d, true)), squareComposer(c.id, b.hash, 'Reply…')) : null);
+}
+views.square = { render() {
+  const m = route.month || monthKey(Date.now()), c = squareChain(m);
+  if (!c) return h('div', { class: 'empty' }, 'No public feed for that month.');
+  const d = derive(c.id);
+  views.square.refresh = () => { if (!document.activeElement?.matches?.('input,textarea')) render(true); };
+  if (route.post) {
+    const b = c.blocks.get(route.post);
+    if (!b) { E.send({ t: 'rq', c: c.id, w: [route.post], h: headsOf(c) }); return h('div', { class: 'empty' }, 'Fetching this post from peers…'); }
+    return h('div', {}, h('a', { href: `#/square/${m}` }, '← ' + m), h('div', { class: 'panel', style: 'margin-top:10px' }, squareItem(m, c, b, d, true)));
+  }
+  const posts = d.posts.filter(b => !d.hidden.has(b.hash));
+  return h('div', { style: 'max-width:760px' },
+    h('div', { class: 'row', style: 'justify-content:space-between' }, h('h2', { style: 'margin:0' }, 'Posts'), h('span', { class: 'sub' }, m, ' · ', h('a', { href: `#/square/${prevMonth(m)}` }, 'older ›'))),
+    h('p', { class: 'sub' }, 'Say anything, publicly. Each month is its own chain that every node keeps; replies go on the chain of the post they answer, so an old thread stays together. This browser only syncs the months you open.'),
+    m === monthKey(Date.now()) ? squareComposer(c.id, null, 'What’s happening?') : null,
+    posts.length ? h('div', { class: 'panel' }, posts.map(b => squareItem(m, c, b, d, false))) : h('div', { class: 'empty' }, E.syncState(c).state === 'synced' || !net.online() ? 'No posts yet this month.' : 'Syncing this month’s posts…'));
+} };
+
+// ---------------------------------------------------------------- friends (core: SEAL, "circle" chains)
+// Your encryption key (ECDH P-256) lives with your identity and is in your key backup. Posts on your friends page are
+// sealed to the friends you've added; replies are sealed to the same people. The friend list stays in this browser.
+const ECDH = { name: 'ECDH', namedCurve: 'P-256' };
+let encPriv = null, encPubB64 = null;
+async function ensureEncKey() {
+  if (encPriv) return;
+  if (!identity.enc) {
+    const kp = await crypto.subtle.generateKey(ECDH, true, ['deriveKey']);
+    identity.enc = { priv: await crypto.subtle.exportKey('jwk', kp.privateKey), pub: b64u.enc(await crypto.subtle.exportKey('raw', kp.publicKey)) };
+    await kv.set('identity', identity); kv.set('personalExported', (personalExported = false));
+  }
+  encPriv = await crypto.subtle.importKey('jwk', identity.enc.priv, ECDH, false, ['deriveKey']); encPubB64 = identity.enc.pub;
+}
+const sharedKeys = new Map();
+async function sharedWith(pubB64) {
+  if (!sharedKeys.has(pubB64)) sharedKeys.set(pubB64, (async () => {
+    const pub = await crypto.subtle.importKey('raw', b64u.dec(pubB64), ECDH, false, []);
+    return crypto.subtle.deriveKey({ name: 'ECDH', public: pub }, encPriv, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  })());
+  return sharedKeys.get(pubB64);
+}
+const tagOf = async (pubB64) => (await sha256hex('opentube-seal:' + pubB64)).slice(0, 24);
+async function seal(content, recipientEncs) {   // -> { iv, ct, keys: [{ t, iv, w }] }
+  await ensureEncKey();
+  const raw = crypto.getRandomValues(new Uint8Array(32)), ck = await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt']);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, ck, new TextEncoder().encode(JSON.stringify(content)));
+  const keys = [];
+  for (const pub of [...new Set([encPubB64, ...recipientEncs])]) {
+    const wiv = crypto.getRandomValues(new Uint8Array(12));
+    keys.push({ t: await tagOf(pub), iv: b64u.enc(wiv), w: b64u.enc(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: wiv }, await sharedWith(pub), raw)) });
+  }
+  return { iv: b64u.enc(iv), ct: b64u.enc(ct), keys };
+}
+const opened = new Map();   // block hash -> content | null
+async function unseal(p, authorEnc) {   // the block's author's encryption key is needed (ECDH with ours)
+  await ensureEncKey();
+  const mine = p.keys.find(k => k.t === myTag); if (!mine) return null;
+  try {
+    const raw = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64u.dec(mine.iv) }, await sharedWith(authorEnc), b64u.dec(mine.w));
+    const ck = await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['decrypt']);
+    return JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64u.dec(p.iv) }, ck, b64u.dec(p.ct))));
+  } catch { return null; }
+}
+let myTag = null;
+settings.friends = settings.friends || [];   // [{ key, name }]
+const circleOf = (key) => { for (const [id, e] of E.directory) if (e.genesis.payload.kind === 'circle' && e.genesis.author === key) return id; for (const g of mempool.values()) if (g.payload.kind === 'circle' && g.author === key) return g.hash; return null; };
+const encOf = (key) => { const id = circleOf(key); return id ? genesisFor(id).payload.enc : null; };
+async function openBlock(c, b) {
+  if (opened.has(b.hash)) return opened.get(b.hash);
+  const enc = encOf(b.author); if (!enc) return null;
+  const x = await unseal(b.payload, enc); opened.set(b.hash, x); return x;
+}
+views.friends = { render() {
+  const box = h('div', { style: 'max-width:820px' });
+  (async () => {
+    await ensureEncKey(); myTag = await tagOf(encPubB64);
+    const mineId = circleOf(me.pub);
+    for (const f of settings.friends) { const id = circleOf(f.key); if (id && !chains.has(id)) E.requestChain(openChain(id)); }
+    if (mineId && !chains.has(mineId)) E.requestChain(openChain(mineId));
+    const addIn = h('input', { type: 'text', placeholder: 'A friend’s user ID', style: 'flex:1' }), addName = h('input', { type: 'text', placeholder: 'Their name (for you)', style: 'width:180px' });
+    const friendsBox = h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Your friends'),
+      h('p', { class: 'sub', style: 'margin-top:0' }, 'Only the friends you add here can read what you post on your friends page. They see it when they add you too. Your user ID (give it to your friends): ', h('span', { class: 'mono' }, me.pub), ' ', h('button', { class: 'small', onclick: () => copyText(me.pub, 'User ID') }, 'Copy')),
+      settings.friends.length ? settings.friends.map(f => h('div', { class: 'row', style: 'justify-content:space-between' },
+        h('span', {}, h('b', {}, f.name || 'friend'), ' ', h('span', { class: 'fp' }, '·' + fp(f.key)), circleOf(f.key) ? '' : h('span', { class: 'badge warn', style: 'margin-left:6px' }, 'hasn’t started a friends page yet')),
+        h('button', { class: 'small', onclick: () => { settings.friends = settings.friends.filter(x => x.key !== f.key); saveSettings(); render(true); } }, 'Remove'))) : h('div', { class: 'sub' }, 'No friends added yet.'),
+      h('div', { class: 'row', style: 'margin-top:8px' }, addIn, addName, h('button', { onclick: () => {
+        const k = addIn.value.trim(); if (!isKey(k) || k === me.pub) return toast('Paste your friend’s user ID (from their Friends page)');
+        if (!settings.friends.some(f => f.key === k)) settings.friends.push({ key: k, name: addName.value.trim().slice(0, 60) });
+        saveSettings(); render(true);
+      } }, 'Add friend')));
+    if (!mineId) {
+      const st = h('span', { class: 'sub' });
+      box.replaceChildren(h('h2', { style: 'margin-top:0' }, 'Friends'),
+        h('div', { class: 'panel' }, h('p', {}, 'Your friends page is a chain only your friends can read: every post is encrypted to the friends you add, and they keep a copy for you. Start it once:'),
+          h('button', { class: 'primary', onclick: async (e) => { e.target.disabled = true; st.textContent = 'Registering…';
+            try { await E.createGenesis({ type: 'genesis', kind: 'circle', name: settings.name.slice(0, LIMITS.name) || 'Friends', about: '', enc: encPubB64 }, me); toast('Your friends page is being registered. Back up your keys (My node) so you keep your encryption key.'); render(true); }
+            catch (err) { st.textContent = err.message; e.target.disabled = false; } } }, 'Start my friends page'), ' ', st),
+        friendsBox);
+      return;
+    }
+    // compose (sealed to every friend who has a friends page)
+    const recips = settings.friends.map(f => encOf(f.key)).filter(Boolean);
+    const ta = h('textarea', { placeholder: recips.length ? `Share with your ${recips.length} friend(s)…` : 'Add a friend first (they need a friends page too)', maxLength: LIMITS.text });
+    const img = h('input', { type: 'file', accept: 'image/*' }), st = h('span', { class: 'sub' });
+    const post = h('button', { class: 'primary', disabled: !recips.length, onclick: async () => {
+      if (!ta.value.trim()) return; post.disabled = true; st.textContent = 'Encrypting…';
+      try {
+        const image = img.files[0] ? await imageFileToDataUrl(img.files[0], 640) : undefined;
+        const to = settings.friends.filter(f => encOf(f.key)).map(f => f.key);
+        await append(mineId, { type: 'sealed', ...(await seal({ text: ta.value.trim(), ...(image ? { image } : {}), to: [me.pub, ...to], name: settings.name }, recips)) });
+        ta.value = ''; img.value = ''; st.textContent = `Sealed to ${recips.length} friend(s).`;
+      } catch (e) { st.textContent = 'Failed: ' + e.message; } finally { post.disabled = false; }
+    } }, 'Post to friends');
+    // the feed: my page and my friends' pages, newest first, with sealed replies
+    const pages = [mineId, ...settings.friends.map(f => circleOf(f.key)).filter(Boolean)].filter(id => chains.has(id));
+    const items = [];
+    for (const id of pages) { const d = derive(id); for (const b of d.sealed) if (!b.payload.target && !d.hidden.has(b.hash)) items.push({ id, b, d }); }
+    items.sort((a, z) => z.b.ts - a.b.ts);
+    const feed = h('div', { class: 'panel' });
+    const nameFor = (k) => k === me.pub ? 'You' : settings.friends.find(f => f.key === k)?.name || 'friend ·' + fp(k);
+    for (const { id, b, d } of items.slice(0, 50)) {
+      const x = await openBlock(chains.get(id), b);
+      if (!x) { feed.append(h('div', { class: 'item sub' }, `🔒 A post by ${nameFor(b.author)} that isn’t shared with you · ${ago(b.ts)}`)); continue; }
+      const replies = d.sealed.filter(r => r.payload.target === b.hash && !d.hidden.has(r.hash)).sort((a, z) => a.ts - z.ts);
+      const rbox = h('div', { style: 'margin-left:18px' });
+      for (const r of replies) { const y = await openBlock(chains.get(id), r); rbox.append(h('div', { style: 'margin-top:6px' }, h('b', {}, nameFor(r.author)), h('span', { class: 'sub' }, ' · ' + ago(r.ts)), h('div', {}, y ? y.text : '🔒 not shared with you'))); }
+      const rin = h('input', { type: 'text', placeholder: 'Reply (sealed to the same friends)…', style: 'flex:1' });
+      const rbtn = h('button', { class: 'small', onclick: async () => {
+        const text = rin.value.trim(); if (!text) return; rbtn.disabled = true;
+        try {
+          const encs = (x.to || []).map(k => k === me.pub ? encPubB64 : encOf(k)).filter(Boolean);
+          await append(id, { type: 'sealed', target: b.hash, ...(await seal({ text, name: settings.name }, encs)) }); rin.value = '';
+        } catch (e) { toast('Reply failed: ' + e.message); } finally { rbtn.disabled = false; }
+      } }, 'Reply');
+      feed.append(h('div', { class: 'item' }, h('div', {}, h('b', {}, nameFor(b.author)), h('span', { class: 'sub' }, ' · ' + ago(b.ts) + ` · shared with ${(x.to || []).length - 1} friend(s)`)),
+        h('p', { class: 'pre', style: 'margin:4px 0' }, x.text), x.image ? h('img', { src: x.image, style: 'max-width:100%;max-height:420px;border-radius:8px' }) : null,
+        b.author === me.pub ? h('button', { class: 'small', onclick: () => append(id, { type: 'hide', target: b.hash }) }, 'Delete') : null,
+        rbox, h('div', { class: 'row', style: 'margin:6px 0 0 18px' }, rin, rbtn)));
+    }
+    if (!items.length) feed.append(h('div', { class: 'sub' }, 'Nothing yet. Posts from you and your friends show up here.'));
+    box.replaceChildren(h('h2', { style: 'margin-top:0' }, 'Friends'),
+      h('div', { class: 'panel' }, ta, h('div', { class: 'row', style: 'margin-top:8px' }, img, post, st)), feed, friendsBox);
+  })().catch(e => box.replaceChildren(h('div', { class: 'empty' }, 'Friends page error: ' + e.message)));
+  views.friends.refresh = () => { clearTimeout(views.friends.t); views.friends.t = setTimeout(() => { if (route.name === 'friends' && !document.activeElement?.matches?.('input,textarea')) render(true); }, 800); };
+  return box;
+} };
 views.tag = { render() {
   const t = route.tag, found = [];
   for (const c of chains.values()) {
