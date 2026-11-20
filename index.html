@@ -266,12 +266,15 @@ class Chain {
 function validGenesis(g) {
   if (!g || g.v !== 1 || g.chain !== null || !Array.isArray(g.parents) || g.parents.length || g.height !== 0 || !isKey(g.author)) return false;
   const p = g.payload;
-  if (!p || p.type !== 'genesis' || !['channel', 'list', 'group', 'circle', 'square'].includes(p.kind)) return false;
+  if (!p || p.type !== 'genesis' || !['channel', 'list', 'group', 'circle', 'square', 'org', 'case'].includes(p.kind)) return false;
+  if ((p.parent !== undefined) !== (p.kind === 'case') || (p.parent !== undefined && !isHex(p.parent, 64))) return false;   // cases live under an organization
   if (p.kind === 'square') return validSquareGenesis(g);
   if (!isStr(p.name, LIMITS.name) || !p.name.trim() || !isStr(p.about, LIMITS.about)) return false;
   if (p.kind === 'channel' && (!isImg(p.avatar) || !['anyone', 'approved', 'off'].includes(p.comments))) return false;
   if (p.kind === 'list' && p.ranking !== undefined && p.ranking !== true) return false;
   if (p.kind === 'group' && (!isImg(p.avatar) || !['open', 'approved'].includes(p.join))) return false;   // open: anyone may post; approved: members the owner approved
+  if (p.kind === 'org' && !isImg(p.avatar)) return false;
+  if (p.kind === 'case' && (!(p.listing === undefined || isHex(p.listing, 64)) || !(p.about.trim().length > 0))) return false;
   if (p.kind === 'circle' && !(typeof p.enc === 'string' && /^[A-Za-z0-9_-]{80,100}$/.test(p.enc))) return false;   // your friends page: enc = your public encryption key
   return true;
 }
@@ -298,6 +301,21 @@ function squareMonths(now = Date.now()) {   // every month from the first until 
   while (y < ey || (y === ey && mo <= em)) { out.push(y + '-' + String(mo + 1).padStart(2, '0')); mo++; if (mo > 11) { mo = 0; y++; } }
   return out;
 }
+// ---- organizations. An org chain belongs to whoever created it; its owner names CLASSIFICATIONS (e.g. "adult") and
+// gives people ROLES (moderator: flags videos; arbiter: rules on marketplace disputes). Anyone may REPORT a video
+// under a classification, PETITION for a new classification, and support petitions. Moderators FLAG videos; people who
+// follow the org choose, per classification, to label, disable or hide what it flags (their choice, in their browser).
+// ---- the tree of chains. A chain can have CHILD chains registered on it with a `child` block instead of on the main
+// chain: an org's dispute CASES live under the org. Nobody needs a child chain until they look at it, so browsers
+// sync it only when they open it (nodes keep them all).
+const ORG = { roles: ['moderator', 'arbiter'], slug: /^[a-z0-9][a-z0-9-]{1,30}$/ };
+function orgRoles(chain, parents) {   // key -> Set(roles) as of that point in the org's history
+  const roles = new Map(), anc = chain.ancestors(parents);
+  const list = [...anc].map(x => chain.blocks.get(x)).filter(x => x.payload.type === 'role' && chain.isOwnerBlock(x)).sort((a, b) => a.height - b.height || a.ts - b.ts);
+  for (const b of list) { const r = roles.get(b.payload.key) || roles.set(b.payload.key, new Set()).get(b.payload.key); if (b.payload.on) r.add(b.payload.role); else r.delete(b.payload.role); }
+  return roles;
+}
+const refShape = (x) => !!x && isHex(x.chain, 64) && isHex(x.block, 64);
 // ---- groups: a chain where members post. The owner sets the rules (open or approved members, allow/revoke) like a
 // channel's comments; members' posts, comments and likes are blocks on the group's chain (with anti-spam work).
 function groupPermitted(chain, b) {
@@ -347,6 +365,26 @@ function validPayload(chain, b, CFG) {
     if (p.type === 'vote') return isHex(p.target, 64) && chain.ancestors(b.parents).has(p.target) && [1, 0, -1].includes(p.v);
     if (p.type === 'hide') return isHex(p.target, 64) && chain.blocks.get(p.target)?.author === b.author;
     return false;
+  }
+  if (p.type === 'child') return (owner || kind === 'org') && (owner || zeroBits(b.hash) >= CFG.commentDifficulty) && !!p.genesis && validGenesis(p.genesis) && p.genesis.payload.parent === chain.id;   // signature checked on insert
+  if (kind === 'org') {
+    if (owner && p.type === 'class') return ORG.slug.test(p.id) && isStr(p.name, 60) && isStr(p.about ?? '', LIMITS.about) && (p.on === undefined || typeof p.on === 'boolean');
+    if (owner && p.type === 'role') return isKey(p.key) && ORG.roles.includes(p.role) && typeof p.on === 'boolean';
+    if (owner && ['post', 'profile', 'hide', 'rekey'].includes(p.type)) { /* falls through to the common owner rules below */ }
+    else {
+      if (p.type === 'flag') return refShape(p.ref) && ORG.slug.test(p.cls) && typeof p.on === 'boolean' && isStr(p.note ?? '', LIMITS.comment) && (owner || orgRoles(chain, b.parents).get(b.author)?.has('moderator'));
+      if (owner) return false;
+      if (zeroBits(b.hash) < CFG.commentDifficulty) return false;
+      if (p.type === 'report') return refShape(p.ref) && ORG.slug.test(p.cls) && isStr(p.note ?? '', LIMITS.comment);
+      if (p.type === 'petition') return ORG.slug.test(p.id) && isStr(p.name, 60) && isStr(p.about ?? '', LIMITS.about);
+      if (p.type === 'vote') return isHex(p.target, 64) && chain.ancestors(b.parents).has(p.target) && [1, 0, -1].includes(p.v);
+      return false;
+    }
+  }
+  if (kind === 'case') {   // a dispute: the parties and the org's arbiters write here; the binding ruling is a ledger transaction
+    if (p.type === 'post') return isStr(p.text, LIMITS.text) && p.text.trim().length > 0 && isStr(p.name ?? '', LIMITS.name) && (owner || zeroBits(b.hash) >= CFG.commentDifficulty);
+    if (p.type === 'ruling') return isStr(p.text, LIMITS.text) && Number.isFinite(p.buyerShare) && p.buyerShare >= 0 && p.buyerShare <= 1 && (owner || zeroBits(b.hash) >= CFG.commentDifficulty);
+    if (!owner) return false;
   }
   if (kind === 'circle') {
     if (p.type === 'sealed') return sealedShape(p) && (owner ? true : p.target !== undefined && zeroBits(b.hash) >= CFG.commentDifficulty && chain.ancestors(b.parents).has(p.target));
@@ -568,7 +606,10 @@ const tabShape = (x) => !!x && typeof x === 'object' && x.v === 1 && x.kind === 
 // carry ad-view certificates, which move to the buyer; anything else (goods, gift cards, services) is delivered by the
 // seller off the network, using the contact the listing gives.
 const MARKET = { maxDays: 30, minStep: 0.05, title: 120, about: 2000, contact: 200, img: 24000 };
-const listingShape = (x) => !!x && typeof x === 'object' && ['fixed', 'auction'].includes(x.kind) && isStr(x.title, MARKET.title) && x.title.trim().length > 0 && isStr(x.about ?? '', MARKET.about)
+// With an ARBITER (a key named by the seller, typically an org's arbiter) the buyer's coins are held in escrow: the buyer
+// releases them on delivery, they're released automatically after `hold` days, and either side may open a dispute,
+// which freezes them until the arbiter rules how to split them (`rule`). Without an arbiter the seller is paid at once.
+const listingShape = (x) => !!x && typeof x === 'object' && ['fixed', 'auction'].includes(x.kind) && (x.arbiter === undefined || isKey(x.arbiter)) && (x.hold === undefined || (Number.isSafeInteger(x.hold) && x.hold >= 1 && x.hold <= 90)) && (x.org === undefined || isHex(x.org, 64)) && isStr(x.title, MARKET.title) && x.title.trim().length > 0 && isStr(x.about ?? '', MARKET.about)
   && isStr(x.contact ?? '', MARKET.contact) && (x.image === undefined || (isImg(x.image) && x.image.length <= MARKET.img)) && amtOk(x.price)
   && (x.kind === 'fixed' || (Number.isSafeInteger(x.ends) && x.ends > 0)) && (x.category === undefined || AD_CATEGORIES.includes(x.category) || x.category === 'adviews')
   && (x.certs === undefined || (Array.isArray(x.certs) && x.certs.length <= PIECE.maxCerts && x.certs.every(c => isHex(c, 64)) && new Set(x.certs).size === x.certs.length)) && validTags(x.tags);
@@ -594,7 +635,7 @@ class Ledger {
     this.retired = new Set(src?.retired);  // keys that may not send transactions any more
     this.tabsPaid = new Map(src?.tabsPaid); this.viewers = new Set(src?.viewers);   // 'payer|payee|video' -> units paid; 'video|viewer' seen
     this.certs = new Map([...(src?.certs || [])].map(([k, v]) => [k, { ...v }]));   // ad-view certificate id -> { owner, adv, tid, amt, ts, video }
-    this.listings = new Map([...(src?.listings || [])].map(([k, v]) => [k, { ...v, certs: [...(v.certs || [])] }]));   // marketplace
+    this.listings = new Map([...(src?.listings || [])].map(([k, v]) => [k, { ...v, certs: [...(v.certs || [])], ...(v.escrow ? { escrow: { ...v.escrow } } : {}) }]));   // marketplace
   }
   // Coins belong to identities. A channel key bound to an identity, or a retired identity, resolves to the identity that
   // owns it now, so whatever is paid to a channel lands in its owner's balance (and its ads are paid from there).
@@ -635,6 +676,13 @@ class Ledger {
       if (x.kind === 'auction' && (x.ends <= t.ts || x.ends > t.ts + MARKET.maxDays * 86400000)) return 'auctions end between now and 30 days from now';
       if ((x.certs || []).some(id => this.certs.get(id)?.owner !== t.from)) return 'you don’t own those ad views';
       return null;
+    }
+    if (t.release || t.dispute || t.rule) {
+      const id = (t.release || t.dispute || t.rule).id, L = this.listings.get(id), E = L?.escrow;
+      if (!E || !['held', 'disputed'].includes(E.state)) return 'nothing is held for that listing';
+      if (t.release) return this.resolve(E.buyer) === this.resolve(t.from) ? null : 'only the buyer releases the payment';
+      if (t.dispute) return E.state === 'held' && [E.buyer, L.seller].some(k => this.resolve(k) === this.resolve(t.from)) ? null : 'only the buyer or the seller can dispute, once';
+      return this.resolve(L.arbiter) === this.resolve(t.from) ? null : 'only the listing’s arbiter can rule';
     }
     if (t.unlist) { const L = this.listings.get(t.unlist.id); return !L || L.seller !== t.from ? 'not your listing' : L.high ? 'it already has a bid' : null; }
     if (t.buy) {
@@ -736,7 +784,13 @@ class Ledger {
       const L = this.listings.get(t.unlist.id); this.closeListing(t.unlist.id, L, null, 'withdrawn');
     } else if (t.buy) {
       const L = this.listings.get(t.buy.id);
-      this.add(t.from, -L.price); this.add(L.seller, L.price - this.feeCut(t, L.price)); this.closeListing(t.buy.id, L, t.from, 'sold');
+      this.add(t.from, -L.price); this.pay(L, t.from, L.price, t.ts); this.closeListing(t.buy.id, L, t.from, 'sold');
+    } else if (t.release) {
+      const L = this.listings.get(t.release.id); this.payOut(L, 0, t.ts, 'released');
+    } else if (t.dispute) {
+      const L = this.listings.get(t.dispute.id); L.escrow.state = 'disputed'; L.escrow.disputedBy = t.from; L.escrow.case = t.dispute.case || null;
+    } else if (t.rule) {
+      const L = this.listings.get(t.rule.id); this.payOut(L, Math.floor(L.escrow.amt * t.rule.buyerShare), t.ts, 'ruled');
     } else if (t.bid) {
       const L = this.listings.get(t.bid.id);
       if (L.high) this.add(L.high.by, L.high.amt);   // the outbid bidder gets their coins back
@@ -763,6 +817,16 @@ class Ledger {
     }
     return null;
   }
+  pay(L, buyer, amt, ts) {   // the sale's coins: held when the listing names an arbiter, else to the seller now
+    if (L.arbiter) L.escrow = { buyer, amt, state: 'held', until: ts + (L.hold || 14) * 86400000 };
+    else this.add(L.seller, amt - this.feeCut({ ts }, amt));
+  }
+  payOut(L, toBuyer, ts, state) {
+    const E = L.escrow, toSeller = E.amt - toBuyer;
+    if (toBuyer) this.add(E.buyer, toBuyer);
+    if (toSeller) this.add(L.seller, toSeller - this.feeCut({ ts }, toSeller));
+    E.state = state; E.toBuyer = toBuyer; E.at = ts;
+  }
   closeListing(id, L, buyer, state) {   // certificates go to the buyer (or back to the seller); the listing stays as a record
     for (const c of L.certs) { const x = this.certs.get(c); if (x) x.owner = buyer || L.seller; }
     L.state = state; L.buyer = buyer;
@@ -770,9 +834,10 @@ class Ledger {
   settleAuctions(now) {
     for (const [id, L] of this.listings) {
       if (L.state !== 'open' || L.kind !== 'auction' || L.ends > now) continue;
-      if (L.high) { const cut = this.feeCut({ ts: L.ends }, L.high.amt); this.add(L.seller, L.high.amt - cut); this.closeListing(id, L, L.high.by, 'sold'); }
+      if (L.high) { this.pay(L, L.high.by, L.high.amt, L.ends); this.closeListing(id, L, L.high.by, 'sold'); }
       else this.closeListing(id, L, null, 'ended');
     }
+    for (const L of this.listings.values()) if (L.escrow?.state === 'held' && L.escrow.until <= now) this.payOut(L, 0, now, 'released');   // nobody disputed in time
   }
   // After a block's transactions: pay its miner, then move prices toward the target load.
   feeCut(t, amt) {   // the share of a payment that goes to the resource pools of its period
@@ -820,7 +885,7 @@ class Ledger {
   supply() {   // coins in wallets, plus those held in ad-view certificates and in the high bids of open auctions
     let s = 0; for (const v of this.bal.values()) s += v;
     for (const c of this.certs.values()) s += c.amt;
-    for (const L of this.listings.values()) if (L.state === 'open' && L.high) s += L.high.amt;
+    for (const L of this.listings.values()) { if (L.state === 'open' && L.high) s += L.high.amt; if (['held', 'disputed'].includes(L.escrow?.state)) s += L.escrow.amt; }
     return s;
   }
 }
@@ -879,7 +944,7 @@ function txShape(t) {
     if (!Array.isArray(outs) || !Array.isArray(burns) || outs.length > 100 || burns.length > 20 || !(outs.length + burns.length)) return false;
     return outs.every(o => o && isKey(o.to) && isKey(o.token) && amtOk(o.amt) && o.to !== t.from) && burns.every(b => b && isKey(b.token) && b.token !== t.from && amtOk(b.amt));
   }
-  const acts = ['pay', 'starter', 'post', 'view', 'vote', 'host', 'claim', 'name', 'serve', 'tabs', 'redeem', 'certs', 'list', 'unlist', 'buy', 'bid', 'bind', 'retire'].filter(k => t[k] !== undefined);
+  const acts = ['pay', 'starter', 'post', 'view', 'vote', 'host', 'claim', 'name', 'serve', 'tabs', 'redeem', 'certs', 'list', 'unlist', 'buy', 'bid', 'bind', 'retire', 'release', 'dispute', 'rule'].filter(k => t[k] !== undefined);
   if (acts.length !== 1 || t.outs !== undefined || t.burns !== undefined) return false;
   const x = t[acts[0]];
   switch (acts[0]) {
@@ -895,6 +960,9 @@ function txShape(t) {
     case 'redeem': return !!x && Array.isArray(x.ids) && x.ids.length >= 1 && x.ids.length <= PIECE.maxCerts && x.ids.every(i => isHex(i, 64)) && new Set(x.ids).size === x.ids.length;
     case 'certs': return !!x && isKey(x.to) && x.to !== t.from && Array.isArray(x.ids) && x.ids.length >= 1 && x.ids.length <= PIECE.maxCerts && x.ids.every(i => isHex(i, 64)) && new Set(x.ids).size === x.ids.length;
     case 'list': return listingShape(x);
+    case 'release': return !!x && isHex(x.id, 64);
+    case 'dispute': return !!x && isHex(x.id, 64) && (x.case === undefined || isHex(x.case, 64));
+    case 'rule': return !!x && isHex(x.id, 64) && Number.isFinite(x.buyerShare) && x.buyerShare >= 0 && x.buyerShare <= 1;
     case 'bind': return !!x && isKey(x.key) && x.key !== t.from && typeof x.sig === 'string';      // x.sig: the key's consent (bindPreimage)
     case 'retire': return !!x && isKey(x.to) && x.to !== t.from && typeof x.sig === 'string';      // x.sig: the new key's consent (retirePreimage)
     case 'unlist': case 'buy': return !!x && isHex(x.id, 64);
@@ -1300,7 +1368,8 @@ async function createEngine(o) {
   const squares = new Map();   // chain id -> genesis of a month's public feed (derived, never registered)
   for (const m of squareMonths(Date.now() + 40 * 86400000)) { const g = await squareGenesis(m); squares.set(g.hash, g); }
   const squareId = (m) => [...squares.values()].find(g => g.payload.month === m)?.hash || null;
-  const genesisFor = (id) => chains.get(id)?.genesis || E.directory.get(id)?.genesis || mempool.get(id) || squares.get(id) || null;
+  const childGenesis = new Map();   // child chain id -> genesis (registered on its parent chain)
+  const genesisFor = (id) => chains.get(id)?.genesis || E.directory.get(id)?.genesis || mempool.get(id) || squares.get(id) || childGenesis.get(id) || null;
   const announce = (c, to) => send({ t: 'heads', c: c.id, h: headsOf(c) }, to);
   const requestChain = (c, to) => { c.stats.lastRequest = Date.now(); send({ t: 'rq', c: c.id, w: [], h: headsOf(c) }, to); };
   function openChain(id) {
@@ -1341,7 +1410,7 @@ async function createEngine(o) {
     if (!p || p.type !== 'register' || !Array.isArray(p.entries) || p.entries.length > CFG.maxEntries) return false;
     const txs = p.txs === undefined ? [] : p.txs;
     if (!Array.isArray(txs) || txs.length > LEDGER.maxTxs || !(p.entries.length + txs.length)) return false;
-    for (const g of p.entries) if (!validGenesis(g) || !(await checkSigned(g))) return false;
+    for (const g of p.entries) if (!validGenesis(g) || g.payload.parent !== undefined || !(await checkSigned(g))) return false;
     const before = stateAfter(b.parents[0]); if (!before) return false;
     const st = new Ledger(before);
     for (const t of txs) if (!(await checkTx(t)) || !nameAllowed(t) || st.apply(t)) return false;
@@ -1484,6 +1553,8 @@ async function createEngine(o) {
       if (!(await checkSigned(b))) { reject(b, 'bad hash or signature'); continue; }
       if (chain === main ? !(await validMainBlock(b)) : !validPayload(chain, b, CFG)) { reject(b, chain === main ? 'breaks main-chain rules' : 'not permitted by channel rules'); continue; }
       if (b.payload?.type === 'rekey' && !(await verify(b.payload.key, rekeyPreimage(chainId, b.payload.key), b.payload.proof))) { reject(b, 'new key did not agree'); continue; }
+      if (b.payload?.type === 'child' && !(await checkSigned(b.payload.genesis))) { reject(b, 'bad child chain'); continue; }
+      if (b.payload?.type === 'child') { childGenesis.set(b.payload.genesis.hash, b.payload.genesis); if (o.trackAll && !chains.has(b.payload.genesis.hash)) setTimeout(() => requestChain(openChain(b.payload.genesis.hash)), 0); }
       if (b.payload?.type === 'rekey') { chain.rekeys = [...(chain.rekeys || []), b].sort((x, y) => x.height - y.height || x.ts - y.ts); }
       chain.add(b); chain.orphans.delete(b.hash); added = true;
       chain.stats.accepted++; chain.stats.lastBlock = Date.now();
@@ -1498,7 +1569,7 @@ async function createEngine(o) {
   }
 
   async function addToMempool(g) {
-    if (!g || mempool.has(g.hash) || E.directory.has(g.hash) || !validGenesis(g) || !(await checkSigned(g))) return false;
+    if (!g || mempool.has(g.hash) || E.directory.has(g.hash) || !validGenesis(g) || g.payload.parent !== undefined || !(await checkSigned(g))) return false;
     mempool.set(g.hash, g); return true;
   }
 
@@ -1664,6 +1735,15 @@ async function createEngine(o) {
     await insert(chainId, [b]);
     return b;
   }
+  async function createChild(parentId, payload, signer = o.signer) {   // a chain registered on its parent instead of the main chain
+    const g = await makeBlock({ chain: null, parents: [], height: 0, payload: { ...payload, parent: parentId }, signer });
+    if (!validGenesis(g)) throw new Error('invalid chain data');
+    const b = await append(parentId, { type: 'child', genesis: g });
+    await queue;   // the insert finishes
+    if (!chains.get(parentId).has(b.hash)) throw new Error('the parent chain refused it');
+    openChain(g.hash); changed();
+    return g;
+  }
   async function createGenesis(payload, signer = o.signer) {
     const g = await makeBlock({ chain: null, parents: [], height: 0, payload, signer });
     if (!validGenesis(g)) throw new Error('invalid channel data');
@@ -1688,7 +1768,7 @@ async function createEngine(o) {
 
   return Object.assign(E, {
     syncState,
-    acceptRanking, publishRanking, acceptMembership, publishMembership, acceptNodeInfo, publishNodeInfo, submitTx, route, squareId, squares, addTx, history, pendingState, LEDGER, ADS,
+    acceptRanking, publishRanking, acceptMembership, publishMembership, acceptNodeInfo, publishNodeInfo, submitTx, route, squareId, squares, createChild, childGenesis, addTx, history, pendingState, LEDGER, ADS,
     signTerms: async (terms, signer) => ({ ...terms, sig: await signer.sign(termsPreimage(terms)) }),
     signWitness: async (w) => ({ ...w, sig: await o.signer.sign(witnessPreimage(w)) }),
     termsId: termsIdOf, sessionId: sessionIdOf,
@@ -1700,7 +1780,7 @@ async function createEngine(o) {
   });
 }
 
-globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, bindPreimage, retirePreimage, rekeyPreimage, SQUARE, SEAL, monthKey, squareMonths, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
+globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, ORG, orgRoles, bindPreimage, retirePreimage, rekeyPreimage, SQUARE, SEAL, monthKey, squareMonths, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
 })();
 </script>
 
