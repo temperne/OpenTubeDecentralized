@@ -132,6 +132,43 @@ OpenTube runs on **one shared coin**. 100 units = 1 coin. Transactions ride in m
 - **Before the coin:** videos and votes from before 2026-11-19 09:00 UTC stay free. Transactions in the old per-person tokens stay valid in history but no longer affect balances.
 - **Known weaknesses:** keys are free, so starter coins and block rewards can be farmed with CPU (each costs proof of work, like mining). Host registration isn't checked against actually storing the videos yet (storage proofs are not built). Resource receipts are only as honest as the keys signing them: someone with many keys (each one needs the starter work) could receipt their own node, up to the per-key caps. A modified page could watch without paying, because video travels peer to peer.
 
+## You: your identity and profile
+
+Your **identity** (your personal key) is you: it owns your channels and coins, signs what you post, and holds your friends and messages. **👤 You** gathers it all:
+
+- **Profile**, with Edit and your @@name;
+- **Channels** (create channels, lists and groups);
+- **Wallet**, **Friends** and **Messages**;
+- **Keys & security** (backup, retiring your key);
+- **Settings** (not interested, subscriptions, organizations you follow).
+
+**Devices** is separate: the computers and folders that run the network for you.
+
+**Profiles** (`#/u/<user ID>`, or `site/@@name`) tie everything together:
+
+- name, picture, bio, location and links;
+- live streams first, then their channels and recent videos;
+- their public posts, every month (*Load older months*);
+- what they're selling, their groups and organizations, and their roles;
+- buttons to **Message**, **Follow** or **Add friend** them (choosing close friend, friend or acquaintance).
+
+The public profile lives on your page chain, the same chain as your friends page. Names on posts and comments link to profiles.
+
+**Names:** people are **@@name** (claimed for your page chain by your identity), channels are **@name**, lists **~name**.
+
+**Home** is one feed: videos and posts from the channels and groups you subscribe to, public posts by people you follow and your friends, and your friends' private posts. It has a box to post publicly and an *Everything / Videos* switch.
+
+**Friends** can be searched by name and sorted into levels (close friends, friends, acquaintances). A friends post goes to all friends, to friends and close friends, or to close friends only. It's sealed to exactly those people.
+
+**Formatting** in posts, comments, groups, friends posts and descriptions uses a safe subset, never HTML:
+
+- `**bold**`, `*italic*` and `` `code` ``;
+- lists (`- item`);
+- links: `[text](https://…)`, or plain `https://` addresses;
+- `#tags` (tag pages list videos and posts), `@channel`, `~list` and `@@person`.
+
+**Every link gets 👍/👎** (a `linkvote` transaction, priced like a like). An up-vote pays whoever shared the link and a down-vote is burned. Votes add up **per domain** across the network, and each link shows its domain's score, so sites earn a reputation.
+
 ## Identities own channels (and keys can be replaced)
 
 Your **identity** is your personal key. Every channel or list you create has its own key, and that key is **bound** to your identity by a `bind` transaction. The channel key signs "this identity owns me" and your identity sends it. From then on:
@@ -243,7 +280,7 @@ Courts below an org are **child chains**: they're registered by a `child` block 
 
 - **Escrow:** a market listing can name a court. The buyer's coins are then held: released when the buyer confirms delivery, or automatically after 14 days unless disputed.
 - **Disputes and rulings:** a dispute freezes the coins, and the court's key or the judges it named (`judge` transaction) rule how to split them.
-- **Appeals:** either side may appeal within 14 days. The dispute then goes to the court above (`court` transaction, signed by both courts), whose ruling replaces the earlier one. A ruling pays out when its appeal window passes, or at once at the top court.
+- **Appeals:** these are the network's own arbitration levels, not public courts. Each arbitration body sets its own appeal window (default 14 days, `courtcfg`). Within it, either side may appeal. The dispute then goes to the next level up (`court` transaction, signed by both levels), with more senior arbitrators, and its ruling replaces the earlier one. The coins stay held throughout, and a ruling pays out when its window passes, or at once at the top level.
 - **The clause:** the site asks every visitor to agree to resolve disputes this way (*Terms*).
 
 ## Tags and "not interested"

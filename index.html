@@ -68,6 +68,9 @@
   .tagbox { display: inline-flex; align-items: center; gap: 2px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px; padding: 1px 4px 1px 10px; font-size: 13px; }
   .tagbox .tagx { background: none; border: 0; padding: 0 4px; color: var(--muted); cursor: pointer; font-size: 12px; }
   a.tag { color: var(--accent, inherit); text-decoration: none; }
+  .rich ul { margin: 4px 0; padding-left: 22px; } .rich code { background: var(--panel-2); padding: 0 4px; border-radius: 4px; }
+  .linkchip { white-space: nowrap; } .linkchip .tagx { background: none; border: 0; cursor: pointer; padding: 0 2px; font-size: 12px; }
+  a.person { color: inherit; text-decoration: none; } a.person:hover { text-decoration: underline; }
   .badge.ok { color: var(--ok); border-color: var(--ok); } .badge.warn { color: var(--warn); border-color: var(--warn); }
   .watch { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 20px; }
   @media (max-width: 900px) { .watch { grid-template-columns: 1fr; } }
@@ -124,17 +127,14 @@
 <header>
   <a class="logo" href="#/">Open<span>Tube</span></a>
   <nav>
-    <a href="#/" data-nav="home">Feed</a>
+    <a href="#/" data-nav="home">Home</a>
     <a href="#/explore" data-nav="explore">Explore</a>
     <a href="#/square" data-nav="square">Posts</a>
-    <a href="#/friends" data-nav="friends">Friends</a>
-    <a href="#/messages" data-nav="messages">Messages</a>
     <a href="#/market" data-nav="market">Market</a>
     <a href="#/orgs" data-nav="orgs">Orgs</a>
-    <a href="#/wallet" data-nav="wallet">Wallet</a>
-    <a href="#/mine" data-nav="mine" id="nav-mine">My channel</a>
-    <a href="#/me" data-nav="me">My node</a>
-    <a href="#/network" data-nav="network">Network</a>
+    <a href="#/you" data-nav="you" id="nav-you">👤 You</a>
+    <a href="#/me" data-nav="me" title="Your computers, video folder and the network">Devices</a>
+    <a href="#/mine" data-nav="mine" id="nav-mine" class="hidden">My channel</a>
   </nav>
   <span class="actions"><a class="act" href="#/new/video">＋ Add video</a><a class="act live" href="#/new/live">● Go live</a></span>
   <a class="status" href="#/network" title="Network & diagnostics" style="color:inherit;text-decoration:none">
@@ -324,7 +324,8 @@ function squareMonths(now = Date.now()) {   // every month from the first until 
 // ---- the tree of chains. A chain can have CHILD chains registered on it with a `child` block instead of on the main
 // chain: an org's dispute CASES live under the org. Nobody needs a child chain until they look at it, so browsers
 // sync it only when they open it (nodes keep them all).
-const ORG = { roles: ['moderator', 'clerk', 'judge'], slug: /^[a-z0-9][a-z0-9-]{1,30}$/, filings: ['complaint', 'motion', 'response', 'evidence', 'appeal', 'order', 'other'],
+const ORG = { roles: ['moderator', 'clerk', 'judge'],   // 'judge' is shown as "arbitrator"
+  slug: /^[a-z0-9][a-z0-9-]{1,30}$/, filings: ['complaint', 'motion', 'response', 'evidence', 'appeal', 'order', 'other'],
   states: ['filed', 'open', 'hearing', 'stayed', 'decided', 'appealed', 'closed'], appealDays: 14 };
 const orderPreimage = (caseId, x) => 'opentube-order:' + caseId + ':' + canon({ title: x.title, text: x.text, buyerShare: x.buyerShare ?? null });   // a judge signs this
 function orgRoles(chain, parents) {   // key -> Set(roles) as of that point in the org's history
@@ -415,7 +416,8 @@ function validPayload(chain, b, CFG) {
     if (p.type === 'order') return isStr(p.title, LIMITS.title) && isStr(p.text, LIMITS.text) && isKey(p.judge) && typeof p.sig === 'string' && (p.buyerShare === undefined || (Number.isFinite(p.buyerShare) && p.buyerShare >= 0 && p.buyerShare <= 1));
     if (!['profile', 'rekey', 'hide'].includes(p.type)) return false;
   }
-  if (kind === 'circle') {
+  if (kind === 'circle' && owner && p.type === 'profile') { /* your public profile: checked by the common rules below */ }
+  else if (kind === 'circle') {
     if (p.type === 'sealed') return sealedShape(p) && (owner ? true : p.target !== undefined && zeroBits(b.hash) >= CFG.commentDifficulty && chain.ancestors(b.parents).has(p.target));
     if (p.type === 'hide') return isHex(p.target, 64) && (owner || chain.blocks.get(p.target)?.author === b.author);
     return false;
@@ -610,10 +612,14 @@ const receiptShape = (r) => !!r && typeof r === 'object' && r.v === 1 && r.kind 
 // signed by the key that created the channel/list, claims a free name; claiming another frees the old one, and
 // handle null releases it. Main-chain order decides who got a name first.
 const NAMES = { re: /^[a-z0-9](?:[a-z0-9._-]{1,28}[a-z0-9])$/ };
-const nameShape = (n) => !!n && typeof n === 'object' && (n.space === '@' || n.space === '~') && isHex(n.chain, 64) && (n.handle === null || (typeof n.handle === 'string' && NAMES.re.test(n.handle) && !/[._-]{2}/.test(n.handle)));
+// '@' channels, '~' lists, '@@' people (claimed for their page chain, signed by their identity).
+const nameShape = (n) => !!n && typeof n === 'object' && ['@', '~', '@@'].includes(n.space) && isHex(n.chain, 64) && (n.handle === null || (typeof n.handle === 'string' && NAMES.re.test(n.handle) && !/[._-]{2}/.test(n.handle)));
 const bindPreimage = (identity, key) => `opentube-bind:${identity}:${key}`;     // signed by the channel key: "this identity owns me"
 const courtPreimage = (court, parent) => `opentube-court:${court}:${parent}`;   // signed by the court above: "appeals from court come to me"
 const retirePreimage = (old, key) => `opentube-retire:${old}:${key}`;            // signed by the new key: "I take over from old"
+// ---- links: every link in a post can be voted on (paid like a like: up pays whoever shared it, down is burned), and
+// the votes add up per DOMAIN across the network, so a site gets a reputation.
+const domainOf = (url) => { try { const u = new URL(url); return /^https?:$/.test(u.protocol) ? u.hostname.toLowerCase().replace(/^www\./, '') : null; } catch { return null; } };
 const amtOk = (a) => Number.isSafeInteger(a) && a > 0 && a <= COIN.maxAmt;
 // ---- paying per piece. Whoever downloads a video pays the peer that sent each piece, at the network's piece price,
 // and that peer passes PIECE.creatorShare of it to the video's creator. It happens on the BitTorrent connection itself
@@ -661,6 +667,9 @@ class Ledger {
     this.receipts = new Set(src?.receipts); this.rcptUse = new Map(src?.rcptUse); this.poolFees = new Map(src?.poolFees);
     this.settled = new Set(src?.settled); this.earned = new Map([...(src?.earned || [])].map(([k, v]) => [k, [...v]])); this.clock = src?.clock || 0;   // viewer -> first time slot after the last ad they were paid for
     this.names = new Map(src?.names); this.nameOf = new Map(src?.nameOf);   // '@cooking' -> { chain, key }; chain -> '@cooking'
+    this.domains = new Map([...(src?.domains || [])].map(([k, v]) => [k, { ...v }]));   // domain -> { up, down }
+    this.linkVotes = new Set(src?.linkVotes);   // 'voter|url' (one vote per link per person)
+    this.appealDays = new Map(src?.appealDays);   // arbitration body key -> its appeal window in days (default ORG.appealDays)
     this.msgkeys = new Map([...(src?.msgkeys || [])].map(([k, v]) => [k, [...v]]));   // identity -> its current messaging keys (newest last)
     this.superior = new Map(src?.superior);   // court key -> the court above it (appeals go there)
     this.judges = new Map([...(src?.judges || [])].map(([k, v]) => [k, new Set(v)]));   // court key -> keys that may rule for it
@@ -725,6 +734,12 @@ class Ledger {
       return this.superior.has(E.court || L.arbiter) ? null : 'this is the highest court: its ruling is final';
     }
     if (t.court) return this.superior.has(t.from) ? 'this court already has a court above it' : null;
+    if (t.courtcfg) return null;
+    if (t.linkvote) {
+      if (this.linkVotes.has(t.from + '|' + t.linkvote.url)) return 'you already voted on that link';
+      if (t.linkvote.amt < Math.floor(Math.ceil(this.prices.like) * COIN.slack)) return 'the voting price went up; try again';
+      return this.balance(t.from) < t.linkvote.amt ? 'not enough coins' : null;
+    }
     if (t.msgkey) { const cur = this.msgkeys.get(t.from) || []; return t.msgkey.on ? (cur.includes(t.msgkey.key) ? 'already published' : null) : (cur.includes(t.msgkey.key) ? null : 'not one of your messaging keys'); }
     if (t.judge) return null;
     if (t.unlist) { const L = this.listings.get(t.unlist.id); return !L || L.seller !== t.from ? 'not your listing' : L.high ? 'it already has a bid' : null; }
@@ -834,6 +849,12 @@ class Ledger {
     } else if (t.appeal) {   // the ruling is set aside until the court above rules
       const L = this.listings.get(t.appeal.id), E = L.escrow;
       E.state = 'disputed'; E.court = this.superior.get(E.court || L.arbiter); E.appeals = (E.appeals || 0) + 1; E.case = t.appeal.case || E.case;
+    } else if (t.linkvote) {
+      const x = t.linkvote, d = this.domains.get(x.domain) || this.domains.set(x.domain, { up: 0, down: 0 }).get(x.domain);
+      this.add(t.from, -x.amt); const cut = this.feeCut(t, x.amt);
+      if (x.v > 0 && x.to && this.resolve(x.to) !== this.resolve(t.from)) this.add(x.to, x.amt - cut); else this.burned += x.amt - cut;
+      if (x.v > 0) d.up++; else d.down++; this.linkVotes.add(t.from + '|' + x.url); this.use.like++;
+    } else if (t.courtcfg) { this.appealDays.set(t.from, t.courtcfg.appealDays);
     } else if (t.msgkey) {
       const cur = (this.msgkeys.get(t.from) || []).filter(k => k !== t.msgkey.key);
       if (t.msgkey.on) cur.push(t.msgkey.key);
@@ -846,7 +867,7 @@ class Ledger {
       const L = this.listings.get(t.dispute.id); L.escrow.state = 'disputed'; L.escrow.disputedBy = t.from; L.escrow.case = t.dispute.case || null;
     } else if (t.rule) {   // a ruling stands once the appeal window passes (settleAuctions pays it out)
       const L = this.listings.get(t.rule.id), E = L.escrow;
-      E.state = 'ruled'; E.buyerShare = t.rule.buyerShare; E.ruledBy = t.from; E.court = E.court || L.arbiter; E.until = t.ts + ORG.appealDays * 86400000;
+      E.state = 'ruled'; E.buyerShare = t.rule.buyerShare; E.ruledBy = t.from; E.court = E.court || L.arbiter; E.until = t.ts + (this.appealDays.get(E.court) ?? ORG.appealDays) * 86400000;
     } else if (t.bid) {
       const L = this.listings.get(t.bid.id);
       if (L.high) this.add(L.high.by, L.high.amt);   // the outbid bidder gets their coins back
@@ -1004,7 +1025,7 @@ function txShape(t) {
     if (!Array.isArray(outs) || !Array.isArray(burns) || outs.length > 100 || burns.length > 20 || !(outs.length + burns.length)) return false;
     return outs.every(o => o && isKey(o.to) && isKey(o.token) && amtOk(o.amt) && o.to !== t.from) && burns.every(b => b && isKey(b.token) && b.token !== t.from && amtOk(b.amt));
   }
-  const acts = ['pay', 'starter', 'post', 'view', 'vote', 'host', 'claim', 'name', 'serve', 'tabs', 'redeem', 'certs', 'list', 'unlist', 'buy', 'bid', 'bind', 'retire', 'release', 'dispute', 'rule', 'appeal', 'court', 'judge', 'msgkey'].filter(k => t[k] !== undefined);
+  const acts = ['pay', 'starter', 'post', 'view', 'vote', 'host', 'claim', 'name', 'serve', 'tabs', 'redeem', 'certs', 'list', 'unlist', 'buy', 'bid', 'bind', 'retire', 'release', 'dispute', 'rule', 'appeal', 'court', 'judge', 'msgkey', 'courtcfg', 'linkvote'].filter(k => t[k] !== undefined);
   if (acts.length !== 1 || t.outs !== undefined || t.burns !== undefined) return false;
   const x = t[acts[0]];
   switch (acts[0]) {
@@ -1020,6 +1041,8 @@ function txShape(t) {
     case 'redeem': return !!x && Array.isArray(x.ids) && x.ids.length >= 1 && x.ids.length <= PIECE.maxCerts && x.ids.every(i => isHex(i, 64)) && new Set(x.ids).size === x.ids.length;
     case 'certs': return !!x && isKey(x.to) && x.to !== t.from && Array.isArray(x.ids) && x.ids.length >= 1 && x.ids.length <= PIECE.maxCerts && x.ids.every(i => isHex(i, 64)) && new Set(x.ids).size === x.ids.length;
     case 'list': return listingShape(x);
+    case 'linkvote': return !!x && isStr(x.url, 300) && domainOf(x.url) === x.domain && [1, -1].includes(x.v) && (x.to === undefined || isKey(x.to)) && amtOk(x.amt);
+    case 'courtcfg': return !!x && Number.isSafeInteger(x.appealDays) && x.appealDays >= 0 && x.appealDays <= 365;
     case 'msgkey': return !!x && typeof x.key === 'string' && /^[A-Za-z0-9_-]{80,100}$/.test(x.key) && typeof x.on === 'boolean';
     case 'release': return !!x && isHex(x.id, 64);
     case 'appeal': return !!x && isHex(x.id, 64) && (x.case === undefined || isHex(x.case, 64));
@@ -1467,7 +1490,8 @@ async function createEngine(o) {
   const nameAllowed = (t) => {
     if (!t.name) return true;
     const g = genesisFor(t.name.chain);
-    return !!g && g.author === t.from && (g.payload.kind === 'channel') === (t.name.space === '@');
+    if (!g || g.author !== t.from) return false;
+    return t.name.space === '@@' ? g.payload.kind === 'circle' : t.name.space === '@' ? g.payload.kind === 'channel' : g.payload.kind === 'list';
   };
   async function validMainBlock(b) {
     if (b.parents.length !== 1 || zeroBits(b.hash) < CFG.difficulty) return false;
@@ -1560,7 +1584,16 @@ async function createEngine(o) {
     return st;
   }
   // fields: exactly one of pay, starter, post, view, vote, host, claim, name (see COIN), plus an optional memo.
-  async function submitTx(fields, signer = o.signer, onProgress) {
+  // One transaction at a time per key: the next one's sequence number depends on the one before (whose proof of
+  // work may take a while), so they queue up instead of racing for the same number.
+  const txQueues = new Map();
+  function submitTx(fields, signer = o.signer, onProgress) {
+    const prev = txQueues.get(signer.pub) || Promise.resolve();
+    const run = prev.catch(() => {}).then(() => submitTxNow(fields, signer, onProgress));
+    txQueues.set(signer.pub, run.catch(() => {}));
+    return run;
+  }
+  async function submitTxNow(fields, signer = o.signer, onProgress) {
     const from = signer.pub, st = pendingState(from);
     const body = { v: 2, kind: 'tx', from, seq: (st.seq.get(from) || 0) + 1, ts: Date.now(), nonce: 0 };
     const { memo, outs, ...act } = fields;
@@ -1847,7 +1880,7 @@ async function createEngine(o) {
   });
 }
 
-globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, MAIL, ORG, orgRoles, orderPreimage, courtPreimage, bindPreimage, retirePreimage, rekeyPreimage, SQUARE, SEAL, monthKey, squareMonths, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
+globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, domainOf, MAIL, ORG, orgRoles, orderPreimage, courtPreimage, bindPreimage, retirePreimage, rekeyPreimage, SQUARE, SEAL, monthKey, squareMonths, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
 })();
 </script>
 
@@ -3181,7 +3214,7 @@ function resolveName(full) {   // '@cooking' -> chain id, only if the claim was 
 }
 const nameLink = (full) => location.origin + location.pathname.replace(/[^/]*$/, '') + full;
 const copyText = (text, what = 'Link') => navigator.clipboard?.writeText(text).then(() => toast(`${what} copied`), () => prompt('Copy this:', text));
-const NAME_IN_PATH = /^([@~])([a-z0-9._-]{3,30})\/?$/i;
+const NAME_IN_PATH = /^(@@|[@~])([a-z0-9._-]{3,30})\/?$/i;
 function parseRoute() {
   const p = location.hash.replace(/^#\/?/, '').split('/');
   const fromHash = NAME_IN_PATH.exec(decodeURIComponent(p[0] || ''));
@@ -3193,6 +3226,8 @@ function parseRoute() {
   if (p[0] === 'explore') return { name: 'explore', tab: p[1] || 'trending' };
   if (p[0] === 'me') return { name: 'me' };
   if (p[0] === 'friends') return { name: 'friends' };
+  if (p[0] === 'you') return { name: 'you', tab: p[1] || 'profile' };
+  if (p[0] === 'u' && isKey(p[1])) return { name: 'user', key: p[1] };
   if (p[0] === 'messages') return { name: 'messages', with: isKey(p[1]) ? p[1] : null };
   if (p[0] === 'terms') return { name: 'terms' };
   if (p[0] === 'orgs') return { name: 'orgs' };
@@ -3214,7 +3249,8 @@ route = parseRoute();
 const startedAt = Date.now();
 function render(force) {
   updateStatus();
-  document.querySelectorAll('[data-nav]').forEach(a => a.classList.toggle('active', a.dataset.nav === route.name));
+  const navOf = ['wallet', 'friends', 'messages', 'you'].includes(route.name) || (route.name === 'user' && route.key === me.pub) ? 'you' : route.name === 'network' ? 'me' : route.name;
+  document.querySelectorAll('[data-nav]').forEach(a => a.classList.toggle('active', a.dataset.nav === navOf));
   const key = JSON.stringify(route);
   // Preserve focus/inputs on views with forms: only full re-render when route changes, otherwise refresh live parts.
   if (!force && key === routeKey && views[route.name].refresh) return views[route.name].refresh();
@@ -3259,10 +3295,11 @@ views.mine = { render() {
 } };
 views.named = { render() {
   const id = resolveName(route.full);
+  if (id && route.full.startsWith('@@')) { location.hash = '#/u/' + E.ledger.resolve(genesisFor(id).author); return h('div', { class: 'empty' }, 'Opening ' + route.full + '…'); }
   if (id) { route = { name: 'chain', id, tab: route.full[0] === '@' ? 'videos' : 'channels' }; queueMicrotask(() => render(true)); return h('div', { class: 'empty' }, 'Opening ' + route.full + '…'); }
   const synced = E.syncState?.(main)?.state === 'synced' || Date.now() - startedAt > 20000;
   return h('div', { class: 'empty' }, synced
-    ? [h('p', {}, `No ${route.full[0] === '@' ? 'channel' : 'list'} is called ${route.full}.`), h('p', {}, h('a', { href: '#/explore' }, 'Explore'), ' or ', h('a', { href: '#/me' }, 'create one'), ' and claim the name.')]
+    ? [h('p', {}, `No ${route.full.startsWith('@@') ? 'person' : route.full[0] === '@' ? 'channel' : 'list'} is called ${route.full}.`), h('p', {}, h('a', { href: '#/explore' }, 'Explore'), ' or ', h('a', { href: route.full.startsWith('@@') ? '#/you' : '#/you/channels' }, route.full.startsWith('@@') ? 'claim it for yourself' : 'create one'), '.')]
     : `Looking up ${route.full} on the main chain…`);
 } };
 // Forms that must survive re-renders while new blocks stream in (cleared when the route changes).
@@ -3270,7 +3307,41 @@ const kept = new Map();
 const keep = (key, make) => kept.get(key) || kept.set(key, make()).get(key);
 
 // ---- feed
+function homeTimeline() {   // videos and posts from what you subscribe to and who you follow, newest first
+  const out = [], keep_ = new Set([...settings.following, ...settings.friends.map(f => f.key)]);
+  for (const id of Object.keys(subs)) {
+    const d = chains.has(id) ? derive(id) : null; if (!d) continue;
+    if (d.kind === 'channel') { for (const b of d.videos) if (E.postPaid(b)) out.push({ ts: b.ts, kind: 'video', id, b }); for (const b of d.posts) out.push({ ts: b.ts, kind: 'cpost', id, b }); }
+    if (d.kind === 'group') for (const b of d.posts) if (!d.hidden.has(b.hash)) out.push({ ts: b.ts, kind: 'gpost', id, b });
+  }
+  const m = monthKey(Date.now()), sq = squareChain(m);
+  if (sq) { const d = derive(sq.id); for (const b of d.posts) if (!d.hidden.has(b.hash) && (keep_.has(E.ledger.resolve(b.author)) || isMine(b.author))) out.push({ ts: b.ts, kind: 'square', id: sq.id, m, b }); }
+  return out.sort((a, b) => b.ts - a.ts);
+}
+function timelineItem(x) {
+  const d = derive(x.id);
+  if (x.kind === 'video') { const card = videoCard(x.id, x.b); return card ? h('div', { class: 'item' }, h('div', { class: 'sub' }, '🎬 ', chainLink(x.id), ' posted a video · ', ago(x.ts)), h('div', { style: 'max-width:420px' }, card)) : null; }
+  if (x.kind === 'square') return squareItem(x.m, chains.get(x.id), x.b, d, false);
+  if (x.kind === 'gpost') return h('div', {}, h('div', { class: 'sub' }, '👥 in ', chainLink(x.id)), groupPost(x.id, d, x.b));
+  return h('div', { class: 'item' }, h('div', { class: 'sub' }, '📣 ', chainLink(x.id), ' · ', ago(x.ts)), rich(x.b.payload.text, d.owner));
+}
 views.home = { render() {
+  if ((settings.homeView || 'all') === 'all') {
+    const items = homeTimeline(), friendsBox = h('div');
+    (async () => {   // your friends' sealed posts, opened in this browser
+      try {
+        await ensureEncKey(); myTag = await tagOf(encPubB64);
+        const rows = [];
+        for (const f of settings.friends) { const id = circleOf(f.key); if (!id) continue; if (!chains.has(id)) E.requestChain(openChain(id)); const d = chains.has(id) ? derive(id) : null; for (const b of d?.sealed || []) if (!b.payload.target && Date.now() - b.ts < 30 * 86400000) { const x = await openBlock(chains.get(id), b); if (x) rows.push([b, x, f]); } }
+        rows.sort((a, z) => z[0].ts - a[0].ts);
+        friendsBox.replaceChildren(...rows.slice(0, 10).map(([b, x, f]) => h('div', { class: 'item' }, h('div', { class: 'sub' }, '🔒 ', personLink(f.key, f.name || keyName(f.key)), ' · friends only · ', ago(b.ts)), rich(x.text, b.author), x.image ? h('img', { src: x.image, style: 'max-width:100%;max-height:320px;border-radius:8px' }) : null)));
+      } catch {}
+    })();
+    return h('div', { style: 'max-width:820px' },
+      h('div', { class: 'row', style: 'justify-content:space-between' }, h('h2', { style: 'margin:0' }, 'Home'), viewChips('homeView', [['all', 'Everything'], ['videos', 'Videos']], () => render(true))),
+      squareChain(monthKey(Date.now())) ? squareComposer(squareChain(monthKey(Date.now())).id, null, 'Share something publicly…') : null,
+      h('div', { class: 'panel' }, friendsBox, items.length ? items.slice(0, 80).map(timelineItem) : h('div', { class: 'empty' }, h('p', {}, 'Nothing here yet.'), h('p', {}, 'Subscribe to channels and groups (', h('a', { href: '#/explore' }, 'Explore'), '), follow people, or add friends.'))));
+  }
   const ids = Object.keys(subs).filter(id => chains.has(id));
   const now = Date.now(), sc = new Map();
   const items = ids.flatMap(id => derive(id)?.kind === 'channel' ? derive(id).videos.filter(b => E.postPaid(b)).map(b => [id, b]) : []);
@@ -3280,7 +3351,7 @@ views.home = { render() {
   const liveNow = ids.flatMap(id => derive(id)?.kind === 'channel' ? derive(id).liveNow.map(lb => [id, lb]) : []);
   return h('div', {},
     liveNow.length ? h('div', {}, h('h2', { style: 'margin-top:0' }, 'Live now'), liveNow.map(([id, lb]) => liveBanner(id, lb))) : null,
-    h('h2', { style: liveNow.length ? '' : 'margin-top:0' }, 'Your feed'),
+    h('div', { class: 'row', style: 'justify-content:space-between' }, h('h2', { style: liveNow.length ? '' : 'margin-top:0' }, 'Videos'), viewChips('homeView', [['all', 'Everything'], ['videos', 'Videos']], () => render(true))),
     items.length ? viewChips('feedSort', [['hot', 'Hot'], ['new', 'Newest']], () => render(true)) : null,
     items.length ? h('div', { class: 'grid' }, items.slice(0, 200).map(([id, b]) => videoCard(id, b)))
       : h('div', { class: 'empty' }, h('p', {}, 'No videos from your subscriptions yet.'), h('p', {}, h('a', { href: '#/explore' }, 'Explore channels'), ' or ', h('a', { href: '#/me' }, 'create your own channel'), '.')));
@@ -3328,7 +3399,7 @@ function marketNew() {
   const days = h('input', { type: 'number', min: 1, max: MARKET.maxDays, value: 7, style: 'width:80px' });
   const contact = h('input', { type: 'text', maxLength: MARKET.contact, placeholder: 'How the buyer reaches you (email, site, shop link) — public' });
   const courts = [...E.directory.values(), ...[...E.childGenesis.values()].map(genesis => ({ genesis }))].filter(e => e.genesis.payload.kind === 'org').map(e => e.genesis);
-  const court = h('select', {}, h('option', { value: '' }, 'No escrow: I’m paid at once'), courts.map(g => h('option', { value: g.hash }, `Escrow, disputes heard by ${g.payload.name}${g.payload.jurisdiction ? ' (' + g.payload.jurisdiction + ')' : ''}`)));
+  const court = h('select', {}, h('option', { value: '' }, 'No escrow: I’m paid at once'), courts.map(g => h('option', { value: g.hash }, `Escrow, disputes arbitrated by ${g.payload.name}${g.payload.jurisdiction ? ' (' + g.payload.jurisdiction + ')' : ''}`)));
   const cat = h('select', {}, h('option', { value: '' }, 'Category (optional)'), AD_CATEGORIES.map(c => h('option', { value: c }, CAT_NAMES[c])));
   const tags = h('input', { type: 'text', placeholder: 'Tags (optional)' });
   const img = h('input', { type: 'file', accept: 'image/*' });
@@ -3364,7 +3435,7 @@ function escrowBox(id, L) {
   const court = E_.court ? (L.arbiter === E_.court ? L.org : null) : L.org;
   const fileWith = async (orgId, what, title, text) => { orgCh(orgId); await append(orgId, { type: 'submit', what, title, text, listing: id }); };
   const words = { held: `${fmtCoin(E_.amt)} coins held until ${new Date(E_.until).toLocaleDateString()}`, disputed: `${fmtCoin(E_.amt)} coins frozen: disputed${E_.appeals ? ` (on appeal, level ${E_.appeals + 1})` : ''}`,
-    ruled: `Ruled: the buyer gets ${Math.round(E_.buyerShare * 100)}%. Final on ${new Date(E_.until).toLocaleDateString()} unless appealed.`, released: 'Paid to the seller.', final: `Final: buyer received ${fmtCoin(E_.toBuyer || 0)}, seller the rest.` }[E_.state];
+    ruled: `Ruled: the buyer gets ${Math.round(E_.buyerShare * 100)}%. Final on ${new Date(E_.until).toLocaleDateString()} unless appealed to the next arbitration level.`, released: 'Paid to the seller.', final: `Final: buyer received ${fmtCoin(E_.toBuyer || 0)}, seller the rest.` }[E_.state];
   const why = h('input', { type: 'text', placeholder: 'What went wrong?', style: 'flex:1' });
   return h('div', { class: 'panel', style: 'margin:10px 0' }, h('div', {}, '🛡 ', words),
     party && E_.state === 'held' ? h('div', { class: 'row', style: 'margin-top:8px' },
@@ -3372,7 +3443,7 @@ function escrowBox(id, L) {
       why, h('button', { onclick: async () => { if (!why.value.trim()) return toast('Say what went wrong'); try { await fileWith(L.org, 'complaint', 'Dispute: ' + L.title, why.value.trim()); await sendTx({ dispute: { id } }, me.pub, st); } catch (e) { st.textContent = e.message; } } }, 'Open a dispute')) : null,
     party && E_.state === 'ruled' && genesisFor(L.org)?.payload.parent ? h('div', { class: 'row', style: 'margin-top:8px' }, why, h('button', { onclick: async () => {
       const up = genesisFor(court || L.org)?.payload.parent || genesisFor(L.org).payload.parent;
-      try { await fileWith(up, 'appeal', 'Appeal: ' + L.title, why.value.trim() || 'I appeal the ruling.'); await sendTx({ appeal: { id } }, me.pub, st); } catch (e) { st.textContent = e.message; } } }, 'Appeal to the court above')) : null, st);
+      try { await fileWith(up, 'appeal', 'Appeal: ' + L.title, why.value.trim() || 'I appeal the ruling.'); await sendTx({ appeal: { id } }, me.pub, st); } catch (e) { st.textContent = e.message; } } }, 'Appeal to the next arbitration level')) : null, st);
 }
 function marketItem(id) {
   const L = E.ledger.listings.get(id);
@@ -3391,11 +3462,11 @@ function marketItem(id) {
   return h('div', { class: 'split' },
     h('div', {}, L.image ? h('img', { src: L.image, style: 'max-width:100%;border-radius:12px' }) : h('div', { class: 'thumb', style: 'font-size:64px;display:grid;place-items:center;aspect-ratio:16/9' }, L.certs.length ? '🎟' : '🛍')),
     h('div', { class: 'panel' }, h('h2', { style: 'margin-top:0' }, L.title),
-      h('div', { class: 'sub' }, `${L.kind === 'auction' ? 'Auction' : 'Fixed price'} · listed by `, h('a', { href: `#/wallet/${L.seller}` }, keyName(L.seller)), ` · ${ago(L.ts)}`),
+      h('div', { class: 'sub' }, `${L.kind === 'auction' ? 'Auction' : 'Fixed price'} · listed by `, personLink(L.seller), ` · ${ago(L.ts)}`),
       h('div', { class: 'bal', style: 'margin:10px 0' }, fmtCoin(listingPrice(L)), h('span', { class: 'sub', style: 'font-size:14px' }, L.kind === 'auction' ? (L.high ? ` coins · high bid by ${keyName(L.high.by)} · ${L.bids} bid(s)` : ' coins starting bid') : ' coins')),
       L.kind === 'auction' ? h('div', { class: 'sub' }, L.state === 'open' ? endsText(L.ends) + ` (ends ${new Date(L.ends).toLocaleString()})` : '') : null,
       L.certs.length ? h('div', { class: 'panel', style: 'margin:10px 0' }, `🎟 ${L.certs.length} verified ad view${L.certs.length === 1 ? '' : 's'} of ${certAdv.map(advName).join(', ')}'s ads. They move to the buyer automatically and can be cashed in for ${fmtCoin(certVal)} coins, or sold back to the advertiser.`) : null,
-      L.about ? h('p', { class: 'pre' }, L.about) : null,
+      L.about ? rich(L.about, L.seller) : null,
       L.contact ? h('div', { class: 'sub' }, 'Contact: ', L.contact) : null,
       L.org ? h('div', { class: 'sub' }, '🛡 Payment held in escrow; disputes heard by ', chainLink(L.org), ` (released after ${L.hold || 14} days unless disputed).`) : null,
       escrowBox(id, L),
@@ -3460,14 +3531,14 @@ function squareComposer(chainId, target, placeholder) {
     catch (e) { st.textContent = 'Failed: ' + e.message; } finally { btn.disabled = false; }
   } }, target ? 'Reply' : 'Post');
   if (target) ta.onkeydown = (e) => { if (e.key === 'Enter') btn.click(); };
-  return h('div', { class: target ? 'row' : 'panel' }, ta, target ? btn : h('div', { class: 'row', style: 'margin-top:8px' }, btn, st, h('span', { class: 'sub' }, 'Public: anyone can read it, forever.')), target ? st : null);
+  return h('div', { class: target ? 'row' : 'panel' }, target ? null : fmtBar(ta), ta, target ? btn : h('div', { class: 'row', style: 'margin-top:8px' }, btn, st, h('span', { class: 'sub' }, 'Public: anyone can read it, forever.')), target ? st : null);
 }
 function squareItem(m, c, b, d, full) {
   const replies = [...c.blocks.values()].filter(x => x.payload.type === 'comment' && x.payload.target === b.hash && !d.hidden.has(x.hash)).sort((a, z) => a.ts - z.ts);
   const likes = votesOf(d, b.hash).up;
   return h('div', { class: 'item' },
-    h('div', {}, h('b', {}, b.payload.name || 'someone'), ' ', h('span', { class: 'fp' }, '·' + fp(b.author)), h('span', { class: 'sub' }, ' · ' + ago(b.ts))),
-    h('p', { class: 'pre', style: 'margin:4px 0' }, b.payload.text),
+    h('div', {}, h('b', {}, personLink(b.author, personName(E.ledger.resolve(b.author)) || b.payload.name || 'someone')), ' ', h('span', { class: 'fp' }, '·' + fp(b.author)), h('span', { class: 'sub' }, ' · ' + ago(b.ts))),
+    rich(b.payload.text, b.author),
     h('div', { class: 'row' },
       h('button', { class: 'small', disabled: isMine(b.author), title: `Like (pays ${fmtCoin(priceNow('like'))} coins to the author)`, onclick: async (e) => {
         e.target.disabled = true; try { const vb = await append(c.id, { type: 'vote', target: b.hash, v: 1 }); await payVote(c.id, vb, b.author); } catch (err) { toast('Like failed: ' + err.message); e.target.disabled = false; } } }, `👍 ${likes}`),
@@ -3555,11 +3626,27 @@ views.friends = { render() {
     for (const f of settings.friends) { const id = circleOf(f.key); if (id && !chains.has(id)) E.requestChain(openChain(id)); }
     if (mineId && !chains.has(mineId)) E.requestChain(openChain(mineId));
     const addIn = h('input', { type: 'text', placeholder: 'A friend’s user ID', style: 'flex:1' }), addName = h('input', { type: 'text', placeholder: 'Their name (for you)', style: 'width:180px' });
+    const findIn = h('input', { type: 'search', placeholder: 'Find people by name…', style: 'flex:1' }), found = h('div');
+    let loadedPages = false;
+    findIn.oninput = () => {
+      const q = findIn.value.trim().toLowerCase(); if (q.length < 2) return found.replaceChildren();
+      if (!loadedPages) {   // people's names are on their page chains (small): load them, then search again
+        loadedPages = true; let n = 0;
+        for (const [id, e] of E.directory) if (e.genesis.payload.kind === 'circle' && !chains.has(id) && n++ < 300) E.requestChain(openChain(id));
+        setTimeout(() => findIn.oninput(), 2000);
+      }
+      const people = [];
+      for (const [id, e] of E.directory) if (e.genesis.payload.kind === 'circle') { const k = E.ledger.resolve(e.genesis.author); const n = personName(k) || e.genesis.payload.name; if (k !== me.pub && n.toLowerCase().includes(q)) people.push([k, n]); }
+      found.replaceChildren(...(people.length ? people.slice(0, 20).map(([k, n]) => h('div', { class: 'row', style: 'justify-content:space-between' }, h('span', {}, personLink(k, n), ' ', h('span', { class: 'fp' }, '·' + fp(k))),
+        addFriendControl(k, n))) : [h('div', { class: 'sub' }, 'Nobody by that name yet.')]));
+    };
     const friendsBox = h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Your friends'),
       h('p', { class: 'sub', style: 'margin-top:0' }, 'Only the friends you add here can read what you post on your friends page. They see it when they add you too. Your user ID (give it to your friends): ', h('span', { class: 'mono' }, me.pub), ' ', h('button', { class: 'small', onclick: () => copyText(me.pub, 'User ID') }, 'Copy')),
+      h('div', { class: 'row', style: 'margin-bottom:8px' }, findIn), found,
       settings.friends.length ? settings.friends.map(f => h('div', { class: 'row', style: 'justify-content:space-between' },
-        h('span', {}, h('b', {}, f.name || 'friend'), ' ', h('span', { class: 'fp' }, '·' + fp(f.key)), circleOf(f.key) ? '' : h('span', { class: 'badge warn', style: 'margin-left:6px' }, 'hasn’t started a friends page yet')),
-        h('button', { class: 'small', onclick: () => { settings.friends = settings.friends.filter(x => x.key !== f.key); saveSettings(); render(true); } }, 'Remove'))) : h('div', { class: 'sub' }, 'No friends added yet.'),
+        h('span', {}, h('b', {}, personLink(f.key, f.name || keyName(f.key))), ' ', h('span', { class: 'fp' }, '·' + fp(f.key)), circleOf(f.key) ? '' : h('span', { class: 'badge warn', style: 'margin-left:6px' }, 'hasn’t started a page yet')),
+        h('div', { class: 'row' }, h('select', { style: 'width:auto', onchange: (e) => { f.level = e.target.value; saveSettings(); } }, settings.friendLevels.map(l => h('option', { value: l, selected: (f.level || 'friends') === l }, LEVEL_NAMES[l] || l))),
+          h('button', { class: 'small', onclick: () => { settings.friends = settings.friends.filter(x => x.key !== f.key); saveSettings(); render(true); } }, 'Remove')))) : h('div', { class: 'sub' }, 'No friends added yet.'),
       h('div', { class: 'row', style: 'margin-top:8px' }, addIn, addName, h('button', { onclick: () => {
         const k = addIn.value.trim(); if (!isKey(k) || k === me.pub) return toast('Paste your friend’s user ID (from their Friends page)');
         if (!settings.friends.some(f => f.key === k)) settings.friends.push({ key: k, name: addName.value.trim().slice(0, 60) });
@@ -3570,12 +3657,15 @@ views.friends = { render() {
       box.replaceChildren(h('h2', { style: 'margin-top:0' }, 'Friends'),
         h('div', { class: 'panel' }, h('p', {}, 'Your friends page is a chain only your friends can read: every post is encrypted to the friends you add, and they keep a copy for you. Start it once:'),
           h('button', { class: 'primary', onclick: async (e) => { e.target.disabled = true; st.textContent = 'Registering…';
-            try { await E.createGenesis({ type: 'genesis', kind: 'circle', name: settings.name.slice(0, LIMITS.name) || 'Friends', about: '', enc: encPubB64 }, me); toast('Your friends page is being registered. Back up your keys (My node) so you keep your encryption key.'); render(true); }
+            try { await ensureMyPage(); toast('Your page is being registered. Back up your keys (You → Keys & security) so you keep your encryption key.'); render(true); }
             catch (err) { st.textContent = err.message; e.target.disabled = false; } } }, 'Start my friends page'), ' ', st),
         friendsBox);
       return;
     }
     // compose (sealed to every friend who has a friends page)
+    const audience = h('select', { style: 'width:auto' }, h('option', { value: 'acquaintances' }, 'All friends'), h('option', { value: 'friends' }, 'Friends and close friends'), h('option', { value: 'close' }, 'Close friends only'));
+    const rank = { close: 0, friends: 1, acquaintances: 2 };
+    const chosen = () => settings.friends.filter(f => (rank[f.level || 'friends'] ?? 1) <= rank[audience.value] && encOf(f.key));
     const recips = settings.friends.map(f => encOf(f.key)).filter(Boolean);
     const ta = h('textarea', { placeholder: recips.length ? `Share with your ${recips.length} friend(s)…` : 'Add a friend first (they need a friends page too)', maxLength: LIMITS.text });
     const img = h('input', { type: 'file', accept: 'image/*' }), st = h('span', { class: 'sub' });
@@ -3583,9 +3673,10 @@ views.friends = { render() {
       if (!ta.value.trim()) return; post.disabled = true; st.textContent = 'Encrypting…';
       try {
         const image = img.files[0] ? await imageFileToDataUrl(img.files[0], 640) : undefined;
-        const to = settings.friends.filter(f => encOf(f.key)).map(f => f.key);
-        await append(mineId, { type: 'sealed', ...(await seal({ text: ta.value.trim(), ...(image ? { image } : {}), to: [me.pub, ...to], name: settings.name }, recips)) });
-        ta.value = ''; img.value = ''; st.textContent = `Sealed to ${recips.length} friend(s).`;
+        const pick = chosen(), to = pick.map(f => f.key);
+        if (!pick.length) throw new Error('nobody in that audience has a page yet');
+        await append(mineId, { type: 'sealed', ...(await seal({ text: ta.value.trim(), ...(image ? { image } : {}), to: [me.pub, ...to], name: settings.name }, pick.map(f => encOf(f.key)))) });
+        ta.value = ''; img.value = ''; st.textContent = `Sealed to ${pick.length} friend(s).`;
       } catch (e) { st.textContent = 'Failed: ' + e.message; } finally { post.disabled = false; }
     } }, 'Post to friends');
     // the feed: my page and my friends' pages, newest first, with sealed replies
@@ -3600,7 +3691,7 @@ views.friends = { render() {
       if (!x) { feed.append(h('div', { class: 'item sub' }, `🔒 A post by ${nameFor(b.author)} that isn’t shared with you · ${ago(b.ts)}`)); continue; }
       const replies = d.sealed.filter(r => r.payload.target === b.hash && !d.hidden.has(r.hash)).sort((a, z) => a.ts - z.ts);
       const rbox = h('div', { style: 'margin-left:18px' });
-      for (const r of replies) { const y = await openBlock(chains.get(id), r); rbox.append(h('div', { style: 'margin-top:6px' }, h('b', {}, nameFor(r.author)), h('span', { class: 'sub' }, ' · ' + ago(r.ts)), h('div', {}, y ? y.text : '🔒 not shared with you'))); }
+      for (const r of replies) { const y = await openBlock(chains.get(id), r); rbox.append(h('div', { style: 'margin-top:6px' }, h('b', {}, nameFor(r.author)), h('span', { class: 'sub' }, ' · ' + ago(r.ts)), y ? rich(y.text, r.author) : h('div', {}, '🔒 not shared with you'))); }
       const rin = h('input', { type: 'text', placeholder: 'Reply (sealed to the same friends)…', style: 'flex:1' });
       const rbtn = h('button', { class: 'small', onclick: async () => {
         const text = rin.value.trim(); if (!text) return; rbtn.disabled = true;
@@ -3610,13 +3701,13 @@ views.friends = { render() {
         } catch (e) { toast('Reply failed: ' + e.message); } finally { rbtn.disabled = false; }
       } }, 'Reply');
       feed.append(h('div', { class: 'item' }, h('div', {}, h('b', {}, nameFor(b.author)), h('span', { class: 'sub' }, ' · ' + ago(b.ts) + ` · shared with ${(x.to || []).length - 1} friend(s)`)),
-        h('p', { class: 'pre', style: 'margin:4px 0' }, x.text), x.image ? h('img', { src: x.image, style: 'max-width:100%;max-height:420px;border-radius:8px' }) : null,
+        rich(x.text, b.author), x.image ? h('img', { src: x.image, style: 'max-width:100%;max-height:420px;border-radius:8px' }) : null,
         b.author === me.pub ? h('button', { class: 'small', onclick: () => append(id, { type: 'hide', target: b.hash }) }, 'Delete') : null,
         rbox, h('div', { class: 'row', style: 'margin:6px 0 0 18px' }, rin, rbtn)));
     }
     if (!items.length) feed.append(h('div', { class: 'sub' }, 'Nothing yet. Posts from you and your friends show up here.'));
     box.replaceChildren(h('h2', { style: 'margin-top:0' }, 'Friends'),
-      h('div', { class: 'panel' }, ta, h('div', { class: 'row', style: 'margin-top:8px' }, img, post, st)), feed, friendsBox);
+      h('div', { class: 'panel' }, fmtBar(ta), ta, h('div', { class: 'row', style: 'margin-top:8px' }, audience, img, post, st)), feed, friendsBox);
   })().catch(e => box.replaceChildren(h('div', { class: 'empty' }, 'Friends page error: ' + e.message)));
   views.friends.refresh = () => { clearTimeout(views.friends.t); views.friends.t = setTimeout(() => { if (route.name === 'friends' && !document.activeElement?.matches?.('input,textarea')) render(true); }, 800); };
   return box;
@@ -3735,7 +3826,7 @@ views.orgs = { render() {
   const all = [...E.directory.values()].filter(e => e.genesis.payload.kind === 'org').map(e => e.genesis.hash);
   const name = h('input', { type: 'text', placeholder: 'Name', maxLength: LIMITS.name, style: 'flex:1' }), jur = h('input', { type: 'text', placeholder: 'Jurisdiction (optional), e.g. United States', style: 'flex:1' }), about = h('textarea', { placeholder: 'What it does (moderation, arbitration…)', maxLength: LIMITS.about }), st = h('span', { class: 'sub' });
   return h('div', { style: 'max-width:900px' }, h('h2', { style: 'margin-top:0' }, 'Organizations'),
-    h('p', { class: 'sub' }, 'Organizations moderate and arbitrate. Follow one to see what it flags (you choose what a flag does). Courts take filings, run cases and rule on marketplace disputes; jurisdictions nest, and appeals go up a level.'),
+    h('p', { class: 'sub' }, 'Organizations moderate and arbitrate. Follow one to see what it flags (you choose what a flag does). Arbitration bodies take filings, run cases and rule on marketplace disputes; they nest in levels, and appeals go to the next level up, inside the network.'),
     h('div', { class: 'grid' }, all.length ? all.map(channelCard) : h('div', { class: 'empty' }, 'No organizations yet.')),
     h('details', { class: 'panel', style: 'margin-top:14px' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Create an organization'),
       h('div', { class: 'row', style: 'margin-top:8px' }, name, jur), about, h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { class: 'primary', onclick: async () => {
@@ -3747,10 +3838,10 @@ views.orgs = { render() {
 views.terms = { render() {
   return h('div', { class: 'panel', style: 'max-width:760px' }, h('h2', { style: 'margin-top:0' }, 'Terms: arbitration'),
     h('p', {}, 'OpenTube is run by the people who use it; there is no company behind a transaction. By using it you agree to the following.'),
-    h('ol', {}, h('li', {}, 'Any dispute about a transaction made through OpenTube (a sale, an auction, a payment held in escrow) is resolved through the network’s arbitration: the court named on the listing, and on appeal the courts above it.'),
+    h('ol', {}, h('li', {}, 'Any dispute about a transaction made through OpenTube (a sale, an auction, a payment held in escrow) is resolved through the network’s own arbitration: the arbitration body named on the listing, and on appeal the levels above it. It is not a public court.'),
       h('li', {}, 'Filings, case dockets and orders are public records on the network. Don’t file anything you need to keep private.'),
-      h('li', {}, 'A ruling decides how coins held in escrow are split. When the appeal window (14 days) passes, or the highest court has ruled, that ruling is final as far as the network is concerned.'),
-      h('li', {}, 'Goods, services and payments outside the network are between the parties; the courts’ rulings and records are what the network provides.')),
+      h('li', {}, 'A ruling decides how coins held in escrow are split. When that body’s appeal window passes, or the highest level has ruled, the ruling is final as far as the network is concerned.'),
+      h('li', {}, 'Goods, services and payments outside the network are between the parties; the arbitrators’ rulings and records are what the network provides.')),
     h('p', { class: 'sub' }, 'This is a plain description of how the system works, not legal advice. Whether it binds you outside the network depends on where you live.'),
     h('button', { class: 'primary', onclick: () => { try { localStorage.setItem('opentube-terms', '1'); } catch {} $('#terms-banner').classList.add('hidden'); toast('Thanks'); } }, 'I agree'));
 } };
@@ -3843,7 +3934,7 @@ views.messages = { render() {
         await kv.set('identity', identity); await publishMsgKeys(); toast('New messaging key published');
       } }, 'New messaging key'));
     const thread = sel ? h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, nameFor(sel)), (convos.get(sel) || []).map(m => h('div', { style: `margin:6px 0;text-align:${m.dir === 'out' ? 'right' : 'left'}` },
-      h('span', { class: 'tagbox', style: `padding:6px 12px;${m.dir === 'out' ? 'background:var(--accent-soft, var(--panel-2))' : ''}` }, m.text), h('div', { class: 'sub' }, ago(m.at))))) : null;
+      h('span', { class: 'tagbox', style: `padding:6px 12px;display:inline-block;text-align:left;${m.dir === 'out' ? 'background:var(--accent-soft, var(--panel-2))' : ''}` }, ...inlineRich(m.text, m.from)), h('div', { class: 'sub' }, ago(m.at))))) : null;
     box.replaceChildren(h('h2', { style: 'margin-top:0' }, 'Messages'),
       h('p', { class: 'sub' }, 'End-to-end encrypted. On the network a message shows neither who sent it nor who it’s for: only the recipient can tell it’s theirs. Messages travel on a shared chain for each month.'),
       h('div', { class: 'split' }, h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Conversations'),
@@ -3854,6 +3945,172 @@ views.messages = { render() {
   views.messages.refresh = () => { clearTimeout(views.messages.t); views.messages.t = setTimeout(() => { if (route.name === 'messages' && !document.activeElement?.matches?.('input,textarea')) render(true); }, 1500); };
   return box;
 } };
+// ---------------------------------------------------------------- you: your identity, and profiles
+// Your identity (your personal key) is you: it owns your channels and coins, signs your posts, holds your friends and
+// messages. Your public profile lives on your page chain (the same chain as your friends page). "Devices" is separate:
+// the computers and folders that run the network for you.
+settings.following = settings.following || [];   // people whose public posts show in your Home feed
+settings.friendLevels = settings.friendLevels || ['close', 'friends', 'acquaintances'];
+const LEVEL_NAMES = { close: 'Close friends', friends: 'Friends', acquaintances: 'Acquaintances' };
+function youTabs(active) {
+  const tabs = [['profile', 'Profile', '#/you'], ['channels', 'Channels', '#/you/channels'], ['wallet', 'Wallet', '#/wallet'], ['friends', 'Friends', '#/friends'], ['messages', 'Messages', '#/messages'], ['keys', 'Keys & security', '#/you/keys'], ['settings', 'Settings', '#/you/settings']];
+  return h('div', {}, h('div', { class: 'row', style: 'gap:10px;margin-bottom:4px' }, avatar(myProfile().avatar, myProfile().name, 'sm'), h('h2', { style: 'margin:0' }, myProfile().name || settings.name), h('span', { class: 'fp' }, '·' + fp(me.pub))),
+    h('div', { class: 'tabs', style: 'flex-wrap:wrap;margin-top:6px' }, tabs.map(([k, l, href]) => h('a', { href, class: k === active ? 'active' : '' }, l))));
+}
+const myPage = () => circleOf(me.pub);
+function myProfile() { const id = myPage(); return (id && chains.has(id) ? derive(id).profile : null) || { name: settings.name, about: '', avatar: '' }; }
+async function ensureMyPage() {   // your page chain: created the first time you save a profile or start your friends page
+  let id = myPage(); if (id) return id;
+  await ensureEncKey();
+  const g = await E.createGenesis({ type: 'genesis', kind: 'circle', name: settings.name.slice(0, LIMITS.name) || 'Me', about: '', enc: encPubB64 }, me);
+  return g.hash;
+}
+// Add someone as a friend, choosing what kind of friend they are (which of your posts they can read), or change it.
+function addFriendControl(key, name) {
+  const f = settings.friends.find(x => x.key === key);
+  const sel = h('select', { style: 'width:auto' }, settings.friendLevels.map(l => h('option', { value: l, selected: (f?.level || 'friends') === l }, LEVEL_NAMES[l] || l)));
+  sel.onchange = () => { if (f) { f.level = sel.value; saveSettings(); toast(`${name || 'They'}: ${LEVEL_NAMES[sel.value] || sel.value}`); } };
+  return h('span', { class: 'row', style: 'gap:4px' }, sel, f ? h('button', { class: 'small on', title: 'Remove from friends', onclick: () => { settings.friends = settings.friends.filter(x => x.key !== key); saveSettings(); render(true); } }, 'Friend ✓')
+    : h('button', { class: 'small', onclick: () => { settings.friends.push({ key, name, level: sel.value }); saveSettings(); render(true); } }, '＋ Add friend'));
+}
+function personNamePanel() {   // claim @@yourname for your page
+  const id = myPage(), cur = id ? nameOf(id) : null;
+  const input = h('input', { type: 'text', placeholder: 'yourname', maxLength: 30, value: (cur || '').replace(/^@@/, ''), style: 'width:200px' }), st = h('span', { class: 'sub' });
+  const check = () => { const v = input.value.trim().toLowerCase(); input.value = v; const holder = E.ledger.names.get('@@' + v);
+    st.textContent = !v ? '' : !NAMES.re.test(v) || /[._-]{2}/.test(v) ? '3–30 characters: a–z, 0–9, and . _ - in the middle' : holder && holder.chain !== id ? `@@${v} is taken` : '@@' + v === cur ? 'This is your name' : `@@${v} is available`; };
+  input.oninput = check; check();
+  return h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Your name'),
+    h('p', { class: 'sub', style: 'margin-top:0' }, 'People are @@name, channels @name, lists ~name. Others can tag you in posts with your @@name, and ', h('span', { class: 'mono' }, nameLink('@@yourname')), ' opens your profile.'),
+    h('div', { class: 'row' }, h('span', {}, '@@'), input, h('button', { class: 'primary', onclick: async () => {
+      const v = input.value.trim().toLowerCase(); if (!NAMES.re.test(v)) return toast('Not a valid name');
+      st.textContent = 'Registering…';
+      try { const page = await ensureMyPage(); for (let i = 0; i < 120 && !E.directory.has(page); i++) await new Promise(r => setTimeout(r, 500));
+        await E.submitTx({ name: { space: '@@', chain: page, handle: v } }, me, (n) => { st.textContent = `Signing (anti-spam work: ${n.toLocaleString()} hashes)…`; }); st.textContent = `@@${v} is yours once the next block confirms it.`; }
+      catch (e) { st.textContent = 'Failed: ' + e.message; }
+    } }, cur ? 'Change' : 'Claim'), st), cur ? h('div', { class: 'row', style: 'margin-top:6px' }, h('a', { href: nameLink(cur) }, nameLink(cur)), h('button', { class: 'small', onclick: () => copyText(nameLink(cur)) }, 'Copy link')) : null);
+}
+function profileEditor() {
+  const pr = myProfile();
+  const name = h('input', { type: 'text', value: pr.name || settings.name, maxLength: LIMITS.name }), bio = h('textarea', { value: pr.about || '', maxLength: LIMITS.about, placeholder: 'About you' });
+  const loc = h('input', { type: 'text', value: pr.location || '', maxLength: 100, placeholder: 'City, country (optional)' }), pic = h('input', { type: 'file', accept: 'image/*' });
+  const links = [...(pr.links || [])], list = h('div');
+  const draw = () => list.replaceChildren(...links.map((l, i) => h('div', { class: 'row', style: 'justify-content:space-between' }, h('span', {}, '🔗 ', l.label, ' ', h('span', { class: 'sub' }, l.url)), h('button', { class: 'small', onclick: () => { links.splice(i, 1); draw(); } }, 'Remove'))));
+  draw();
+  const ll = h('input', { type: 'text', placeholder: 'Label', style: 'width:120px', maxLength: 40 }), lu = h('input', { type: 'text', placeholder: 'https://…', style: 'flex:1', maxLength: 300 }), st = h('span', { class: 'sub' });
+  return h('details', { class: 'panel' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Edit your profile'),
+    h('label', {}, 'Name'), name, h('label', {}, 'About'), bio, h('label', {}, 'Picture'), pic, h('label', {}, 'Location'), loc, h('label', {}, 'Links'), list,
+    h('div', { class: 'row', style: 'margin-top:6px' }, ll, lu, h('button', { class: 'small', onclick: () => { if (!/^https:\/\/\S+$/.test(lu.value.trim())) return toast('Links start with https://'); links.push({ label: (ll.value.trim() || new URL(lu.value.trim()).hostname).slice(0, 40), url: lu.value.trim() }); ll.value = lu.value = ''; draw(); } }, 'Add link')),
+    h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'primary', onclick: async () => {
+      st.textContent = 'Saving…';
+      try {
+        const id = await ensureMyPage(); for (let i = 0; i < 60 && !chains.has(id); i++) await new Promise(r => setTimeout(r, 500));
+        const p = { type: 'profile', name: name.value.trim() || settings.name, about: bio.value, location: loc.value.trim(), links, ...(pic.files[0] ? { avatar: await imageFileToDataUrl(pic.files[0], 160) } : {}) };
+        settings.name = p.name.slice(0, LIMITS.name); saveSettings();
+        await append(id, p); st.textContent = 'Saved. Your profile is public.';
+      } catch (e) { st.textContent = 'Failed: ' + e.message; }
+    } }, 'Save profile'), st));
+}
+function profileBody(key) {   // everything that belongs to an identity, tied together
+  key = E.ledger.resolve(key);
+  const pageId = circleOf(key); if (pageId && !chains.has(pageId)) E.requestChain(openChain(pageId));
+  const pr = (pageId && chains.has(pageId) ? derive(pageId).profile : null) || {};
+  const mine = key === me.pub;
+  const owned = [...new Set([...E.directory.keys(), ...mempool.keys(), ...E.childGenesis.keys()])].filter(id => { const g = genesisFor(id); return g && !['circle', 'case'].includes(g.payload.kind) && E.ledger.resolve(chains.get(id)?.owner || g.author) === key; });
+  for (const id of owned) if (!chains.has(id)) E.requestChain(openChain(id));
+  const channels = owned.filter(id => genesisFor(id).payload.kind === 'channel'), groups = owned.filter(id => genesisFor(id).payload.kind === 'group'), orgs = owned.filter(id => genesisFor(id).payload.kind === 'org');
+  const live = channels.flatMap(id => (derive(id)?.liveNow || []).map(lb => [id, lb]));
+  const videos = channels.flatMap(id => (derive(id)?.videos || []).filter(b => videoVisible(id, b)).map(b => [id, b])).sort((a, b) => b[1].ts - a[1].ts);
+  const posts = []; for (const c of chains.values()) if (c.genesis.payload.kind === 'square') for (const b of derive(c.id).posts) if (E.ledger.resolve(b.author) === key && !derive(c.id).hidden.has(b.hash)) posts.push([c.genesis.payload.month, c, b]);
+  posts.sort((a, b) => b[2].ts - a[2].ts);
+  const selling = [...E.ledger.listings].filter(([, L]) => E.ledger.resolve(L.seller) === key && L.state === 'open');
+  const roles = []; for (const e of [...E.directory.values(), ...[...E.childGenesis.values()].map(genesis => ({ genesis }))]) if (e.genesis.payload.kind === 'org') { const st = orgState(e.genesis.hash); for (const r of st?.roles.get(key) || []) roles.push([e.genesis.hash, r]); }
+  const isFriend = settings.friends.some(f => f.key === key), following = settings.following.includes(key);
+  const olderMonths = () => { for (const m of globalThis.OpenTubeCore.squareMonths()) squareChain(m); toast('Loading older months of public posts…'); };
+  const section = (title, body, empty) => h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, title), body && (!Array.isArray(body) || body.length) ? body : h('div', { class: 'sub' }, empty));
+  return h('div', {},
+    h('div', { class: 'panel row', style: 'gap:16px;align-items:flex-start' }, avatar(pr.avatar, pr.name || keyName(key)),
+      h('div', { style: 'flex:1;min-width:220px' }, h('h1', { style: 'margin:0' }, pr.name || keyName(key)), pageId && nameOf(pageId) ? h('div', {}, h('a', { href: nameLink(nameOf(pageId)), style: 'font-weight:600' }, nameOf(pageId))) : null, h('div', { class: 'fp' }, key),
+        pr.about ? h('p', { class: 'pre' }, pr.about) : null, pr.location ? h('div', { class: 'sub' }, '📍 ' + pr.location) : null,
+        (pr.links || []).length ? h('div', { class: 'row', style: 'gap:8px;margin-top:6px' }, pr.links.map(l => h('a', { class: 'tagbox', style: 'padding:4px 12px', href: l.url, target: '_blank', rel: 'noopener noreferrer nofollow' }, '🔗 ' + l.label))) : null,
+        roles.length ? h('div', { class: 'sub', style: 'margin-top:6px' }, roles.map(([o, r], i) => [i ? ' · ' : '', r === 'judge' ? 'arbitrator' : r, ' at ', chainLink(o)])) : null),
+      mine ? null : h('div', { class: 'row' },
+        h('a', { class: 'act', href: `#/messages/${key}` }, '✉ Message'),
+        h('button', { class: following ? 'on' : '', onclick: () => { if (following) settings.following = settings.following.filter(k => k !== key); else settings.following.push(key); saveSettings(); render(true); } }, following ? 'Following ✓' : 'Follow'),
+        addFriendControl(key, pr.name || ''),
+        h('a', { class: 'small', href: `#/wallet/${key}` }, 'Account'))),
+    live.length ? h('div', {}, h('h3', {}, '🔴 Live now'), live.map(([id, lb]) => liveBanner(id, lb))) : null,
+    section('Channels', channels.length ? h('div', { class: 'grid' }, channels.map(channelCard)) : null, 'No channels.'),
+    section('Recent videos', videos.length ? h('div', { class: 'grid' }, videos.slice(0, 12).map(([id, b]) => videoCard(id, b))) : null, 'No videos yet.'),
+    section('Public posts', posts.length ? [...posts.slice(0, 30).map(([m, c, b]) => squareItem(m, c, b, derive(c.id), false)), h('button', { class: 'small', onclick: olderMonths }, 'Load older months')] : [h('div', { class: 'sub' }, 'No public posts in the months this browser has loaded. '), h('button', { class: 'small', onclick: olderMonths }, 'Load older months')], ''),
+    section('Selling', selling.length ? h('div', { class: 'grid' }, selling.map(listingCard)) : null, 'Nothing for sale.'),
+    groups.length || orgs.length ? section('Groups & organizations', h('div', { class: 'grid' }, [...groups, ...orgs].map(channelCard)), '') : null);
+}
+views.user = { render() { return route.key === me.pub ? (location.hash = '#/you', h('div')) : profileBody(route.key); } };
+views.you = { render() {
+  const tab = route.tab;
+  if (tab === 'profile') return h('div', {}, youTabs('profile'), personNamePanel(), profileEditor(), profileBody(me.pub));
+  const all = views.me.render(true), panels = [...all.children].flatMap(el => el.classList.contains('split') ? [...el.children] : [el]);
+  const pick = (titles) => titles.map(t => panels.find(el => el.querySelector('h3')?.textContent === t)).filter(Boolean);
+  const sets = { channels: ['Your channels & lists', 'Create a channel or list'], keys: ['Keys & backup', 'Your user ID'], settings: ['Not interested', 'Subscriptions'] };
+  return h('div', {}, youTabs(tab), ...pick(sets[tab] || []),
+    tab === 'settings' ? h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Organizations you follow'), Object.keys(settings.orgs).length ? Object.keys(settings.orgs).map(id => h('div', {}, chainLink(id), ' ', h('a', { class: 'sub', href: `#/c/${id}/flags` }, 'what its flags do'))) : h('div', { class: 'sub' }, 'None. Follow organizations from their page (Orgs).')) : null,
+    tab === 'keys' ? h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Messaging keys'), h('p', { class: 'sub' }, 'Managed on the Messages tab: add a new one or retire one that may have leaked.'), h('a', { href: '#/messages' }, 'Open Messages')) : null);
+} };
+// ---------------------------------------------------------------- formatting (a safe subset; nothing is HTML)
+// **bold**, *italic*, `code`, lines starting with "- " are a list, [label](https://…) and bare https:// links.
+// Every link shows its domain's reputation and 👍/👎 (paid: up pays the author, down is burned).
+const { domainOf } = globalThis.OpenTubeCore;
+function linkChip(url, label, author) {
+  const dom = domainOf(url); if (!dom) return document.createTextNode(label);
+  const rep_ = E.ledger.domains.get(dom), voted = E.ledger.linkVotes.has(me.pub + '|' + url);
+  const vote = async (v, btn) => {
+    btn.disabled = true;
+    try { await E.submitTx({ linkvote: { url, domain: dom, v, ...(author ? { to: author } : {}), amt: priceNow('like') } }, me); toast(`${v > 0 ? '👍' : '👎'} ${dom}: confirms in the next block`); }
+    catch (e) { toast('Vote failed: ' + e.message); btn.disabled = false; }
+  };
+  return h('span', { class: 'linkchip' }, h('a', { href: url, target: '_blank', rel: 'noopener noreferrer nofollow ugc' }, label),
+    h('span', { class: 'sub', title: `${dom}: ${rep_?.up || 0} up, ${rep_?.down || 0} down across the network` }, ` ${dom} ${rep_ ? (rep_.up - rep_.down >= 0 ? '+' : '') + (rep_.up - rep_.down) : ''}`),
+    voted ? null : [h('button', { class: 'tagx', title: `Good link (pays ${fmtCoin(priceNow('like'))} coins to whoever shared it)`, onclick: (e) => vote(1, e.target) }, '👍'), h('button', { class: 'tagx', title: `Bad link (costs ${fmtCoin(priceNow('like'))} coins, burned)`, onclick: (e) => vote(-1, e.target) }, '👎')]);
+}
+function inlineRich(text, author) {   // -> array of nodes
+  const out = [], re = /\[([^\]\n]{1,80})\]\((https?:\/\/[^\s)]{1,300})\)|(https?:\/\/[^\s<>()]{2,300})|\*\*([^*\n]{1,200})\*\*|\*([^*\n]{1,200})\*|`([^`\n]{1,200})`|(^|[^\w@#])(@@|@|~|#)([a-z0-9][a-z0-9._-]{1,29})/gi;
+  let last = 0, m;
+  while ((m = re.exec(text))) {
+    if (m.index > last) out.push(document.createTextNode(text.slice(last, m.index)));
+    if (m[1]) out.push(linkChip(m[2], m[1], author));
+    else if (m[3]) { const url = m[3].replace(/[.,;:!?]+$/, ''); out.push(linkChip(url, url.replace(/^https?:\/\//, '').slice(0, 60), author)); if (url.length < m[3].length) out.push(document.createTextNode(m[3].slice(url.length))); }
+    else if (m[4]) out.push(h('b', {}, m[4]));
+    else if (m[5]) out.push(h('i', {}, m[5]));
+    else if (m[6]) out.push(h('code', {}, m[6]));
+    else if (m[8]) {   // #tag, @channel, ~list, @@person
+      if (m[7]) out.push(document.createTextNode(m[7]));
+      const sig = m[8], word = m[9].toLowerCase().replace(/[._-]+$/, ''), rest = m[9].slice(word.length);
+      if (sig === '#') out.push(TAG_RE.test(word) ? h('a', { class: 'tag', href: `#/tag/${word}` }, '#' + word) : document.createTextNode('#' + m[9]));
+      else { const id = resolveName(sig + word); out.push(id ? h('a', { class: 'person', style: 'font-weight:600', href: sig === '@@' ? `#/u/${E.ledger.resolve(genesisFor(id).author)}` : `#/c/${id}` }, sig + word) : h('span', { title: 'not a registered name (yet)' }, sig + word)); }
+      if (rest) out.push(document.createTextNode(rest));
+    }
+    last = re.lastIndex;
+  }
+  if (last < text.length) out.push(document.createTextNode(text.slice(last)));
+  return out;
+}
+function rich(text, author, tag = 'div') {   // a formatted block of user text
+  const box = h(tag, { class: 'rich' }); let list = null;
+  for (const line of String(text || '').split('\n')) {
+    if (/^\s*[-*] /.test(line)) { if (!list) { list = h('ul'); box.append(list); } list.append(h('li', {}, ...inlineRich(line.replace(/^\s*[-*] /, ''), author))); continue; }
+    list = null; box.append(h('div', {}, ...(line ? inlineRich(line, author) : [h('br')])));
+  }
+  return box;
+}
+function fmtBar(ta) {   // B / I / link / list buttons for a text box
+  const wrap = (a, b, ph) => { const s0 = ta.selectionStart ?? ta.value.length, e0 = ta.selectionEnd ?? s0, sel = ta.value.slice(s0, e0) || ph; ta.setRangeText(a + sel + b, s0, e0, 'end'); ta.focus(); };
+  return h('div', { class: 'row', style: 'gap:4px;margin:4px 0' },
+    h('button', { class: 'small', type: 'button', title: 'Bold', onclick: () => wrap('**', '**', 'bold') }, h('b', {}, 'B')),
+    h('button', { class: 'small', type: 'button', title: 'Italic', onclick: () => wrap('*', '*', 'italic') }, h('i', {}, 'I')),
+    h('button', { class: 'small', type: 'button', title: 'Link', onclick: () => { const u = prompt('Link address (https://…)'); if (u && /^https?:\/\//.test(u)) wrap('[', `](${u})`, 'link text'); } }, '🔗'),
+    h('button', { class: 'small', type: 'button', title: 'List item', onclick: () => wrap((ta.value && !ta.value.endsWith('\n') ? '\n' : '') + '- ', '', 'item') }, '• list'),
+    h('span', { class: 'sub' }, '**bold** *italic* [text](https://…) #tag @channel @@person'));
+}
 views.tag = { render() {
   const t = route.tag, found = [];
   for (const c of chains.values()) {
@@ -3861,12 +4118,15 @@ views.tag = { render() {
     for (const b of derive(c.id)?.videos || []) if ((b.payload.tags || []).includes(t) && videoVisible(c.id, b)) found.push([c.id, b]);
   }
   found.sort((a, b) => b[1].ts - a[1].ts);
-  const muted = mutedTag(t);
+  const muted = mutedTag(t), tagged = [], tagRe = new RegExp('(^|[^\\w#])#' + t + '(?![\\w-])', 'i');
+  for (const c of chains.values()) if (['square', 'group'].includes(c.genesis.payload.kind)) for (const b of derive(c.id).posts) if (tagRe.test(b.payload.text || '') && !derive(c.id).hidden.has(b.hash)) tagged.push([c, b]);
+  tagged.sort((a, b) => b[1].ts - a[1].ts);
   return h('div', {},
     h('div', { class: 'row', style: 'justify-content:space-between' }, h('h2', { style: 'margin:0' }, '#' + t),
       h('button', { class: 'small', onclick: () => setMuted('tags', t, !muted) }, muted ? 'Show this tag again' : 'Not interested')),
     h('p', { class: 'sub' }, muted ? 'You said you’re not interested in this tag, so its videos and ads are hidden elsewhere.' : 'Videos with this tag on the channels this browser knows. Subscribe to more channels to see more.'),
-    found.length ? h('div', { class: 'grid' }, found.map(([c, b]) => muted ? videoCardRaw(c, b) : videoCard(c, b))) : h('div', { class: 'empty' }, 'No videos with this tag yet.'));
+    found.length ? h('div', { class: 'grid' }, found.map(([c, b]) => muted ? videoCardRaw(c, b) : videoCard(c, b))) : h('div', { class: 'empty' }, 'No videos with this tag yet.'),
+    tagged.length ? h('div', { class: 'panel', style: 'margin-top:14px' }, h('h3', { style: 'margin-top:0' }, 'Posts'), tagged.slice(0, 50).map(([c, b]) => c.genesis.payload.kind === 'square' ? squareItem(c.genesis.payload.month, c, b, derive(c.id), false) : groupPost(c.id, derive(c.id), b))) : null);
 } };
 const videoCardRaw = (c, b) => { const m = settings.muted.tags; settings.muted.tags = []; try { return videoCard(c, b); } finally { settings.muted.tags = m; } };
 function interestsPanel() {
@@ -4193,7 +4453,7 @@ views.livewatch = {
 const TAB_LABEL = { golive: '● Go live', upload: '＋ Upload' };
 function groupPost(id, d, b) {
   const comments = d.commentsFor(b.hash).filter(x => !d.hidden.has(x.hash)).sort((a, z) => a.ts - z.ts);
-  const who = (x) => x.author === d.owner ? d.profile.name + ' (owner)' : (x.payload.name || 'member') + ' ·' + fp(x.author);
+  const who = (x) => x.author === d.owner ? d.profile.name + ' (owner)' : personLink(x.author, (personName(E.ledger.resolve(x.author)) || x.payload.name || 'member') + ' ·' + fp(x.author));
   const box = h('input', { type: 'text', placeholder: 'Reply…', maxLength: LIMITS.comment, style: 'flex:1' });
   const can = d.canComment(me.pub, b.hash) || isMine(d.owner);
   const send = async () => { const t = box.value.trim(); if (!t) return; box.disabled = true; try { await append(id, { type: 'comment', target: b.hash, text: t, name: settings.name.slice(0, LIMITS.name) }); box.value = ''; } catch (e) { toast(e.message); } finally { box.disabled = false; } };
@@ -4202,11 +4462,11 @@ function groupPost(id, d, b) {
   return h('div', { class: 'item' },
     h('div', { class: 'row', style: 'justify-content:space-between' }, h('div', {}, h('b', {}, who(b)), h('span', { class: 'sub' }, ' · ' + ago(b.ts))),
       (isMine(b.author) || isMine(d.owner)) ? h('button', { class: 'small', onclick: () => append(id, { type: 'hide', target: b.hash }) }, 'Hide') : null),
-    h('p', { class: 'pre' }, b.payload.text), b.payload.image ? h('img', { src: b.payload.image, style: 'max-width:100%;max-height:360px;border-radius:8px' }) : null,
+    rich(b.payload.text, b.author), b.payload.image ? h('img', { src: b.payload.image, style: 'max-width:100%;max-height:360px;border-radius:8px' }) : null,
     h('div', { class: 'row' }, h('button', { class: 'small', disabled: isMine(b.author), title: `Like (pays ${fmtCoin(priceNow('like'))} coins to the author)`, onclick: async (e) => {
       e.target.disabled = true; try { const vb = await append(id, { type: 'vote', target: b.hash, v: 1 }); await payVote(id, vb, b.author); } catch (err) { toast('Like failed: ' + err.message); e.target.disabled = false; } } }, `👍 ${likes}`),
       h('span', { class: 'sub' }, `${comments.length} repl${comments.length === 1 ? 'y' : 'ies'}`)),
-    comments.map(x => h('div', { style: 'margin:6px 0 0 18px' }, h('b', {}, who(x)), h('span', { class: 'sub' }, ' · ' + ago(x.ts)), h('div', {}, x.payload.text))),
+    comments.map(x => h('div', { style: 'margin:6px 0 0 18px' }, h('b', {}, who(x)), h('span', { class: 'sub' }, ' · ' + ago(x.ts)), rich(x.payload.text, x.author))),
     can ? h('div', { class: 'row', style: 'margin:6px 0 0 18px' }, box, h('button', { class: 'small', onclick: send }, 'Reply')) : null);
 }
 const chainTab = {
@@ -4222,7 +4482,7 @@ const chainTab = {
           ta.value = ''; img.value = ''; st.textContent = '';
         } catch (e) { st.textContent = 'Failed: ' + e.message; } finally { btn.disabled = false; }
       } }, 'Post');
-      return h('div', { class: 'panel' }, ta, h('div', { class: 'row', style: 'margin-top:8px' }, img, btn, st));
+      return h('div', { class: 'panel' }, fmtBar(ta), ta, h('div', { class: 'row', style: 'margin-top:8px' }, img, btn, st));
     }) : h('div', { class: 'panel sub' }, d.profile.join === 'approved' ? `Only approved members can post here. Send the owner your user ID to be approved: ${me.pub}` : 'You can’t post in this group.');
     return h('div', {}, composer, d.posts.length ? h('div', { class: 'panel' }, d.posts.map(b => groupPost(id, d, b))) : h('div', { class: 'empty' }, 'No posts yet. Say hello!'));
   },
@@ -4270,7 +4530,7 @@ const chainTab = {
     return h('div', { class: 'panel' }, h('p', { class: 'pre' }, d.profile.about || 'No description.'),
       d.profile.location ? h('div', { class: 'sub' }, '📍 ', d.profile.location) : null,
       links.length ? h('div', { class: 'row', style: 'gap:8px;margin-top:8px;flex-wrap:wrap' }, links.map(l => h('a', { class: 'tagbox', style: 'padding:4px 12px', href: l.url, target: '_blank', rel: 'noopener noreferrer nofollow' }, '🔗 ' + l.label))) : null,
-      owner && owner !== d.owner ? h('div', { class: 'sub', style: 'margin-top:8px' }, 'Owned by ', h('a', { href: `#/wallet/${owner}` }, keyName(owner)), ' (coins paid to this channel go to them)') : null,
+      owner && owner !== d.owner ? h('div', { class: 'sub', style: 'margin-top:8px' }, 'Owned by ', personLink(owner), ' (coins paid to this channel go to them)') : null,
       h('div', { class: 'kv', style: 'margin-top:16px' },
         h('div', {}, 'Chain ID'), h('div', { class: 'mono' }, id),
         h('div', {}, 'Channel key'), h('div', { class: 'mono' }, d.owner),
@@ -4531,10 +4791,10 @@ views.watch = {
         if (hidden && !isMine(cb.author) && !isMine(dd.owner)) return null;
         const canHide = !hidden && (isMine(dd.owner) || isMine(cb.author));
         return h('div', { class: 'item' + (hidden ? ' hidden-item' : '') },
-          h('b', {}, cb.author === dd.owner ? dd.profile.name : (cb.payload.name || 'anon')), ' ', h('span', { class: 'fp' }, '·' + fp(cb.author)),
+          h('b', {}, cb.author === dd.owner ? dd.profile.name : personLink(cb.author, personName(E.ledger.resolve(cb.author)) || cb.payload.name || 'anon')), ' ', h('span', { class: 'fp' }, '·' + fp(cb.author)),
           cb.author === dd.owner ? h('span', { class: 'badge ok', style: 'margin-left:6px' }, 'owner') : null,
           h('span', { class: 'sub' }, ' · ' + ago(cb.ts)), hidden ? h('span', { class: 'badge', style: 'margin-left:6px' }, 'hidden') : null,
-          h('p', {}, cb.payload.text),
+          rich(cb.payload.text, cb.author, 'p'),
           h('button', { class: 'small', title: isMine(cb.author) ? 'Likes on your comment pay you' : `Like this comment (pays ${fmtCoin(priceNow('like'))} coins to its author)`, disabled: isMine(cb.author), onclick: async (e) => {
             e.target.disabled = true;
             try { const vb = await append(id, { type: 'vote', target: cb.hash, v: 1 }); await payVote(id, vb, cb.author); } catch (err) { toast('Like failed: ' + err.message); e.target.disabled = false; }
@@ -4592,7 +4852,7 @@ views.watch = {
         fl.length ? h('div', { class: 'panel', style: 'margin-top:8px;border-color:var(--warn)' }, '⚑ Flagged as ', flagText(fl)) : null,
         (v.tags || []).length ? h('div', { class: 'row', style: 'margin-top:8px;gap:6px' }, v.tags.map(t => h('span', { class: 'tagbox' }, tagLink(t),
           isMine(d.owner) ? null : h('button', { class: 'tagx', title: `Not interested in #${t}: hide videos with this tag (kept in this browser only)`, onclick: () => { setMuted('tags', t, true); toast(`You won’t see videos or ads tagged #${t}. Undo under My node → Not interested.`); } }, '✕')))) : null,
-        h('div', { class: 'panel', style: 'margin-top:12px' }, h('p', { class: 'pre', style: 'margin:0' }, v.desc || 'No description.')),
+        h('div', { class: 'panel', style: 'margin-top:12px' }, v.desc ? rich(v.desc, d.owner) : h('p', { class: 'sub', style: 'margin:0' }, 'No description.')),
         h('div', { class: 'row', style: 'justify-content:space-between;margin:18px 0 8px' }, h('h3', { style: 'margin:0' }, 'Comments'), policySel),
         h('div', { class: 'row' }, box, postBtn, postStatus), comments),
       h('aside', {}, h('h3', { style: 'margin-top:0' }, 'More from this channel'), h('div', { style: 'display:grid;gap:12px' }, others.map(x => videoCard(id, x)))));
@@ -5014,25 +5274,28 @@ Object.assign(chainTab, {
   courts(id, d) {   // the jurisdiction tree: this org's parent and its sub-jurisdictions
     const st = orgState(id), parent = genesisFor(id)?.payload.parent;
     const name = h('input', { type: 'text', placeholder: 'Name, e.g. Superior Court of Los Angeles County', style: 'flex:1' }), jur = h('input', { type: 'text', placeholder: 'Jurisdiction, e.g. United States › California › Los Angeles County', style: 'flex:1' }), cst = h('span', { class: 'sub' });
-    return h('div', { class: 'panel' }, h('p', { class: 'sub', style: 'margin-top:0' }, 'Jurisdictions nest like the places they serve. Appeals from a court go to the court above it.'),
+    return h('div', { class: 'panel' }, h('p', { class: 'sub', style: 'margin-top:0' }, 'Arbitration levels nest (for example by region). Appeals stay inside the network: they go to the next level up, with more senior arbitrators. The coins stay held until a ruling stands.'),
       parent ? h('div', {}, 'Above: ', chainLink(parent)) : h('div', { class: 'sub' }, 'This is a top-level organization.'),
       d.profile.jurisdiction ? h('div', { class: 'sub' }, 'Jurisdiction: ', d.profile.jurisdiction) : null,
       h('h4', {}, 'Below'), st.courts.length ? st.courts.map(g => h('div', {}, chainLink(g.hash), h('span', { class: 'sub' }, ' · ' + (g.payload.jurisdiction || '')))) : h('div', { class: 'sub' }, 'None.'),
       isMine(d.owner) ? h('div', { style: 'margin-top:10px' }, h('div', { class: 'row' }, name, jur), h('div', { class: 'row', style: 'margin-top:6px' }, h('button', { onclick: async () => {
         if (!name.value.trim()) return toast('Name it'); cst.textContent = 'Creating…';
         try { await createSubCourt(id, name.value.trim(), jur.value.trim()); cst.textContent = 'Created. It will appear here when its block is in.'; } catch (e) { cst.textContent = 'Failed: ' + e.message; }
-      } }, 'Add a court below this one'), cst)) : null);
+      } }, 'Add a level below this one'), cst)) : null);
   },
   people(id, d) {
     const st = orgState(id), mine = isMine(d.owner);
-    const key = h('input', { type: 'text', placeholder: 'User ID', style: 'flex:1' }), role = h('select', { style: 'width:auto' }, ORG.roles.map(r => h('option', { value: r }, r))), pst = h('span', { class: 'sub' });
+    const key = h('input', { type: 'text', placeholder: 'User ID', style: 'flex:1' }), role = h('select', { style: 'width:auto' }, ORG.roles.map(r => h('option', { value: r }, r === 'judge' ? 'arbitrator' : r))), pst = h('span', { class: 'sub' });
+    const days = h('input', { type: 'number', min: 0, max: 365, value: E.ledger.appealDays.get(d.owner) ?? ORG.appealDays, style: 'width:90px' });
     const setRole = async (k, r, on) => {
       await append(id, { type: 'role', key: k, role: r, on });
       if (r === 'judge') await E.submitTx({ judge: { key: k, on } }, signerFor(d.owner)).catch(e => toast('Ledger: ' + e.message));   // judges may rule on escrow for this court
     };
     return h('div', { class: 'panel' }, h('div', { class: 'kv' }, h('div', {}, 'Owner'), h('div', {}, keyName(ownerIdentity(id) || d.owner)),
-      ...[...st.roles].filter(([, r]) => r.size).flatMap(([k, r]) => [h('div', {}, [...r].join(', ')), h('div', {}, h('a', { href: `#/wallet/${k}` }, keyName(k)), mine ? [...r].map(x => h('button', { class: 'small', style: 'margin-left:6px', onclick: () => setRole(k, x, false) }, 'remove ' + x)) : null)])),
-      mine ? h('div', { class: 'row', style: 'margin-top:10px' }, key, role, h('button', { onclick: async () => { if (!isKey(key.value.trim())) return toast('Paste a user ID'); try { await setRole(key.value.trim(), role.value, true); key.value = ''; pst.textContent = 'Done.'; } catch (e) { pst.textContent = e.message; } } }, 'Give role'), pst) : null);
+      ...[...st.roles].filter(([, r]) => r.size).flatMap(([k, r]) => [h('div', {}, [...r].map(x => x === 'judge' ? 'arbitrator' : x).join(', ')), h('div', {}, personLink(k), mine ? [...r].map(x => h('button', { class: 'small', style: 'margin-left:6px', onclick: () => setRole(k, x, false) }, 'remove ' + (x === 'judge' ? 'arbitrator' : x))) : null)])),
+      mine ? h('div', { class: 'row', style: 'margin-top:10px' }, key, role, h('button', { onclick: async () => { if (!isKey(key.value.trim())) return toast('Paste a user ID'); try { await setRole(key.value.trim(), role.value, true); key.value = ''; pst.textContent = 'Done.'; } catch (e) { pst.textContent = e.message; } } }, 'Give role'), pst) : null,
+      h('div', { class: 'row', style: 'margin-top:10px' }, h('span', {}, 'Appeal window for this arbitration body’s rulings:'), mine ? days : h('b', {}, String(E.ledger.appealDays.get(d.owner) ?? ORG.appealDays)), h('span', {}, 'days'),
+        mine ? h('button', { class: 'small', onclick: () => E.submitTx({ courtcfg: { appealDays: Math.max(0, Math.min(365, Number(days.value) | 0)) } }, signerFor(d.owner)).then(() => toast('Saved on the ledger'), e => toast(e.message)) }, 'Save') : null));
   },
   docket(id, d) {   // a case
     const c = chains.get(id), g = c.genesis, court = g.payload.parent, cst = orgState(court) || (orgCh(court), null);
@@ -5048,13 +5311,13 @@ Object.assign(chainTab, {
       h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Docket'), items.length ? items.map(b => {
         const p = b.payload;
         if (p.type === 'status') return h('div', { class: 'item sub' }, `Status → ${p.state}`, p.note ? ' · ' + p.note : '', ' · ' + ago(b.ts));
-        if (p.type === 'order') return h('div', { class: 'item' }, h('span', { class: 'badge ok' }, 'order'), ' ', h('b', {}, p.title), h('span', { class: 'sub' }, ` · signed by judge ${keyName(p.judge)} · ${ago(b.ts)}`), p.buyerShare !== undefined ? h('div', {}, `Buyer receives ${Math.round(p.buyerShare * 100)}% of the held coins.`) : null, h('p', { class: 'pre', style: 'margin:4px 0' }, p.text));
+        if (p.type === 'order') return h('div', { class: 'item' }, h('span', { class: 'badge ok' }, 'order'), ' ', h('b', {}, p.title), h('span', { class: 'sub' }, ` · signed by arbitrator ${keyName(p.judge)} · ${ago(b.ts)}`), p.buyerShare !== undefined ? h('div', {}, `Buyer receives ${Math.round(p.buyerShare * 100)}% of the held coins.`) : null, h('p', { class: 'pre', style: 'margin:4px 0' }, p.text));
         return h('div', { class: 'item' }, h('span', { class: 'badge' }, p.what), ' ', h('b', {}, p.title), h('span', { class: 'sub' }, ` · by ${keyName(p.by)} · ${ago(b.ts)}`), p.text ? h('p', { class: 'pre', style: 'margin:4px 0' }, p.text) : null);
       }) : h('div', { class: 'sub' }, 'Nothing on the docket yet.')),
       clerk ? h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Clerk'), h('div', { class: 'row' }, status, note, h('button', { onclick: () => append(id, { type: 'status', state: status.value, ...(note.value.trim() ? { note: note.value.trim() } : {}) }) }, 'Set status')),
-        orders.map(b => h('div', { class: 'row', style: 'margin-top:8px' }, h('span', {}, 'Signed order from judge ', keyName(b.payload.judge || b.author), ': ', h('b', {}, b.payload.title)), h('button', { class: 'small primary', onclick: () => append(id, { type: 'order', title: b.payload.title, text: b.payload.text, judge: b.payload.judge || b.author, sig: b.payload.sig, ...(b.payload.buyerShare !== undefined ? { buyerShare: b.payload.buyerShare } : {}) }) }, 'Enter on the docket'))),
+        orders.map(b => h('div', { class: 'row', style: 'margin-top:8px' }, h('span', {}, 'Signed order from arbitrator ', keyName(b.payload.judge || b.author), ': ', h('b', {}, b.payload.title)), h('button', { class: 'small primary', onclick: () => append(id, { type: 'order', title: b.payload.title, text: b.payload.text, judge: b.payload.judge || b.author, sig: b.payload.sig, ...(b.payload.buyerShare !== undefined ? { buyerShare: b.payload.buyerShare } : {}) }) }, 'Enter on the docket'))),
         h('p', { class: 'sub' }, 'You hold this case’s key. To hand the case to another clerk, export it (Manage → Export key).')) : null,
-      judge ? h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Judge: write an order'), ot, ox, h('div', { class: 'row', style: 'margin-top:6px' }, L?.escrow ? share : null, h('button', { class: 'primary', onclick: async () => {
+      judge ? h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Arbitrator: write an order'), ot, ox, h('div', { class: 'row', style: 'margin-top:6px' }, L?.escrow ? share : null, h('button', { class: 'primary', onclick: async () => {
         if (!ot.value.trim()) return toast('Title the order');
         const x = { title: ot.value.trim(), text: ox.value.trim(), ...(L?.escrow && share.value !== '' ? { buyerShare: Math.max(0, Math.min(100, Number(share.value))) / 100 } : {}) };
         ost.textContent = 'Signing…';
@@ -5064,7 +5327,7 @@ Object.assign(chainTab, {
             const courtKey = L.escrow.court || L.arbiter;
             await E.submitTx({ rule: { id: g.payload.listing, buyerShare: x.buyerShare } }, ownedSigners.get(courtKey) || me);
           }
-          ost.textContent = 'Signed and sent to the clerk' + (x.buyerShare !== undefined ? '; the ruling on the held coins is on the ledger (14 days to appeal).' : '.');
+          ost.textContent = 'Signed and sent to the clerk' + (x.buyerShare !== undefined ? `; the ruling on the held coins is on the ledger (${E.ledger.appealDays.get(L.escrow.court || L.arbiter) ?? ORG.appealDays} days to appeal to the next arbitration level).` : '.');
         } catch (e) { ost.textContent = 'Failed: ' + e.message; }
       } }, 'Sign order'), ost)) : null);
   }
@@ -5156,8 +5419,14 @@ function sponsorPanel(id, d) {
 // ---- wallet
 const fmtTok = (n) => Number(n).toLocaleString();
 // A human name for any key: you, one of your channels, or a registered channel/list owned by it.
+function personName(key) {   // the name on someone's public profile (their page chain), if they set one
+  const id = circleOf(key); if (!id) return null;
+  return (chains.has(id) ? derive(id)?.profile.name : null) || genesisFor(id)?.payload.name || null;
+}
+const personLink = (key, text) => h('a', { href: `#/u/${E.ledger.resolve(key)}`, class: 'person' }, text || keyName(key));
 function keyName(key) {
   if (key === me.pub) return 'You';
+  const k = E.ledger?.resolve(key) || key, pn = personName(k); if (pn) return pn;
   for (const g of [...E.directory.values()].map(e => e.genesis).concat([...mempool.values()])) if (g.author === key) return g.payload.name;
   return 'User ' + fp(key);
 }
@@ -5522,7 +5791,7 @@ function folderPanel() {
       : folderPrompt('Hosting'),
     folder.error ? h('div', { class: 'sub' }, 'Error: ' + folder.error) : null);
 }
-views.me = { render() {
+views.me = { render(all = false) {
   const owned = [...new Set([...E.directory.keys(), ...mempool.keys(), ...chains.keys()])].filter(id => id !== MAIN_ID && isMine(genesisFor(id)?.author));
   const kind = h('select', {}, h('option', { value: 'channel' }, 'Channel'), h('option', { value: 'list' }, 'List (curated channels)'), h('option', { value: 'group' }, 'Group (members post and talk)'));
   const joinSel = h('select', {}, h('option', { value: 'open' }, 'Anyone can join and post'), h('option', { value: 'approved' }, 'Only members I approve can post'));
@@ -5556,8 +5825,8 @@ views.me = { render() {
   const importIn = h('input', { type: 'file', accept: 'application/json', class: 'hidden' });
   importIn.onchange = async () => { const f = importIn.files[0]; importIn.value = ''; if (f) await importKeyFile(await f.text()); };
   const unbacked = owned.filter(id => !keyExported(genesisFor(id).author)).length + (personalExported ? 0 : 1);
-  return h('div', {},
-    h('h2', { style: 'margin-top:0' }, 'My node'),
+  const root = h('div', {},
+    h('h2', { style: 'margin-top:0' }, 'Devices & network'),
     h('div', { class: 'panel', style: unbacked ? 'border-color:var(--warn)' : '' },
       h('div', { class: 'row', style: 'justify-content:space-between' }, h('h3', { style: 'margin:0' }, 'Keys & backup'),
         unbacked ? h('span', { class: 'badge warn' }, `${unbacked} key${unbacked === 1 ? '' : 's'} not backed up`) : h('span', { class: 'badge ok' }, 'all keys backed up')),
@@ -5600,8 +5869,16 @@ views.me = { render() {
         h('div', {}, 'Peers'), h('div', {}, net.status()),
         h('div', {}, 'Videos hosted'), h('div', {}, `${hosting.size} (${fmtBytes([...hosting.values()].reduce((s, x) => s + x.size, 0))})`),
         h('div', {}, 'Trackers'), h('div', { class: 'mono' }, TRACKERS.join(' ')))));
+  if (all) return root;
+  // Devices shows the network side; your identity's panels are under You.
+  const yours = ['Keys & backup', 'Not interested', 'Your channels & lists', 'Your user ID', 'Create a channel or list', 'Subscriptions'];
+  for (const el of [...root.children]) if ([...el.querySelectorAll('h3')].some(x => yours.includes(x.textContent))) el.remove();
+  root.append(h('div', { class: 'sub' }, 'Your keys, channels and settings are under ', h('a', { href: '#/you' }, '👤 You'), '.'));
+  return root;
 } };
 
+// Wallet, Friends and Messages are part of You: show them with your tabs
+for (const v of ['wallet', 'friends', 'messages']) { const r = views[v].render; views[v].render = function () { const body = r.call(this); return v === 'wallet' && route.key && !myAccounts().includes(route.key) ? body : h('div', {}, youTabs(v), body); }; }
 uiReady = true;
 try { if (!localStorage.getItem('opentube-terms')) $('#terms-banner').classList.remove('hidden'); } catch {}
 $('#terms-ok').onclick = () => { try { localStorage.setItem('opentube-terms', '1'); } catch {} $('#terms-banner').classList.add('hidden'); };
