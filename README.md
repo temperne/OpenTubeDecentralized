@@ -132,6 +132,21 @@ OpenTube runs on **one shared coin**. 100 units = 1 coin. Transactions ride in m
 - **Before the coin:** videos and votes from before 2026-11-19 09:00 UTC stay free. Transactions in the old per-person tokens stay valid in history but no longer affect balances.
 - **Known weaknesses:** keys are free, so starter coins and block rewards can be farmed with CPU (each costs proof of work, like mining). Host registration isn't checked against actually storing the videos yet (storage proofs are not built). Resource receipts are only as honest as the keys signing them: someone with many keys (each one needs the starter work) could receipt their own node, up to the per-key caps. A modified page could watch without paying, because video travels peer to peer.
 
+## Identities own channels (and keys can be replaced)
+
+Your **identity** is your personal key. Every channel or list you create has its own key, and that key is **bound** to your identity by a `bind` transaction. The channel key signs "this identity owns me" and your identity sends it. From then on:
+
+- every coin paid to the channel (views, likes, tips, the creator's share of pieces) lands in your identity's balance;
+- the channel's ads are paid from that balance;
+- the wallet shows one account.
+
+Binding happens automatically for the keys your browser holds. A channel key can be re-bound to another identity only with its own signature, which is how a channel changes hands.
+
+- **Replace a channel key** (*Manage → Channel key → Replace with a new key*): the current key appends a `rekey` block that the new key also signs. From that point the new key controls the chain. Earlier blocks by the old key still count as the owner's.
+- **Retire your personal key** (*My node → Retire my personal key*): a `retire` transaction, signed by the new key too, moves your balance to a new key and makes every channel bound to you resolve to it. Your personal chains (friends page, old channels) are handed over with `rekey` blocks, and the old key can't send transactions any more. Your encryption key stays, so friends can still read you. Back up your keys again afterwards.
+
+Channels also have a richer **About** page: an avatar (changeable under *Manage*), a location, and links added one at a time (Twitter, LinkedIn, a shop…). *Block* (on a comment, or under *Manage → Commenters*) hides everything that person writes on your channel from then on, and *Unblock* shows it again.
+
 ## Paying per piece
 
 A video torrent is split into pieces, each checked against the hash in the torrent. OpenTube adds one message type, `ot_pay`, to the BitTorrent connection itself (BitTorrent's extension protocol, the same mechanism WebTorrent uses for metadata), so payment follows the exact exchange between the peer that gave a piece and the peer that got it:

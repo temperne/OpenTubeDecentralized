@@ -229,7 +229,17 @@ class Chain {
     // Diagnostics: what we've heard about this chain from peers and how syncing is going.
     this.stats = { announces: 0, lastAnnounce: 0, lastBlock: 0, lastRequest: 0, lastResponse: 0, unknownHeads: [], accepted: 0, rejected: 0, lastReject: '' };
   }
-  get owner() { return this.genesis.author; }
+  // The key that controls the chain: the genesis author, until a `rekey` block (signed by the current owner, with the
+  // new key's consent) hands it to a new key. ownerAt(parents) is the owner as of that point in the chain's history.
+  get owner() { return this.ownerAt([...this.heads]); }
+  ownerAt(parents) {
+    if (!this.rekeys?.length) return this.genesis.author;
+    const anc = this.ancestors(parents);
+    let k = this.genesis.author;
+    for (const r of this.rekeys) if (anc.has(r.hash)) k = r.payload.key;   // rekeys are kept in height order
+    return k;
+  }
+  isOwnerBlock(b) { return b.hash === this.id || b.author === this.ownerAt(b.parents); }
   has(hash) { return this.blocks.has(hash); }
   ancestors(hashes, into = new Set()) {
     const stack = [...hashes];
@@ -293,7 +303,7 @@ function squareMonths(now = Date.now()) {   // every month from the first until 
 function groupPermitted(chain, b) {
   const owner = chain.owner, history = chain.ancestors(b.parents);
   let join = chain.genesis.payload.join; const allowed = new Set(), revoked = new Set();
-  const ownerBlocks = [...history].map(x => chain.blocks.get(x)).filter(x => x.author === owner && x.hash !== chain.id).sort((x, y) => x.height - y.height || x.ts - y.ts);
+  const ownerBlocks = [...history].map(x => chain.blocks.get(x)).filter(x => x.hash !== chain.id && chain.isOwnerBlock(x)).sort((x, y) => x.height - y.height || x.ts - y.ts);
   for (const x of ownerBlocks) {
     const q = x.payload;
     if (q.type === 'profile' && q.join) join = q.join;
@@ -310,6 +320,8 @@ function groupPermitted(chain, b) {
   }
   return join === 'open' || allowed.has(b.author);
 }
+const kind_ = (chain) => chain.genesis.payload.kind;
+const rekeyPreimage = (chainId, key) => `opentube-rekey:${chainId}:${key}`;   // the NEW key signs this: it agrees to take over
 async function checkSigned(b) {
   if (!b || typeof b !== 'object' || !isHex(b.hash, 64) || typeof b.sig !== 'string' || !Number.isSafeInteger(b.nonce) || !Number.isSafeInteger(b.ts) || !Number.isSafeInteger(b.height)) return false;
   if (canon(b).length > LIMITS.blockBytes) return false;
@@ -324,7 +336,8 @@ const AD_CATEGORIES = ['apparel', 'autos', 'beauty', 'books', 'education', 'elec
 const validTags = (t) => t === undefined || (Array.isArray(t) && t.length <= 8 && t.every(x => typeof x === 'string' && TAG_RE.test(x)) && new Set(t).size === t.length);
 function validPayload(chain, b, CFG) {
   const p = b.payload; if (!p || typeof p !== 'object') return false;
-  const owner = b.author === chain.owner;
+  const owner = b.author === chain.ownerAt(b.parents);
+  if (p.type === 'rekey') return owner && kind_(chain) !== 'square' && isKey(p.key) && p.key !== b.author && typeof p.proof === 'string';   // proof checked in rekeyProofOk
   const kind = chain.genesis.payload.kind;
   if (kind === 'square') {   // nobody owns it: everything is a member's block with anti-spam work
     if (owner || zeroBits(b.hash) < CFG.commentDifficulty) return false;
@@ -367,7 +380,8 @@ function validPayload(chain, b, CFG) {
     case 'comment': return isHex(p.target, 64) && isStr(p.text, LIMITS.comment) && p.text.trim().length > 0;
     case 'hide': return isHex(p.target, 64);
     case 'allow': case 'revoke': return isKey(p.key);
-    case 'profile': return (p.join === undefined || (kind === 'group' && ['open', 'approved'].includes(p.join))) && (p.name === undefined || (isStr(p.name, LIMITS.name) && p.name.trim().length > 0)) && (p.about === undefined || isStr(p.about, LIMITS.about)) && (p.avatar === undefined || isImg(p.avatar)) && (p.comments === undefined || ['anyone', 'approved', 'off'].includes(p.comments));
+    case 'profile': return (p.links === undefined || (Array.isArray(p.links) && p.links.length <= 12 && p.links.every(l => l && isStr(l.label, 40) && isStr(l.url, 300) && /^https:\/\/\S+$/.test(l.url))))
+      && (p.location === undefined || isStr(p.location, 100)) && (p.join === undefined || (kind === 'group' && ['open', 'approved'].includes(p.join))) && (p.name === undefined || (isStr(p.name, LIMITS.name) && p.name.trim().length > 0)) && (p.about === undefined || isStr(p.about, LIMITS.about)) && (p.avatar === undefined || isImg(p.avatar)) && (p.comments === undefined || ['anyone', 'approved', 'off'].includes(p.comments));
     case 'add': return kind === 'list' && isHex(p.target, 64) && isStr(p.note ?? '', LIMITS.about);
     case 'vote': return (kind === 'channel' || kind === 'group') && isHex(p.target, 64) && [1, 0, -1].includes(p.v);
     // An ad. Its terms (price per view, max views…) are signed separately by the same key so a viewer's
@@ -530,6 +544,8 @@ const receiptShape = (r) => !!r && typeof r === 'object' && r.v === 1 && r.kind 
 // handle null releases it. Main-chain order decides who got a name first.
 const NAMES = { re: /^[a-z0-9](?:[a-z0-9._-]{1,28}[a-z0-9])$/ };
 const nameShape = (n) => !!n && typeof n === 'object' && (n.space === '@' || n.space === '~') && isHex(n.chain, 64) && (n.handle === null || (typeof n.handle === 'string' && NAMES.re.test(n.handle) && !/[._-]{2}/.test(n.handle)));
+const bindPreimage = (identity, key) => `opentube-bind:${identity}:${key}`;     // signed by the channel key: "this identity owns me"
+const retirePreimage = (old, key) => `opentube-retire:${old}:${key}`;            // signed by the new key: "I take over from old"
 const amtOk = (a) => Number.isSafeInteger(a) && a > 0 && a <= COIN.maxAmt;
 // ---- paying per piece. Whoever downloads a video pays the peer that sent each piece, at the network's piece price,
 // and that peer passes PIECE.creatorShare of it to the video's creator. It happens on the BitTorrent connection itself
@@ -574,16 +590,24 @@ class Ledger {
     this.receipts = new Set(src?.receipts); this.rcptUse = new Map(src?.rcptUse); this.poolFees = new Map(src?.poolFees);
     this.settled = new Set(src?.settled); this.earned = new Map([...(src?.earned || [])].map(([k, v]) => [k, [...v]])); this.clock = src?.clock || 0;   // viewer -> first time slot after the last ad they were paid for
     this.names = new Map(src?.names); this.nameOf = new Map(src?.nameOf);   // '@cooking' -> { chain, key }; chain -> '@cooking'
+    this.owners = new Map(src?.owners);   // key -> the identity it belongs to (channel keys: `bind`; retired identities: `retire`)
+    this.retired = new Set(src?.retired);  // keys that may not send transactions any more
     this.tabsPaid = new Map(src?.tabsPaid); this.viewers = new Set(src?.viewers);   // 'payer|payee|video' -> units paid; 'video|viewer' seen
     this.certs = new Map([...(src?.certs || [])].map(([k, v]) => [k, { ...v }]));   // ad-view certificate id -> { owner, adv, tid, amt, ts, video }
     this.listings = new Map([...(src?.listings || [])].map(([k, v]) => [k, { ...v, certs: [...(v.certs || [])] }]));   // marketplace
   }
-  balance(k) { return this.bal.get(k) || 0; }
-  add(k, d) { const v = this.balance(k) + d; if (v) this.bal.set(k, v); else this.bal.delete(k); }
+  // Coins belong to identities. A channel key bound to an identity, or a retired identity, resolves to the identity that
+  // owns it now, so whatever is paid to a channel lands in its owner's balance (and its ads are paid from there).
+  resolve(k) { for (let i = 0; i < 8 && this.owners.has(k); i++) k = this.owners.get(k); return k; }
+  balance(k) { return this.bal.get(this.resolve(k)) || 0; }
+  add(k, d) { k = this.resolve(k); const v = (this.bal.get(k) || 0) + d; if (v) this.bal.set(k, v); else this.bal.delete(k); }
   hostsOf(chain) { return [...(this.hosts.get(chain) || [])]; }
   // Returns null if the transaction applies, or the reason it doesn't. Only mutates on success (apply).
   check(t) {
     if (t.seq !== (this.seq.get(t.from) || 0) + 1) return 'out of order (sequence)';
+    if (this.retired.has(t.from)) return 'this key was retired';
+    if (t.bind) return this.resolve(t.bind.key) === t.from ? 'already bound to you' : t.bind.key === t.from || this.owners.has(t.from) ? 'only an identity can own keys' : null;
+    if (t.retire) return this.owners.has(t.retire.to) || this.retired.has(t.retire.to) || t.retire.to === t.from ? 'that key can’t take over' : null;
     if (t.v === 1 && !t.name) return null;   // old per-person-token transaction: history only
     if (t.name) {
       const n = t.name, cur = this.nameOf.get(n.chain);
@@ -657,6 +681,14 @@ class Ledger {
       const n = t.name, cur = this.nameOf.get(n.chain);
       if (cur) { this.names.delete(cur); this.nameOf.delete(n.chain); }
       if (n.handle) { this.names.set(n.space + n.handle, { chain: n.chain, key: t.from }); this.nameOf.set(n.chain, n.space + n.handle); }
+    } else if (t.bind) {   // the channel key's own coins move to its new owner
+      const k = t.bind.key, raw = this.owners.has(k) ? 0 : (this.bal.get(k) || 0);
+      if (raw) { this.bal.delete(k); }
+      this.owners.set(k, t.from); if (raw) this.add(t.from, raw);
+    } else if (t.retire) {   // an identity hands everything to a new key: balance, channels (via resolve), and stops sending
+      const raw = this.bal.get(t.from) || 0; if (raw) this.bal.delete(t.from);
+      this.owners.set(t.from, t.retire.to); this.retired.add(t.from); if (raw) this.add(t.retire.to, raw);
+      if (this.starters.has(t.from)) this.starters.add(t.retire.to);
     } else if (t.starter) { this.starters.add(t.from); this.add(t.from, COIN.starter); this.minted += COIN.starter; }
     else if (t.serve) {
       const e = t.serve.epoch, payee = serveGrants.get(t) || t.from;
@@ -847,7 +879,7 @@ function txShape(t) {
     if (!Array.isArray(outs) || !Array.isArray(burns) || outs.length > 100 || burns.length > 20 || !(outs.length + burns.length)) return false;
     return outs.every(o => o && isKey(o.to) && isKey(o.token) && amtOk(o.amt) && o.to !== t.from) && burns.every(b => b && isKey(b.token) && b.token !== t.from && amtOk(b.amt));
   }
-  const acts = ['pay', 'starter', 'post', 'view', 'vote', 'host', 'claim', 'name', 'serve', 'tabs', 'redeem', 'certs', 'list', 'unlist', 'buy', 'bid'].filter(k => t[k] !== undefined);
+  const acts = ['pay', 'starter', 'post', 'view', 'vote', 'host', 'claim', 'name', 'serve', 'tabs', 'redeem', 'certs', 'list', 'unlist', 'buy', 'bid', 'bind', 'retire'].filter(k => t[k] !== undefined);
   if (acts.length !== 1 || t.outs !== undefined || t.burns !== undefined) return false;
   const x = t[acts[0]];
   switch (acts[0]) {
@@ -863,6 +895,8 @@ function txShape(t) {
     case 'redeem': return !!x && Array.isArray(x.ids) && x.ids.length >= 1 && x.ids.length <= PIECE.maxCerts && x.ids.every(i => isHex(i, 64)) && new Set(x.ids).size === x.ids.length;
     case 'certs': return !!x && isKey(x.to) && x.to !== t.from && Array.isArray(x.ids) && x.ids.length >= 1 && x.ids.length <= PIECE.maxCerts && x.ids.every(i => isHex(i, 64)) && new Set(x.ids).size === x.ids.length;
     case 'list': return listingShape(x);
+    case 'bind': return !!x && isKey(x.key) && x.key !== t.from && typeof x.sig === 'string';      // x.sig: the key's consent (bindPreimage)
+    case 'retire': return !!x && isKey(x.to) && x.to !== t.from && typeof x.sig === 'string';      // x.sig: the new key's consent (retirePreimage)
     case 'unlist': case 'buy': return !!x && isHex(x.id, 64);
     case 'bid': return !!x && isHex(x.id, 64) && amtOk(x.amt);
     case 'serve': return !!x && Number.isSafeInteger(x.epoch) && Array.isArray(x.receipts) && x.receipts.length >= 1 && x.receipts.length <= SERVE.maxReceipts && x.receipts.every(receiptShape)
@@ -876,6 +910,8 @@ async function checkTx(t) {
   if (canon(t).length > 40000 || zeroBits(t.hash) < (t.starter ? COIN.starterBits : COIN.txBits) || await hashBlock(t) !== t.hash) return false;
   if (!(await verify(t.from, t.hash, t.sig))) return false;
   if (t.tabs) for (const x of t.tabs) if (!(await verify(x.payer, tabPreimage(x), x.sig))) return false;   // every tab signed by its payer
+  if (t.bind && !(await verify(t.bind.key, bindPreimage(t.from, t.bind.key), t.bind.sig))) return false;
+  if (t.retire && !(await verify(t.retire.to, retirePreimage(t.from, t.retire.to), t.retire.sig))) return false;
   if (t.serve) {   // every receipt signed by its receiver; a grant (if any) signed by the owner who gets paid
     for (const r of t.serve.receipts) if (!(await verify(r.by, receiptPreimage(r), r.sig))) return false;
     if (t.serve.grant) { if (!(await verify(t.serve.grant.user, nodeGrantPreimage(t.serve.grant), t.serve.grant.sig))) return false; serveGrants.set(t, t.serve.grant.user); }
@@ -1149,7 +1185,7 @@ function createLiveHub(o) {   // o: { ownerOf(chain) -> key|null, signerOf(chain
 function permittedAt(chain, b) {
   const owner = chain.owner;
   const history = chain.ancestors(b.parents);
-  const ownerBlocks = [...history].map(x => chain.blocks.get(x)).filter(x => x.author === owner && x.hash !== chain.id)
+  const ownerBlocks = [...history].map(x => chain.blocks.get(x)).filter(x => x.hash !== chain.id && chain.isOwnerBlock(x))
     .sort((x, y) => x.height - y.height || x.ts - y.ts || (x.hash < y.hash ? -1 : 1));
   let def = chain.genesis.payload.comments;
   const videoPolicy = new Map(), allowed = new Set(), revoked = new Set();
@@ -1176,15 +1212,16 @@ function derive(c) {
   if (c._derived && c._derived.version === c.version) return c._derived;
   const owner = c.owner;
   const blocks = [...c.blocks.values()].filter(b => b.hash !== c.id).sort((a, b) => a.height - b.height || a.ts - b.ts || (a.hash < b.hash ? -1 : 1));
+  const byOwner = new Set(blocks.filter(b => c.isOwnerBlock(b)).map(b => b.hash));   // owner blocks, across key changes
   const profile = { ...c.genesis.payload };
   const allowed = new Set(), revokes = [];
   const videoPolicy = new Map();  // video block hash -> comment policy overriding the channel default
-  for (const b of blocks) if (b.author === owner) {
+  for (const b of blocks) if (byOwner.has(b.hash)) {
     const p = b.payload;
     if (p.type === 'video' && p.comments) videoPolicy.set(b.hash, p.comments);
     if (p.type === 'settings') { if (p.comments === 'default') videoPolicy.delete(p.target); else videoPolicy.set(p.target, p.comments); }
-    if (p.type === 'profile') for (const k of ['name', 'about', 'avatar', 'comments', 'join']) if (p[k] !== undefined) profile[k] = p[k];
-    if (p.type === 'allow') allowed.add(p.key);
+    if (p.type === 'profile') for (const k of ['name', 'about', 'avatar', 'comments', 'join', 'links', 'location']) if (p[k] !== undefined) profile[k] = p[k];
+    if (p.type === 'allow') { allowed.add(p.key); for (let i = revokes.length - 1; i >= 0; i--) if (revokes[i].key === p.key) revokes.splice(i, 1); }   // allowing again unblocks
     if (p.type === 'revoke') { allowed.delete(p.key); revokes.push({ key: p.key, before: c.ancestors([b.hash]) }); }
   }
   // A revoke hides everything that user writes except what the owner had already seen when revoking.
@@ -1195,7 +1232,7 @@ function derive(c) {
   };
   const isGroup = c.genesis.payload.kind === 'group';
   const permitted = (b) => {
-    if (b.author === owner) return true;
+    if (byOwner.has(b.hash)) return true;
     if (isGroup || c.genesis.payload.kind === 'square' || c.genesis.payload.kind === 'circle') return !revokes.some(r => r.key === b.author && !r.before.has(b.hash));   // validity was checked on insert
     if (revokes.some(r => r.key === b.author && !r.before.has(b.hash))) return false;
     if (b.payload.type === 'hide' || b.payload.type === 'vote') return true;  // own-comment hides and votes need no comment permission
@@ -1205,24 +1242,24 @@ function derive(c) {
   const hidden = new Set();
   for (const b of visible) if (b.payload.type === 'hide') {
     const t = c.blocks.get(b.payload.target);
-    if (t && ((b.author === owner && c.genesis.payload.kind !== 'square') || t.author === b.author)) hidden.add(t.hash);
+    if (t && ((byOwner.has(b.hash) && c.genesis.payload.kind !== 'square') || t.author === b.author)) hidden.add(t.hash);
   }
   const live = visible.filter(b => !hidden.has(b.hash));
   return (c._derived = {
-    version: c.version, id: c.id, kind: c.genesis.payload.kind, owner, profile, allowed, revoked: new Set(revokes.map(r => r.key)), hidden,
-    videos: live.filter(b => b.payload.type === 'video' && b.author === owner).reverse(),
-    posts: live.filter(b => b.payload.type === 'post' && (isGroup || c.genesis.payload.kind === 'square' || b.author === owner)).reverse(),
+    version: c.version, id: c.id, kind: c.genesis.payload.kind, owner, byOwner, profile, allowed, revoked: new Set(revokes.map(r => r.key)), hidden,
+    videos: live.filter(b => b.payload.type === 'video' && byOwner.has(b.hash)).reverse(),
+    posts: live.filter(b => b.payload.type === 'post' && (isGroup || c.genesis.payload.kind === 'square' || byOwner.has(b.hash))).reverse(),
     sealed: live.filter(b => b.payload.type === 'sealed').reverse(),
-    adds: live.filter(b => b.payload.type === 'add' && b.author === owner).reverse(),
-    ads: live.filter(b => b.payload.type === 'ad' && b.author === owner).reverse(),
-    sponsors: live.filter(b => b.payload.type === 'sponsor' && b.author === owner).reverse(),
+    adds: live.filter(b => b.payload.type === 'add' && byOwner.has(b.hash)).reverse(),
+    ads: live.filter(b => b.payload.type === 'ad' && byOwner.has(b.hash)).reverse(),
+    sponsors: live.filter(b => b.payload.type === 'sponsor' && byOwner.has(b.hash)).reverse(),
     ...(() => {   // live streams: started, not yet ended (and less than a day old)
       const ends = new Map(), recordings = new Map();
-      for (const b of live) if (b.author === owner) {
+      for (const b of live) if (byOwner.has(b.hash)) {
         if (b.payload.type === 'liveend') ends.set(b.payload.stream, b.payload.outcome);
         if (b.payload.type === 'video' && b.payload.stream) recordings.set(b.payload.stream, b);
       }
-      const streams = live.filter(b => b.payload.type === 'live' && b.author === owner).reverse();
+      const streams = live.filter(b => b.payload.type === 'live' && byOwner.has(b.hash)).reverse();
       return { streams, liveEnds: ends, recordings, liveNow: streams.filter(b => !ends.has(b.payload.stream) && Date.now() - b.ts < 24 * 3600000) };
     })(),
     commentsFor: (target) => visible.filter(b => b.payload.type === 'comment' && b.payload.target === target),
@@ -1446,6 +1483,8 @@ async function createEngine(o) {
       if (b.height !== Math.max(...b.parents.map(p => chain.blocks.get(p).height)) + 1) { reject(b, 'wrong height'); continue; }
       if (!(await checkSigned(b))) { reject(b, 'bad hash or signature'); continue; }
       if (chain === main ? !(await validMainBlock(b)) : !validPayload(chain, b, CFG)) { reject(b, chain === main ? 'breaks main-chain rules' : 'not permitted by channel rules'); continue; }
+      if (b.payload?.type === 'rekey' && !(await verify(b.payload.key, rekeyPreimage(chainId, b.payload.key), b.payload.proof))) { reject(b, 'new key did not agree'); continue; }
+      if (b.payload?.type === 'rekey') { chain.rekeys = [...(chain.rekeys || []), b].sort((x, y) => x.height - y.height || x.ts - y.ts); }
       chain.add(b); chain.orphans.delete(b.hash); added = true;
       chain.stats.accepted++; chain.stats.lastBlock = Date.now();
       if (persist) o.persist?.(chainId, b);
@@ -1661,7 +1700,7 @@ async function createEngine(o) {
   });
 }
 
-globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, SQUARE, SEAL, monthKey, squareMonths, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
+globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, bindPreimage, retirePreimage, rekeyPreimage, SQUARE, SEAL, monthKey, squareMonths, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
 })();
 </script>
 
@@ -1723,6 +1762,7 @@ const ownedSigners = new Map();
 for (const k of Object.values(channelKeys)) ownedSigners.set(k.pub, await makeSigner(k));
 const isMine = (pub) => pub === me.pub || ownedSigners.has(pub);
 let personalExported = !!(await kv.get('personalExported'));
+for (const k of (await kv.get('retiredIdentities')) || []) if (!ownedSigners.has(k.pub)) ownedSigners.set(k.pub, await makeSigner(k));   // your older personal keys
 async function addChannelKey(k) {
   channelKeys[k.pub] = { ...channelKeys[k.pub], ...k };
   ownedSigners.set(k.pub, await makeSigner(k));
@@ -3321,7 +3361,7 @@ async function unseal(p, authorEnc) {   // the block's author's encryption key i
 }
 let myTag = null;
 settings.friends = settings.friends || [];   // [{ key, name }]
-const circleOf = (key) => { for (const [id, e] of E.directory) if (e.genesis.payload.kind === 'circle' && e.genesis.author === key) return id; for (const g of mempool.values()) if (g.payload.kind === 'circle' && g.author === key) return g.hash; return null; };
+const circleOf = (key) => { for (const [id, e] of E.directory) if (e.genesis.payload.kind === 'circle' && (e.genesis.author === key || E.ledger.resolve(e.genesis.author) === key)) return id; for (const g of mempool.values()) if (g.payload.kind === 'circle' && g.author === key) return g.hash; return null; };
 const encOf = (key) => { const id = circleOf(key); return id ? genesisFor(id).payload.enc : null; };
 async function openBlock(c, b) {
   if (opened.has(b.hash)) return opened.get(b.hash);
@@ -3402,6 +3442,48 @@ views.friends = { render() {
   views.friends.refresh = () => { clearTimeout(views.friends.t); views.friends.t = setTimeout(() => { if (route.name === 'friends' && !document.activeElement?.matches?.('input,textarea')) render(true); }, 800); };
   return box;
 } };
+// ---------------------------------------------------------------- identity owns channels (core: bind, retire, rekey)
+// Every channel/list key is bound to your identity with a `bind` transaction (signed by both keys), so coins paid to a
+// channel land in your identity's balance and its ads are paid from there. Done automatically for the keys you hold.
+const { bindPreimage, retirePreimage, rekeyPreimage } = globalThis.OpenTubeCore;
+const binding = new Set();
+async function bindMyKeys() {
+  for (const [k, sg] of ownedSigners) {
+    if (k === me.pub || binding.has(k) || E.ledger.retired.has(k) || E.ledger.resolve(k) === me.pub) continue;
+    if ([...E.txpool.values()].some(t => t.bind?.key === k)) continue;
+    binding.add(k);
+    try { await E.submitTx({ bind: { key: k, sig: await sg.sign(bindPreimage(me.pub, k)) } }, me); }
+    catch (e) { console.warn('bind', e.message); } finally { setTimeout(() => binding.delete(k), 120000); }
+  }
+}
+setTimeout(bindMyKeys, 8000); setInterval(bindMyKeys, 60000);
+const ownerIdentity = (chainId) => { const k = derive(chainId)?.owner; return k ? E.ledger.resolve(k) : null; };
+// Retire your personal key: a new one takes over your coins, your channels (through their bindings) and your personal
+// chains (rekey blocks); the old one can't send anything any more. Your encryption key stays, so friends still read you.
+async function retireIdentity(status) {
+  if (!confirm('Make a new personal key and retire this one? Your coins, channels and pages move to the new key. Back up your keys again afterwards.')) return;
+  const fresh = await newIdentity(), sg = await makeSigner(fresh);
+  status.textContent = 'Signing the hand-over…';
+  await E.submitTx({ retire: { to: fresh.pub, sig: await sg.sign(retirePreimage(me.pub, fresh.pub)) } }, me, (n) => { status.textContent = `Anti-spam work: ${n.toLocaleString()} hashes…`; });
+  for (const c of chains.values()) if (c !== main && c.owner === me.pub && c.genesis.payload.kind !== 'square') {
+    status.textContent = `Handing over ${c.genesis.payload.name}…`;
+    await append(c.id, { type: 'rekey', key: fresh.pub, proof: await sg.sign(rekeyPreimage(c.id, fresh.pub)) });
+  }
+  const retired = (await kv.get('retiredIdentities')) || []; retired.push({ pub: identity.pub, priv: identity.priv, at: Date.now() });
+  await kv.set('retiredIdentities', retired);
+  await kv.set('identity', { ...fresh, ...(identity.enc ? { enc: identity.enc } : {}) }); await kv.set('personalExported', false);
+  status.textContent = 'Done. Reloading with your new key…'; setTimeout(() => location.reload(), 2500);
+}
+// Replace a channel's key: the current key hands the chain to a fresh one (a rekey block the new key agrees to).
+async function rekeyChannel(id, status) {
+  const d = derive(id); if (!isMine(d.owner)) return;
+  if (!confirm(`Give ${d.profile.name} a new key and retire the current one? Export the new key afterwards.`)) return;
+  const fresh = await newIdentity(), sg = await makeSigner(fresh);
+  await addChannelKey({ ...fresh, chain: id, name: d.profile.name });
+  await append(id, { type: 'rekey', key: fresh.pub, proof: await sg.sign(rekeyPreimage(id, fresh.pub)) });
+  status.textContent = 'New key in use. It will be bound to your identity within a minute. Export it now.';
+  bindMyKeys(); kept.delete('manage'); scheduleRender();
+}
 views.tag = { render() {
   const t = route.tag, found = [];
   for (const c of chains.values()) {
@@ -3812,10 +3894,15 @@ const chainTab = {
         isMine(d.owner) ? h('button', { class: 'small', onclick: () => append(id, { type: 'hide', target: b.hash }) }, 'Remove') : null)) : h('div', { class: 'sub', style: 'padding:10px' }, 'This list is empty.')));
   },
   about(id, d) {
+    const links = d.profile.links || [], owner = ownerIdentity(id);
     return h('div', { class: 'panel' }, h('p', { class: 'pre' }, d.profile.about || 'No description.'),
+      d.profile.location ? h('div', { class: 'sub' }, '📍 ', d.profile.location) : null,
+      links.length ? h('div', { class: 'row', style: 'gap:8px;margin-top:8px;flex-wrap:wrap' }, links.map(l => h('a', { class: 'tagbox', style: 'padding:4px 12px', href: l.url, target: '_blank', rel: 'noopener noreferrer nofollow' }, '🔗 ' + l.label))) : null,
+      owner && owner !== d.owner ? h('div', { class: 'sub', style: 'margin-top:8px' }, 'Owned by ', h('a', { href: `#/wallet/${owner}` }, keyName(owner)), ' (coins paid to this channel go to them)') : null,
       h('div', { class: 'kv', style: 'margin-top:16px' },
         h('div', {}, 'Chain ID'), h('div', { class: 'mono' }, id),
-        h('div', {}, 'Owner key'), h('div', { class: 'mono' }, d.owner),
+        h('div', {}, 'Channel key'), h('div', { class: 'mono' }, d.owner),
+        h('div', {}, 'Owner identity'), h('div', { class: 'mono' }, ownerIdentity(id) !== d.owner ? ownerIdentity(id) : 'not bound yet'),
         h('div', {}, 'Default comments'), h('div', {}, d.kind === 'channel' ? { anyone: 'Anyone', approved: 'Approved users only', off: 'Off' }[d.profile.comments] : '—'),
         h('div', {}, 'Blocks'), h('div', {}, String(d.blockCount)),
         h('div', {}, 'Heads'), h('div', { class: 'mono' }, [...chains.get(id).heads].map(x => x.slice(0, 12)).join(', '))));
@@ -3827,8 +3914,25 @@ const chainTab = {
     const about = h('textarea', { value: d.profile.about, maxLength: LIMITS.about });
     const policy = h('select', {}, [['anyone', 'Anyone can comment'], ['approved', 'Only approved users'], ['off', 'Comments off']].map(([v, l]) => h('option', { value: v, selected: d.profile.comments === v }, l)));
     const key = h('input', { type: 'text', placeholder: 'User public key (43 characters)' });
+    const location_ = h('input', { type: 'text', value: d.profile.location || '', maxLength: 100, placeholder: 'City, country (optional)' });
+    const avatarIn = h('input', { type: 'file', accept: 'image/*' });
+    const links = [...(d.profile.links || [])];
+    const linkList = h('div');
+    const drawLinks = () => linkList.replaceChildren(...(links.length ? links.map((l, i) => h('div', { class: 'row', style: 'justify-content:space-between' },
+      h('span', {}, '🔗 ', h('b', {}, l.label), ' ', h('span', { class: 'sub' }, l.url)), h('button', { class: 'small', onclick: () => { links.splice(i, 1); drawLinks(); } }, 'Remove'))) : [h('div', { class: 'sub' }, 'No links yet.')]));
+    drawLinks();
+    const lLabel = h('input', { type: 'text', maxLength: 40, placeholder: 'Label, e.g. Twitter', style: 'width:150px' }), lUrl = h('input', { type: 'text', maxLength: 300, placeholder: 'https://…', style: 'flex:1' });
+    const addLink = h('button', { class: 'small', onclick: () => {
+      const u = lUrl.value.trim(), lb = lLabel.value.trim() || (() => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; } })();
+      if (!/^https:\/\/\S+$/.test(u)) return toast('Links must start with https://'); if (links.length >= 12) return toast('Up to 12 links');
+      links.push({ label: lb.slice(0, 40), url: u }); lLabel.value = ''; lUrl.value = ''; drawLinks();
+    } }, 'Add link');
+    const keyStatus = h('span', { class: 'sub' });
     const changes = async () => {
       const p = { type: 'profile' };
+      if (avatarIn.files[0]) p.avatar = await imageFileToDataUrl(avatarIn.files[0]);
+      if ((location_.value.trim() || '') !== (d.profile.location || '')) p.location = location_.value.trim();
+      if (JSON.stringify(links) !== JSON.stringify(d.profile.links || [])) p.links = links;
       if (name.value.trim() && name.value.trim() !== d.profile.name) p.name = name.value.trim();
       if (about.value !== d.profile.about) p.about = about.value;
       if (d.kind === 'channel' && policy.value !== d.profile.comments) p.comments = policy.value;
@@ -3843,19 +3947,24 @@ const chainTab = {
         h('div', { class: 'mono', style: 'padding:8px;background:var(--panel-2);border-radius:6px' }, 'Public key: ' + d.owner),
         h('div', { class: 'row', style: 'margin-top:10px' },
           h('button', { class: 'primary', onclick: () => exportChannelKey(id) }, `Export ${d.kind} key`),
-          keyExported(d.owner) ? h('span', { class: 'badge ok' }, 'exported') : h('span', { class: 'badge warn' }, 'not backed up'))),
+          keyExported(d.owner) ? h('span', { class: 'badge ok' }, 'exported') : h('span', { class: 'badge warn' }, 'not backed up'),
+          d.owner !== me.pub ? h('button', { onclick: () => rekeyChannel(id, keyStatus).catch(e => { keyStatus.textContent = 'Failed: ' + e.message; }) }, 'Replace with a new key') : null, keyStatus),
+        h('div', { class: 'sub', style: 'margin-top:8px' }, ownerIdentity(id) === me.pub ? '✓ Bound to your identity: coins paid to this channel go to your wallet.' : 'Being bound to your identity (a transaction signed by both keys)…')),
       h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Profile'),
         h('label', {}, 'Name'), name, h('label', {}, 'About'), about,
+        d.kind !== 'list' ? [h('label', {}, 'Avatar'), h('div', { class: 'row' }, avatar(d.profile.avatar, d.profile.name, 'sm'), avatarIn)] : null,
+        h('label', {}, 'Location'), location_,
+        h('label', {}, 'Links (shown on the About page)'), linkList, h('div', { class: 'row', style: 'margin-top:6px' }, lLabel, lUrl, addLink),
         d.kind === 'channel' ? [h('label', {}, 'Default comment setting (each video can override it)'), policy] : null,
         h('p', { class: 'sub' }, 'Edits are appended as a new block. The genesis block on the main chain never changes.'),
         h('button', { class: 'primary', onclick: changes }, 'Save')),
-      d.kind === 'channel' ? h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Commenters'),
-        h('p', { class: 'sub' }, 'Approve a user to comment when the policy is “approved”. Revoking hides everything that user writes afterwards, in any mode. Nothing is deleted from the chain.'),
+      d.kind === 'channel' || d.kind === 'group' ? h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, d.kind === 'group' ? 'Members' : 'Commenters'),
+        h('p', { class: 'sub' }, d.kind === 'group' ? 'Approve people to post when only approved members can. Blocking hides everything they write afterwards. Unblock to show it again.' : 'Approve a user to comment when the policy is “approved”. Blocking hides everything that user writes afterwards, in any mode; unblocking shows it again. Nothing is deleted from the chain. You can also block from a comment.'),
         key, h('div', { class: 'row', style: 'margin-top:8px' },
           h('button', { onclick: async () => { if (!isKey(key.value.trim())) return toast('Not a valid public key'); await append(id, { type: 'allow', key: key.value.trim() }); kept.delete('manage'); scheduleRender(); } }, 'Approve'),
-          h('button', { onclick: async () => { if (!isKey(key.value.trim())) return toast('Not a valid public key'); await append(id, { type: 'revoke', key: key.value.trim() }); kept.delete('manage'); scheduleRender(); } }, 'Revoke')),
+          h('button', { onclick: async () => { if (!isKey(key.value.trim())) return toast('Not a valid public key'); await append(id, { type: 'revoke', key: key.value.trim() }); kept.delete('manage'); scheduleRender(); } }, 'Block')),
         h('h4', {}, 'Approved'), d.allowed.size ? [...d.allowed].map(k => h('div', { class: 'mono' }, k)) : h('div', { class: 'sub' }, 'None'),
-        h('h4', {}, 'Revoked'), d.revoked.size ? [...d.revoked].map(k => h('div', { class: 'mono' }, k)) : h('div', { class: 'sub' }, 'None')) : null);
+        h('h4', {}, 'Blocked'), d.revoked.size ? [...d.revoked].map(k => h('div', { class: 'row' }, h('span', { class: 'mono' }, k), h('button', { class: 'small', onclick: async () => { await append(id, { type: 'allow', key: k }); kept.delete('manage'); scheduleRender(); } }, 'Unblock'))) : h('div', { class: 'sub' }, 'None')) : null);
   }
 };
 
@@ -4054,7 +4163,8 @@ views.watch = {
             e.target.disabled = true;
             try { const vb = await append(id, { type: 'vote', target: cb.hash, v: 1 }); await payVote(id, vb, cb.author); } catch (err) { toast('Like failed: ' + err.message); e.target.disabled = false; }
           } }, `👍 ${votesOf(dd, cb.hash).up}`), ' ',
-          canHide ? h('button', { class: 'small', onclick: () => append(id, { type: 'hide', target: cb.hash }) }, 'Hide') : null);
+          canHide ? h('button', { class: 'small', onclick: () => append(id, { type: 'hide', target: cb.hash }) }, 'Hide') : null,
+          isMine(dd.owner) && !isMine(cb.author) ? h('button', { class: 'small', title: 'Block this person: hides everything they write on your channel from now on (Manage → Commenters to unblock)', onclick: async () => { if (!confirm('Block this commenter on your channel?')) return; await append(id, { type: 'revoke', key: cb.author }); toast('Blocked'); } }, 'Block') : null);
       }) : [h('div', { class: 'sub' }, 'No comments yet.')]));
       const can = isMine(dd.owner) || dd.canComment(me.pub, video);
       box.disabled = postBtn.disabled = !can;
@@ -4549,7 +4659,7 @@ function keyName(key) {
   for (const g of [...E.directory.values()].map(e => e.genesis).concat([...mempool.values()])) if (g.author === key) return g.payload.name;
   return 'User ' + fp(key);
 }
-const myAccounts = () => [me.pub, ...ownedSigners.keys()];
+const myAccounts = () => [me.pub, ...[...ownedSigners.keys()].filter(k => E.ledger.resolve(k) !== me.pub && !E.ledger.retired.has(k))];   // bound channel keys pay into your identity
 const signerFor = (pub) => pub === me.pub ? me : ownedSigners.get(pub);
 // Accepts a user ID, or a channel/list ID (pays its owner).
 function resolveRecipient(text) {
@@ -4588,6 +4698,7 @@ function earningsPanel(keys) {   // coins paid to your accounts for what your no
         h('div', { class: 'sub', style: 'text-align:right' }, periodText(x.e)))))
       : h('div', { class: 'sub' }, 'Nothing yet.'));
 }
+const chainOfKey = (k) => { for (const c of chains.values()) if (c !== main && c.owner === k) return c.id; return null; };
 function describeTx(entry, key) {
   const row = (sign, units, text, extra) => h('div', {}, h('span', { class: sign > 0 ? 'amt-in' : 'amt-out' }, (sign > 0 ? '+' : '−') + fmtCoin(units)), ' ', text, extra || '');
   const when = h('div', { class: 'sub', style: 'text-align:right' }, entry.pending ? h('span', { class: 'badge warn' }, 'pending') : `block #${entry.height}`, h('div', {}, ago(entry.ts || entry.tx?.ts)));
@@ -4606,6 +4717,8 @@ function describeTx(entry, key) {
     else if (x.payee === key) rows.push(row(1, x.amt, ['sent ', who(x.payer), ` ${x.n} pieces of a video on `, chainLink(x.chain)], ' (half to the creator)'));
     else if (x.creator === key) rows.push(h('div', {}, 'Your video on ', chainLink(x.chain), ' was watched by ', who(x.payer), ` (${x.n} pieces)`));
   }
+  if (t.bind) rows.push(h('div', {}, 'Bound ', chainLink(chainOfKey(t.bind.key) || t.bind.key), ' to ', who(t.from), ' (its coins go to this identity)'));
+  if (t.retire) rows.push(h('div', {}, 'Retired ', who(t.from), ' — everything moved to ', who(t.retire.to)));
   if (t.redeem) rows.push(h('div', {}, `Cashed in ${t.redeem.ids.length} ad-view certificate${t.redeem.ids.length === 1 ? '' : 's'}`));
   if (t.certs) rows.push(h('div', {}, `Gave ${t.certs.ids.length} ad-view certificate${t.certs.ids.length === 1 ? '' : 's'} to `, who(t.certs.to)));
   if (t.list) rows.push(h('div', {}, `Listed “${t.list.title}” on the market (${t.list.kind === 'auction' ? 'auction from' : 'for'} ${fmtCoin(t.list.price)} coins)`));
@@ -4947,7 +5060,10 @@ views.me = { render() {
       h('p', { class: 'sub' }, 'Your keys exist only in this browser. Whoever holds a channel’s private key controls that channel. “Back up all keys” saves your personal key and every channel and list key in one file. “Import keys” accepts that file, or any single key file, on another browser.'),
       h('div', { class: 'row' },
         h('button', { class: 'primary', onclick: backupAllKeys }, 'Back up all keys'),
-        h('button', { onclick: () => importIn.click() }, 'Import keys'), importIn)),
+        h('button', { onclick: () => importIn.click() }, 'Import keys'), importIn),
+      (() => { const st = h('span', { class: 'sub' }); return h('div', { class: 'row', style: 'margin-top:8px' },
+        h('button', { class: 'small', onclick: () => retireIdentity(st).catch(e => { st.textContent = 'Failed: ' + e.message; }) }, 'Retire my personal key…'), st,
+        h('span', { class: 'sub' }, 'If it may have leaked: a new key takes over your coins, channels and pages, and the old one stops working.')); })()),
     folderPanel(),
     interestsPanel(),
     (() => { const b = keep('nodes', () => nodesPanel()); b.refresh(); return b; })(),
