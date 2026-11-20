@@ -1509,6 +1509,11 @@ function connectNode(url) {
   open();
 }
 const MAX_NODES = 4;
+// Public nodes (with https addresses in their check-ins) run trackers too: remember them for the next start.
+setInterval(() => {
+  const list = [...new Set([...(engine?.nodes?.values() || [])].flatMap(n => (n.addrs || []).filter(a => a.startsWith('https://')).map(a => a.replace(/^https/, 'wss').replace(/\/+$/, '') + '/tracker')))].slice(0, 10);
+  if (list.length) try { localStorage.setItem('opentube-node-trackers', JSON.stringify(list)); } catch {}
+}, 60000);
 // WebSocket links to nodes are a backup for when the browser mesh is thin (few peers yet, or WebRTC blocked here):
 // with 3+ direct peers, no node connection is needed at all.
 function maintainNodes() {
@@ -1568,6 +1573,7 @@ const TRACKERS = params.get('trackers') ? params.get('trackers').split(',') : [h
 if (!params.get('trackers')) {
   const add = (list) => { for (const u of list) if (/^wss:\/\/[\w.-]+(:\d+)?(\/[\w./-]*)?$/.test(u) && !TRACKERS.includes(u.replace(/:443(?=\/|$)/, ''))) TRACKERS.push(u.replace(/:443(?=\/|$)/, '')); };
   try { add(JSON.parse(localStorage.getItem('opentube-trackers') || '[]')); } catch {}
+  try { add(JSON.parse(localStorage.getItem('opentube-node-trackers') || '[]')); } catch {}   // public nodes seen last time (each runs a tracker)
   try {
     const r = await fetch(TRACKER_LIST, { signal: AbortSignal.timeout(3000) });
     const list = (await r.text()).split('\n').map(x => x.trim()).filter(Boolean).slice(0, 20);

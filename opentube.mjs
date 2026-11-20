@@ -18,6 +18,9 @@
 //   --no-host --no-obs --no-node   leave a part out
 //   --mine            also spend CPU confirming registrations (off by default)
 //   --cap-gb=5        storage limit per channel you host (your own channels are never trimmed)
+//   --public          make this node public over HTTPS as <your-ip>.sslip.io with a Let's Encrypt certificate, so browsers
+//                     can use it as a node and tracker (needs ports 80 and 443; on Linux run as root). --public=your.domain
+//                     uses your own domain. --email=you@example.com for Let's Encrypt notices.
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
@@ -43,7 +46,7 @@ const want = { node: !args['no-node'], host: !args['no-host'], obs: !args['no-ob
 await fsp.mkdir(APP, { recursive: true });
 
 // The site's current code. If the site can't be reached, the copy from last time is used.
-for (const f of ['index.html', 'server.mjs', 'headless.mjs', 'rtmp.mjs', 'host.mjs', 'sw.js']) {
+for (const f of ['index.html', 'server.mjs', 'headless.mjs', 'rtmp.mjs', 'host.mjs', 'tls.mjs', 'sw.js']) {
   try {
     const r = await fetch(new URL(f, site), { cache: 'no-store' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -85,6 +88,7 @@ if (want.node && (!installed('@trystero-p2p/torrent') || !installed('webtorrent'
   if (!installed('webtorrent')) install('webtorrent@3.0.21');
   if (!installed('@trystero-p2p/torrent')) install('@trystero-p2p/torrent@0.26.0');
 }
+if (want.node && args.public && !installed('acme-client')) { log('installing Let\'s Encrypt support (once)…'); install('acme-client@5.4.0'); }
 let nodeHosts = false;
 if (want.host && want.node && !args['browser-host']) {
   if (!installed('webtorrent')) { log('first run: installing WebTorrent for video hosting (a few MB, once)…'); install('webtorrent@3.0.21'); }
@@ -99,6 +103,7 @@ if (want.node) {
     PORT: String(port), DATA_DIR: path.join(HOME, 'node-data'), PEERS: ws + '/ot', MINE: args.mine ? '1' : '0', RANKER: '0',
     NODE_GRANT: String(args.grant), NODE_SITE: site.origin, NODE_ROLES: roles.join(','), NODE_LABEL: String(args.name || os.hostname()),
     HOST_STATUS_FILE: STATUS, RTMP_PORT: want.obs ? '1935' : '',
+    ...(args.public ? { PUBLIC: args.public === true ? 'auto' : String(args.public), ...(args.email ? { PUBLIC_EMAIL: String(args.email) } : {}) } : {}),
     ...(nodeHosts ? { VIDEO_DIR: VIDEOS, HOST_USER: grant.user, CAP_GB: String(args['cap-gb'] || 5) } : {})
   });
 }

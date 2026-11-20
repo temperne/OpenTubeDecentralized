@@ -10,6 +10,8 @@
 //   NODE_NAME="My site" node server.mjs   # name used for this node's ranking list
 //   RTMP_PORT=1935 node server.mjs        # receive OBS "Start Streaming" (rtmp://localhost/live)
 //   RANKER=0 node server.mjs              # don't run a ranking list
+//   PUBLIC=auto node server.mjs           # also HTTPS on 443 as <your-ip>.sslip.io with Let's Encrypt (needs ports 80/443)
+//   PUBLIC=node.example.com node server.mjs   # the same with your own domain
 //   VIDEO_DIR=./videos HOST_USER=<user ID> node server.mjs   # keep and share that user's channels' videos (needs: npm install webtorrent)
 //
 // Started by opentube.mjs (the copy-paste command on My node), it also gets NODE_GRANT (your signed grant: this node
@@ -352,13 +354,13 @@ async function joinMesh() {   // called once the HTTP server listens (its own tr
 }
 
 // ---- HTTP: the page itself, a status endpoint, and the WebSocket upgrade
-const server = http.createServer((req, res) => {
+function handle(req, res) {
   const url = new URL(req.url, 'http://x');
   if (url.pathname === '/' || url.pathname === '/index.html' || /^\/[@~][A-Za-z0-9._-]{3,30}\/?$/.test(url.pathname)) {  // /@channel and /~list links open the page
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' });
     return res.end(fs.readFileSync(path.join(DIR, 'index.html')));
   }
-  if (['/opentube.mjs', '/server.mjs', '/headless.mjs', '/rtmp.mjs', '/host.mjs'].includes(url.pathname) && fs.existsSync(path.join(DIR, url.pathname.slice(1)))) {   // for the My node command
+  if (['/opentube.mjs', '/server.mjs', '/headless.mjs', '/rtmp.mjs', '/host.mjs', '/tls.mjs'].includes(url.pathname) && fs.existsSync(path.join(DIR, url.pathname.slice(1)))) {   // for the My node command
     res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-cache', 'access-control-allow-origin': '*' });
     return res.end(fs.readFileSync(path.join(DIR, url.pathname.slice(1))));
   }
@@ -372,15 +374,26 @@ const server = http.createServer((req, res) => {
     return res.end(JSON.stringify({ network: engine.MAIN_ID, height: engine.main.best.height, tip: engine.main.best.hash, registered: engine.directory.size, pending: engine.mempool.size, chains: engine.chains.size, peers: peers.size, mining: !!engine.miner, node: signer.pub, now: Date.now(), ranker: RANKER_ID, tracker: tracker.stats(), live: liveHub.stats(), liveStreams: liveHub.live().slice(0, 50), ingest: true, memberships: engine.memberships.size }));
   }
   res.writeHead(404); res.end('not found');
-});
-server.on('upgrade', (req, socket) => {
+}
+function upgrade(req, socket) {
   const p = new URL(req.url, 'http://x').pathname;
   if (p === '/ot') acceptSocket(req, socket, 'node');
   else if (p === '/tracker') acceptSocket(req, socket, 'tracker');
   else if (p === '/live') acceptSocket(req, socket, 'live');
   else socket.destroy();
-});
-server.listen(PORT, () => {
+}
+const server = http.createServer(handle);
+server.on('upgrade', upgrade);
+server.listen(PORT, async () => {
   log(`OpenTube node on http://localhost:${PORT}  (node /ot, video tracker /tracker, live hub /live, status /status)`);
+  // PUBLIC=auto (or PUBLIC=your.domain): also serve HTTPS on 443 with a Let's Encrypt certificate, so browsers can use
+  // this node and its tracker. auto = <public IP, dashed>.sslip.io, no domain needed (tls.mjs).
+  if (process.env.PUBLIC) {
+    try {
+      const { autoHttps } = await import('./tls.mjs');
+      const pub = await autoHttps({ handler: handle, upgrade, dataDir: DATA, domain: process.env.PUBLIC === 'auto' ? null : process.env.PUBLIC, email: process.env.PUBLIC_EMAIL || null, log });
+      if (pub) process.env.PUBLIC_URL = pub.url;
+    } catch (e) { log('[https] off:', e.message); }
+  }
   if (process.env.MESH !== '0') joinMesh();
 });
