@@ -110,11 +110,11 @@ OpenTube runs on **one shared coin**. 100 units = 1 coin. Transactions ride in m
 
 - **Where coins come from:** only from running the network. Each main-chain block pays **1 coin** to whoever mined it (home nodes, your computers, or your browser when it confirms its own transaction). Every new key may claim **10 starter coins** once, which needs a few seconds of extra proof of work.
 - **What costs coins:**
-  - **Watching** someone else's video pays its creator. The page won't play it until the view is paid. It's free for your own videos, videos you host, and videos from before the coin.
+  - **Watching** is paid **per piece**, to whoever sends you each piece (see *Paying per piece*). There's no pay button, and a partial watch costs only what you downloaded. Free: your own videos, channels you host, and videos from before the coin.
   - **Likes** pay the author of the video or comment. **Dislikes** cost the same but are burned. Only paid votes count in rankings.
   - **Posting** a video pays the members registered as **hosts** of that channel, split evenly (joining a channel registers you). If nobody hosts it yet, the block's miner gets it. A video doesn't show up, rank or get hosted until its fee is paid; its owner sees a *Publish* button.
   - **Tips** and transfers: *Wallet → Send coins*, and the *Tip* button on channels.
-- **Ads pay you back:** watching an ad is what earns coins. A completed ad view pays the ad's price from the advertiser channel's coins, half to the viewer and half to the creator of the video it ran with. When a video costs coins and an ad is available, the ad plays first, and the view is then paid from what you just earned, so you can watch with an empty wallet. Watching the same ad again pays again; ads that overlap in time don't (one ad at a time per viewer). A channel's own ads always run before its own videos. Sponsoring another channel (*Manage → sponsors*), or a list doing so, runs its ads too. When creating an ad, the advertiser chooses whether a view pays only when another viewer watched it in sync and confirms it (safer against bots, but rare on a small network) or always. Ads that don't say pay always, up to their maximum views.
+- **Ads pay you back:** watching an ad is what earns coins. A verified ad view takes the ad's price from the advertiser channel's coins. Half goes to the creator of the video it ran with. The other half becomes an **ad-view certificate** owned by the viewer (see *Ad views*). A skipped ad pays for the share you actually watched. Watching the same ad again pays again; ads that overlap in time don't (one ad at a time per viewer). A channel's own ads always run before its own videos. Sponsoring another channel (*Manage → sponsors*, or *Market → Ad board → Run on my channel*), or a list doing so, runs its ads too. An advertiser can require that a view only pays when another viewer watched in sync and confirms it (safer against bots), or let every view pay. Ads name a **category** (what product they're for) and tags.
 - **Nodes are paid for what they provide** (`SERVE` in the core). The network counts resources in 10-minute periods. Whoever *receives* something signs a receipt for the node that gave it:
   - **Video bytes:** bytes downloaded from the node's WebTorrent peer. Its peer ID is derived from the node's key, so browsers know whose bytes they got.
   - **Time connected:** seconds the browser was linked to the node.
@@ -131,6 +131,50 @@ OpenTube runs on **one shared coin**. 100 units = 1 coin. Transactions ride in m
 - **Prices set themselves:** after every block, the watch, like and post-per-GB prices each move up to 12.5% toward a target load (`COIN.target`). Busy means dearer and quiet means cheaper, so storage and attention are priced by the network itself. A payment may be up to 25% under the current price, because prices move while it waits for a block.
 - **Before the coin:** videos and votes from before 2026-11-19 09:00 UTC stay free. Transactions in the old per-person tokens stay valid in history but no longer affect balances.
 - **Known weaknesses:** keys are free, so starter coins and block rewards can be farmed with CPU (each costs proof of work, like mining). Host registration isn't checked against actually storing the videos yet (storage proofs are not built). Resource receipts are only as honest as the keys signing them: someone with many keys (each one needs the starter work) could receipt their own node, up to the per-key caps. A modified page could watch without paying, because video travels peer to peer.
+
+## Paying per piece
+
+A video torrent is split into pieces, each checked against the hash in the torrent. OpenTube adds one message type, `ot_pay`, to the BitTorrent connection itself (BitTorrent's extension protocol, the same mechanism WebTorrent uses for metadata), so payment follows the exact exchange between the peer that gave a piece and the peer that got it:
+
+1. When two peers connect they say who they are (`{hello: key}`).
+2. As pieces arrive, the downloader signs a running **tab** for that peer and video: "you've sent me n pieces; I owe you amt units in total". amt grows by the network's **piece price** per piece; it started at 0.02 coins and adjusts every block like the other prices. It goes to the peer over the same connection.
+3. The peer keeps the latest tab and cashes it in once a minute with a `tabs` transaction. The ledger moves the difference since last time from the payer, as much as they have, and splits it:
+   - 10% to the network's resource pools;
+   - of the rest, **half to the video's creator** (the channel's key) and half to the peer.
+
+   The first tab from a viewer counts as one view.
+4. A peer stops sending to anyone who is more than 4 pieces behind on tabs, or whose balance can't cover them.
+
+**Free:** your own videos, channels you host (joining registers you), peers who host the channel (or your own node), videos from before the coin, and ads. A node earns tabs under its own key and passes what it earns to its owner every 10 minutes, keeping 20 coins for its own downloads.
+
+## Ad views (certificates)
+
+The viewer's half of a verified ad view is held in a **certificate**: a ledger record of who watched which advertiser's ad, holding the coins taken from the advertiser at that moment. *Wallet → Ad views* groups yours by advertiser. A certificate can be:
+
+- **cashed in:** you get the coins it holds;
+- **given:** for example, to the creator whose fans you are;
+- **sold** on the market, alone or in bundles.
+
+A single 2-cent view is too small to sell, but a bundle of thousands of views of one advertiser's ads is something a creator can sell back to that advertiser for whatever they agree, in coins on the market or off the network (cash, PayPal, gift cards). The network only guarantees that the views are real and each one is cashed in once. An advertiser who buys back its own certificates gets its coins back by cashing them in.
+
+## Market
+
+*Market* holds listings on the main chain:
+
+- **For sale:** a fixed price. *Buy* pays the seller (10% to the resource pools).
+- **Auctions:** a starting bid and an end time, up to 30 days. Each bid must beat the high bid by 5%. The high bid is held by the ledger, an outbid bidder is refunded at once, and the auction settles automatically at its end.
+- **Ad views:** listings that carry ad-view certificates. They move to the buyer by themselves.
+- **Ad board:** every ad the browser knows, with its category, price and length, and a *Run on my channel* button.
+
+Anything that isn't coins or certificates (goods, gift cards, services) is delivered by the seller off the network, using the contact in the listing.
+
+## Groups
+
+A **group** is a chain kind where members post. Create one under *My node* and choose whether anyone can post or only members you approve (*Manage → approve*). Posts, which can include a picture, plus replies and likes are blocks on the group's chain, so anyone who subscribes keeps a copy. Likes pay the author. Find groups under *Explore → Groups*.
+
+## Tags and "not interested"
+
+Videos and ads carry up to 8 tags, and ads a product category. Click a tag to see its videos (`#/tag/name`). Click ✕ next to a tag on a video, or set categories under *My node → Not interested*, and videos and ads with those tags or categories are hidden for you. That list stays in your browser; it's never published.
 
 ## Network & diagnostics
 

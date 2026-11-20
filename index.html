@@ -2874,6 +2874,7 @@ function rankCard(i, n) {
   const b = chains.get(i.c)?.blocks.get(i.v);
   const card = b ? videoCard(i.c, b) : h('a', { class: 'card', href: `#/v/${i.c}/${i.v}` }, h('div', { class: 'thumb' }, '▶'),
     h('div', { class: 'meta' }, h('h3', { title: i.t }, i.t), h('div', { class: 'sub' }, `${i.n} · ${fmtViews(viewsOf(i.v))} · ${ago(i.ts)} · 👍 ${i.up}`)));
+  if (!card) return null;   // hidden: you're not interested in one of its tags
   if (n) card.querySelector('.thumb').append(h('span', { class: 'rank-n' }, '#' + n));
   return card;
 }
@@ -2883,7 +2884,7 @@ function channelCard(id) {
   const isRanker = p.kind === 'list' && g.payload.ranking;
   return h('a', { class: 'card ccard', href: `#/c/${id}` }, avatar(p.avatar, p.name),
     h('h3', { style: 'margin:0' }, p.name), h('div', { class: 'fp' }, '·' + fp(g.author)),
-    h('p', {}, p.about || (p.kind === 'list' ? (isRanker ? 'Ranking list' : 'Curated list') : 'Channel')),
+    h('p', {}, p.about || (p.kind === 'list' ? (isRanker ? 'Ranking list' : 'Curated list') : p.kind === 'group' ? 'Group' : 'Channel')),
     h('div', { class: 'row', style: 'justify-content:center;margin-top:8px' },
       E.directory.has(id) ? null : h('span', { class: 'badge warn' }, 'pending'),
       isRanker ? h('span', { class: 'badge' }, 'ranking') : null,
@@ -3208,7 +3209,7 @@ function interestsPanel() {
     h('div', { class: 'row', style: 'margin-top:8px' }, tagIn, h('button', { class: 'small', onclick: () => { for (const t of parseTags(tagIn.value)) setMuted('tags', t, true); tagIn.value = ''; } }, 'Add'), catSel));
 }
 views.explore = { render() {
-  const tab = ['trending', 'new', 'channels', 'lists'].includes(route.tab) ? route.tab : 'trending';
+  const tab = ['trending', 'new', 'channels', 'lists', 'groups'].includes(route.tab) ? route.tab : 'trending';
   const q = keep('q', () => h('input', { type: 'search', placeholder: 'Search videos, channels and lists…', oninput: () => views.explore.fill?.() }));
   const pickRanker = keep('ranker', () => h('select', { title: 'Who ranks the videos you see', onchange: (e) => { settings.ranker = e.target.value || null; saveSettings(); views.explore.fill?.(); } }));
   const body = h('div');
@@ -4228,10 +4229,10 @@ function runAd(ad, { player, panel, video, creator, alive }) {
     const needW = ad.terms.witnesses ?? 0;
     if (ws.length < needW) return finish({ ok: false, text: `Not counted: this ad pays only views that ${needW} other viewer(s) watched in sync with you, and nobody else was watching it right now.` });
     try {
-      const bytes = Math.max(1, Math.floor(t.size * Math.min(sent, t.duration) / t.duration));   // the share of the ad you actually watched
+      const bytes = skipped ? Math.max(1, Math.floor(t.size * Math.min(sent, t.duration) / t.duration)) : t.size;   // skipped: only the share you actually watched
       await E.submitTx({ claim: { terms: t, slot, video, creator, witnesses: ws, bytes } });
       const p = Math.max(1, Math.floor(t.perView * bytes / t.size)), half = Math.floor(p / 2);
-      finish({ ok: true, text: `✅ ${ws.length ? `View confirmed by ${ws.length} other viewer(s). ` : ''}${sent < t.duration ? `You watched ${Math.round(100 * sent / t.duration)}% of it. ` : ''}You get an ad-view certificate worth ${fmtCoin(half)} coins (Wallet → Ad views) and the creator earns ${fmtCoin(p - half)}, once the next block confirms it.` });
+      finish({ ok: true, text: `✅ ${ws.length ? `View confirmed by ${ws.length} other viewer(s). ` : ''}${skipped ? `You watched ${Math.round(100 * Math.min(sent, t.duration) / t.duration)}% of it. ` : ''}You get an ad-view certificate worth ${fmtCoin(half)} coins (Wallet → Ad views) and the creator earns ${fmtCoin(p - half)}, once the next block confirms it.` });
     } catch (e) { finish({ ok: false, text: 'Claim rejected: ' + e.message }); }
   });
 }
