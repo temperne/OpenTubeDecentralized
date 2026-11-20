@@ -11,8 +11,16 @@ import core from './core.gen.mjs';
 const rankEvery = (env) => Math.max(10, Number(env.RANK_EVERY_SECONDS) || 300) * 1000;
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    if (url.pathname === '/status' && request.method === 'GET') {   // cached for 30 s at the edge: many tabs, one Durable Object request
+      const cache = caches.default, key = new Request(url.origin + '/status');
+      const hit = await cache.match(key); if (hit) return hit;
+      const fresh = await env.NODE.get(env.NODE.idFromName('main')).fetch(request);
+      const res = new Response(fresh.body, fresh); res.headers.set('cache-control', 'public, max-age=30');
+      ctx.waitUntil(cache.put(key, res.clone()));
+      return res;
+    }
     if (url.pathname === '/ot' || url.pathname === '/tracker' || url.pathname === '/live' || url.pathname === '/status') {
       // One node for the whole network: every browser talks to the same Durable Object.
       return env.NODE.get(env.NODE.idFromName('main')).fetch(request);

@@ -115,7 +115,7 @@ if (fs.existsSync(blocksFile)) {
 }
 if (fs.existsSync(memFile)) for (const m of JSON.parse(fs.readFileSync(memFile, 'utf8'))) await engine.acceptMembership(m);
 log(`network ${engine.MAIN_ID.slice(0, 16)}… · main height ${engine.main.best.height} · ${engine.directory.size} registered · ${engine.chains.size} chains loaded`);
-setInterval(() => engine.gossip(), 15000);
+setInterval(() => engine.gossip(), 60000);   // repair pass; new blocks are pushed right away
 
 // ---- OBS "Start Streaming" (RTMP_PORT): OBS → rtmp://localhost/live → this node → the live hub. The owner first clicks
 // Go live → Stream from OBS on the site and picks this computer; that live block names this node's key as `relay`.

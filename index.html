@@ -2132,7 +2132,7 @@ async function onLiveMsg(sess, m) {
       if (m.member && canHost() && !sess.capture) await openCapture(sess);
       return;
     case 'nostream':   // not started yet, or already over: try again for a little while
-      if ((++sess.tries < 10 || broadcasts.get(sess.chainId)?.stream === sess.stream) && !sess.ended) setTimeout(() => viewing.get(sess.stream) === sess && sendWatch(sess), 3000);   // the owner waits for OBS as long as it takes
+      if ((++sess.tries < 10 || broadcasts.get(sess.chainId)?.stream === sess.stream) && !sess.ended) setTimeout(() => viewing.get(sess.stream) === sess && sendWatch(sess), broadcasts.get(sess.chainId)?.stream === sess.stream ? 10000 : 3000);   // the owner waits for OBS as long as it takes
       else { sess.ended = true; sess.ui?.ended('This stream isn’t live right now.'); }
       return;
     case 'parent':
@@ -2307,7 +2307,7 @@ function segmentPlayer(video, mime, header = null) {
   const myMem = await kv.get('membership'); if (myMem) await E.acceptMembership(myMem);
 }
 setInterval(() => kv.set('pending', [...mempool.values()].filter(g => isMine(g.author))), 5000);
-setInterval(() => E.gossip(), 15000);
+setInterval(() => E.gossip(), 60000);   // a repair pass: new blocks and transactions are pushed the moment they appear
 E.maybeMine();
 initFolder();
 // ---------------------------------------------------------------- UI
@@ -3218,9 +3218,9 @@ async function probeHome() {
 async function probeStorage() {
   try { const est = await navigator.storage.estimate(); diag.storage = { usage: est.usage, quota: est.quota, persisted: await navigator.storage.persisted?.() }; } catch {}
 }
-function runProbes() { probeTrackers(); probeHome(); probeStorage(); }
-setTimeout(() => { runProbes(); probeStun(); }, 2000);
-setInterval(runProbes, 60000);
+function runProbes() { if (route.name === 'network') probeTrackers(); probeHome(); probeStorage(); }   // tracker tests open connections: only on the Network page
+setTimeout(() => { probeHome(); probeStorage(); probeStun(); }, 2000);
+setInterval(runProbes, 5 * 60000);
 
 // Which video does an infohash belong to?
 function videoForInfohash(ih) {
@@ -3307,6 +3307,7 @@ const worst = (checks) => checks.some(c => c.level === 'error') ? 'error' : chec
 const pill = (level, text) => h('span', { class: 'pill ' + level }, text || { ok: '✅ OK', warn: '⚠️ Degraded', error: '❌ Problem' }[level]);
 
 views.network = { render() {
+  if (!diag.trackers.size) probeTrackers();   // tracker tests run only while this page is open
   const checks = healthChecks();
   const ago_ = (ts) => ts ? ago(ts) : 'never';
   const followed = [...chains.values()].filter(c => c !== main).sort((a, b) => (subs[b.id] ? 1 : 0) - (subs[a.id] ? 1 : 0));
