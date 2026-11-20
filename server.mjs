@@ -125,7 +125,7 @@ if (fs.existsSync(memFile)) for (const m of JSON.parse(fs.readFileSync(memFile, 
 log(`network ${engine.MAIN_ID.slice(0, 16)}… · main height ${engine.main.best.height} · ${engine.directory.size} registered · ${engine.chains.size} chains loaded`);
 setInterval(() => engine.gossip(), 60000);   // repair pass; new blocks are pushed right away
 // The public feed (core: SQUARE): keep this month's chain from the start (older months open as peers mention them).
-const openSquare = () => { const id = engine.squareId(core.monthKey(Date.now())); if (id && !engine.chains.has(id)) engine.requestChain(engine.openChain(id)); };
+const openSquare = () => { for (const kind of ['square', 'mail']) { const id = engine.squareId(core.monthKey(Date.now()), kind); if (id && !engine.chains.has(id)) engine.requestChain(engine.openChain(id)); } };   // and this month's private messages
 if (!MAIN_ONLY) { openSquare(); setInterval(openSquare, 3600000); }
 
 // ---- OBS "Start Streaming" (RTMP_PORT): OBS → rtmp://localhost/live → this node → the live hub. The owner first clicks

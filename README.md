@@ -198,6 +198,15 @@ A **group** is a chain kind where members post. Create one under *My node* and c
 - **Backups:** anyone can keep a copy of the chain, so friends and every node back up your page, but nobody else can read it. A non-friend sees only "🔒 not shared with you".
 - **What's public:** nothing in a post is readable; still public are that a post exists, when it was posted, and how many people it was sealed to.
 
+## Private messages
+
+*Messages* are end-to-end encrypted.
+
+- **Messaging keys:** your identity publishes **messaging keys** (ECDH P-256) with `msgkey` transactions. You can add new ones and retire old ones (*Messages → Messaging keys*), and they're in your key backup.
+- **Sending:** the sender makes a one-time key pair, does ECDH with the recipient's newest messaging key, and encrypts the message with that shared secret. The message's **tag** is the shared secret hashed with a random salt. The sender's identity and signature sit inside the encrypted part, and the block is signed by a throwaway key, so the network sees only `{ tag, salt, one-time key, ciphertext }`: neither who sent it nor who it's for.
+- **Receiving:** messages travel on one shared mail chain per month. Your browser computes the tag for each message with each of your messaging keys and opens only the ones that match. Someone who knows your public key can't do that, because they don't have the secret.
+- **Sent messages:** your copies stay in your browser.
+
 ## Public posts (a feed for everyone)
 
 *Posts* is a public feed, like a microblog:

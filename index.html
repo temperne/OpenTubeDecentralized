@@ -128,6 +128,7 @@
     <a href="#/explore" data-nav="explore">Explore</a>
     <a href="#/square" data-nav="square">Posts</a>
     <a href="#/friends" data-nav="friends">Friends</a>
+    <a href="#/messages" data-nav="messages">Messages</a>
     <a href="#/market" data-nav="market">Market</a>
     <a href="#/orgs" data-nav="orgs">Orgs</a>
     <a href="#/wallet" data-nav="wallet">Wallet</a>
@@ -270,10 +271,10 @@ class Chain {
 function validGenesis(g) {
   if (!g || g.v !== 1 || g.chain !== null || !Array.isArray(g.parents) || g.parents.length || g.height !== 0 || !isKey(g.author)) return false;
   const p = g.payload;
-  if (!p || p.type !== 'genesis' || !['channel', 'list', 'group', 'circle', 'square', 'org', 'case'].includes(p.kind)) return false;
+  if (!p || p.type !== 'genesis' || !['channel', 'list', 'group', 'circle', 'square', 'mail', 'org', 'case'].includes(p.kind)) return false;
   if (p.parent !== undefined && (!isHex(p.parent, 64) || !['case', 'org'].includes(p.kind))) return false;   // child chains: cases, and sub-jurisdictions of an org
   if (p.kind === 'case' && p.parent === undefined) return false;
-  if (p.kind === 'square') return validSquareGenesis(g);
+  if (p.kind === 'square' || p.kind === 'mail') return validSquareGenesis(g);
   if (!isStr(p.name, LIMITS.name) || !p.name.trim() || !isStr(p.about, LIMITS.about)) return false;
   if (p.kind === 'channel' && (!isImg(p.avatar) || !['anyone', 'approved', 'off'].includes(p.comments))) return false;
   if (p.kind === 'list' && p.ranking !== undefined && p.ranking !== true) return false;
@@ -298,9 +299,19 @@ const sealedShape = (p) => isStr(p.iv, 40) && typeof p.ct === 'string' && p.ct.l
 const SQUARE = { key: 'A'.repeat(43), first: [2026, 10], text: 1000 };
 const monthKey = (ts) => { const d = new Date(ts); return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0'); };
 const monthStart = (m) => { const [y, mo] = m.split('-').map(Number); return Date.UTC(y, mo - 1, 1); };
-const squareGenesisBody = (m) => ({ v: 1, chain: null, parents: [], height: 0, ts: monthStart(m), author: SQUARE.key, payload: { type: 'genesis', kind: 'square', name: 'Public posts ' + m, about: '', month: m }, nonce: 0 });
-const validSquareGenesis = (g) => g.author === SQUARE.key && g.sig === 'square' && /^\d{4}-\d{2}$/.test(g.payload.month) && g.ts === monthStart(g.payload.month) && g.payload.name === 'Public posts ' + g.payload.month && g.payload.about === '' && g.nonce === 0;
-async function squareGenesis(m) { const g = squareGenesisBody(m); g.hash = await hashBlock(g); g.sig = 'square'; return g; }
+// The same for private messages: one MAIL chain per month (see MAIL).
+const monthChainName = (kind, m) => (kind === 'mail' ? 'Messages ' : 'Public posts ') + m;
+const squareGenesisBody = (m, kind = 'square') => ({ v: 1, chain: null, parents: [], height: 0, ts: monthStart(m), author: SQUARE.key, payload: { type: 'genesis', kind, name: monthChainName(kind, m), about: '', month: m }, nonce: 0 });
+const validSquareGenesis = (g) => g.author === SQUARE.key && g.sig === 'square' && /^\d{4}-\d{2}$/.test(g.payload.month) && g.ts === monthStart(g.payload.month) && g.payload.name === monthChainName(g.payload.kind, g.payload.month) && g.payload.about === '' && g.nonce === 0;
+async function squareGenesis(m, kind = 'square') { const g = squareGenesisBody(m, kind); g.hash = await hashBlock(g); g.sig = 'square'; return g; }
+// ---- private messages. An identity publishes MESSAGING KEYS (ECDH P-256) with `msgkey` transactions and can retire
+// them. To write to someone, the sender makes a one-time key pair and does ECDH with the recipient's messaging key; the
+// shared secret encrypts the message and, hashed with a random salt, makes its TAG. On the chain a message is just
+// { tag, salt, eph (the one-time public key), iv, ct }: who it's for and who it's from aren't visible. The sender's
+// identity and signature are inside the encrypted part. A recipient recognizes their messages by computing the tag
+// for each one with their own messaging keys.
+const MAIL = { ct: 60000, keys: 4 };
+const msgShape = (p) => p.type === 'msg' && isHex(p.tag, 64) && isHex(p.salt, 32) && typeof p.eph === 'string' && /^[A-Za-z0-9_-]{80,100}$/.test(p.eph) && isStr(p.iv, 40) && typeof p.ct === 'string' && p.ct.length <= MAIL.ct;
 function squareMonths(now = Date.now()) {   // every month from the first until next month
   const out = []; let [y, mo] = SQUARE.first; const end = new Date(now); const ey = end.getUTCFullYear(), em = end.getUTCMonth() + 1;
   while (y < ey || (y === ey && mo <= em)) { out.push(y + '-' + String(mo + 1).padStart(2, '0')); mo++; if (mo > 11) { mo = 0; y++; } }
@@ -364,6 +375,7 @@ function validPayload(chain, b, CFG) {
   const owner = b.author === chain.ownerAt(b.parents);
   if (p.type === 'rekey') return owner && kind_(chain) !== 'square' && isKey(p.key) && p.key !== b.author && typeof p.proof === 'string';   // proof checked in rekeyProofOk
   const kind = chain.genesis.payload.kind;
+  if (kind === 'mail') return !owner && zeroBits(b.hash) >= CFG.commentDifficulty && msgShape(p);   // sealed messages only
   if (kind === 'square') {   // nobody owns it: everything is a member's block with anti-spam work
     if (owner || zeroBits(b.hash) < CFG.commentDifficulty) return false;
     const month = chain.genesis.payload.month, start = monthStart(month), next = new Date(start); next.setUTCMonth(next.getUTCMonth() + 1);
@@ -649,6 +661,7 @@ class Ledger {
     this.receipts = new Set(src?.receipts); this.rcptUse = new Map(src?.rcptUse); this.poolFees = new Map(src?.poolFees);
     this.settled = new Set(src?.settled); this.earned = new Map([...(src?.earned || [])].map(([k, v]) => [k, [...v]])); this.clock = src?.clock || 0;   // viewer -> first time slot after the last ad they were paid for
     this.names = new Map(src?.names); this.nameOf = new Map(src?.nameOf);   // '@cooking' -> { chain, key }; chain -> '@cooking'
+    this.msgkeys = new Map([...(src?.msgkeys || [])].map(([k, v]) => [k, [...v]]));   // identity -> its current messaging keys (newest last)
     this.superior = new Map(src?.superior);   // court key -> the court above it (appeals go there)
     this.judges = new Map([...(src?.judges || [])].map(([k, v]) => [k, new Set(v)]));   // court key -> keys that may rule for it
     this.owners = new Map(src?.owners);   // key -> the identity it belongs to (channel keys: `bind`; retired identities: `retire`)
@@ -712,6 +725,7 @@ class Ledger {
       return this.superior.has(E.court || L.arbiter) ? null : 'this is the highest court: its ruling is final';
     }
     if (t.court) return this.superior.has(t.from) ? 'this court already has a court above it' : null;
+    if (t.msgkey) { const cur = this.msgkeys.get(t.from) || []; return t.msgkey.on ? (cur.includes(t.msgkey.key) ? 'already published' : null) : (cur.includes(t.msgkey.key) ? null : 'not one of your messaging keys'); }
     if (t.judge) return null;
     if (t.unlist) { const L = this.listings.get(t.unlist.id); return !L || L.seller !== t.from ? 'not your listing' : L.high ? 'it already has a bid' : null; }
     if (t.buy) {
@@ -765,6 +779,7 @@ class Ledger {
     } else if (t.retire) {   // an identity hands everything to a new key: balance, channels (via resolve), and stops sending
       const raw = this.bal.get(t.from) || 0; if (raw) this.bal.delete(t.from);
       this.owners.set(t.from, t.retire.to); this.retired.add(t.from); if (raw) this.add(t.retire.to, raw);
+      if (this.msgkeys.has(t.from)) { this.msgkeys.set(t.retire.to, [...(this.msgkeys.get(t.retire.to) || []), ...this.msgkeys.get(t.from)].slice(-MAIL.keys)); this.msgkeys.delete(t.from); }
       if (this.starters.has(t.from)) this.starters.add(t.retire.to);
     } else if (t.starter) { this.starters.add(t.from); this.add(t.from, COIN.starter); this.minted += COIN.starter; }
     else if (t.serve) {
@@ -819,6 +834,10 @@ class Ledger {
     } else if (t.appeal) {   // the ruling is set aside until the court above rules
       const L = this.listings.get(t.appeal.id), E = L.escrow;
       E.state = 'disputed'; E.court = this.superior.get(E.court || L.arbiter); E.appeals = (E.appeals || 0) + 1; E.case = t.appeal.case || E.case;
+    } else if (t.msgkey) {
+      const cur = (this.msgkeys.get(t.from) || []).filter(k => k !== t.msgkey.key);
+      if (t.msgkey.on) cur.push(t.msgkey.key);
+      if (cur.length) this.msgkeys.set(t.from, cur.slice(-MAIL.keys)); else this.msgkeys.delete(t.from);
     } else if (t.court) { this.superior.set(t.from, t.court.parent);
     } else if (t.judge) {
       const set = this.judges.get(t.from) || this.judges.set(t.from, new Set()).get(t.from);
@@ -985,7 +1004,7 @@ function txShape(t) {
     if (!Array.isArray(outs) || !Array.isArray(burns) || outs.length > 100 || burns.length > 20 || !(outs.length + burns.length)) return false;
     return outs.every(o => o && isKey(o.to) && isKey(o.token) && amtOk(o.amt) && o.to !== t.from) && burns.every(b => b && isKey(b.token) && b.token !== t.from && amtOk(b.amt));
   }
-  const acts = ['pay', 'starter', 'post', 'view', 'vote', 'host', 'claim', 'name', 'serve', 'tabs', 'redeem', 'certs', 'list', 'unlist', 'buy', 'bid', 'bind', 'retire', 'release', 'dispute', 'rule', 'appeal', 'court', 'judge'].filter(k => t[k] !== undefined);
+  const acts = ['pay', 'starter', 'post', 'view', 'vote', 'host', 'claim', 'name', 'serve', 'tabs', 'redeem', 'certs', 'list', 'unlist', 'buy', 'bid', 'bind', 'retire', 'release', 'dispute', 'rule', 'appeal', 'court', 'judge', 'msgkey'].filter(k => t[k] !== undefined);
   if (acts.length !== 1 || t.outs !== undefined || t.burns !== undefined) return false;
   const x = t[acts[0]];
   switch (acts[0]) {
@@ -1001,6 +1020,7 @@ function txShape(t) {
     case 'redeem': return !!x && Array.isArray(x.ids) && x.ids.length >= 1 && x.ids.length <= PIECE.maxCerts && x.ids.every(i => isHex(i, 64)) && new Set(x.ids).size === x.ids.length;
     case 'certs': return !!x && isKey(x.to) && x.to !== t.from && Array.isArray(x.ids) && x.ids.length >= 1 && x.ids.length <= PIECE.maxCerts && x.ids.every(i => isHex(i, 64)) && new Set(x.ids).size === x.ids.length;
     case 'list': return listingShape(x);
+    case 'msgkey': return !!x && typeof x.key === 'string' && /^[A-Za-z0-9_-]{80,100}$/.test(x.key) && typeof x.on === 'boolean';
     case 'release': return !!x && isHex(x.id, 64);
     case 'appeal': return !!x && isHex(x.id, 64) && (x.case === undefined || isHex(x.case, 64));
     case 'court': return !!x && isKey(x.parent) && x.parent !== t.from && typeof x.sig === 'string';   // x.sig: the court above agrees (courtPreimage)
@@ -1411,8 +1431,8 @@ async function createEngine(o) {
 
   const headsOf = (c) => c === main ? [main.best.hash] : [...c.heads];
   const squares = new Map();   // chain id -> genesis of a month's public feed (derived, never registered)
-  for (const m of squareMonths(Date.now() + 40 * 86400000)) { const g = await squareGenesis(m); squares.set(g.hash, g); }
-  const squareId = (m) => [...squares.values()].find(g => g.payload.month === m)?.hash || null;
+  for (const m of squareMonths(Date.now() + 40 * 86400000)) for (const kind of ['square', 'mail']) { const g = await squareGenesis(m, kind); squares.set(g.hash, g); }
+  const squareId = (m, kind = 'square') => [...squares.values()].find(g => g.payload.month === m && g.payload.kind === kind)?.hash || null;
   const childGenesis = new Map();   // child chain id -> genesis (registered on its parent chain)
   const genesisFor = (id) => chains.get(id)?.genesis || E.directory.get(id)?.genesis || mempool.get(id) || squares.get(id) || childGenesis.get(id) || null;
   const announce = (c, to) => send({ t: 'heads', c: c.id, h: headsOf(c) }, to);
@@ -1770,12 +1790,13 @@ async function createEngine(o) {
     body.sig = await signer.sign(body.hash);
     return body;
   }
-  async function append(chainId, payload, onProgress) {
+  async function append(chainId, payload, onProgress, as = null) {
     const c = chains.get(chainId);
     const parents = [...c.heads].slice(0, LIMITS.parents);
     const height = Math.max(...parents.map(p => c.blocks.get(p).height)) + 1;
-    // Owner actions are signed with the channel's key; everyone else uses their personal key.
-    const signer = o.keyFor?.(c.owner) || o.signer;
+    // Owner actions are signed with the channel's key; everyone else uses their personal key (or `as`: e.g. a
+    // throwaway key, so a private message's block doesn't point to its sender).
+    const signer = as || o.keyFor?.(c.owner) || o.signer;
     const pow = c.owner === signer.pub ? 0 : CFG.commentDifficulty;
     const b = await makeBlock({ chain: chainId, parents, height, payload, pow, onProgress, signer });
     await insert(chainId, [b]);
@@ -1826,7 +1847,7 @@ async function createEngine(o) {
   });
 }
 
-globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, ORG, orgRoles, orderPreimage, courtPreimage, bindPreimage, retirePreimage, rekeyPreimage, SQUARE, SEAL, monthKey, squareMonths, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
+globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, MAIL, ORG, orgRoles, orderPreimage, courtPreimage, bindPreimage, retirePreimage, rekeyPreimage, SQUARE, SEAL, monthKey, squareMonths, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
 })();
 </script>
 
@@ -1922,7 +1943,7 @@ function backupAllKeys() {
   const owned = (pub) => [...new Set([...E.directory.keys(), ...mempool.keys(), ...chains.keys()])].filter(id => id !== MAIN_ID && genesisFor(id)?.author === pub);
   download(`opentube-all-keys-${new Date().toISOString().slice(0, 10)}.json`, {
     format: 'opentube-keys', created: new Date().toISOString(),
-    personal: { pub: identity.pub, priv: identity.priv, ...(identity.enc ? { enc: identity.enc } : {}), controls: personalChains() },
+    personal: { pub: identity.pub, priv: identity.priv, ...(identity.enc ? { enc: identity.enc } : {}), ...(identity.msg ? { msg: identity.msg } : {}), controls: personalChains() },
     channels: Object.values(channelKeys).map(k => {
       const id = k.chain || owned(k.pub)[0]; const g = id && genesisFor(id);
       return { chain: id || null, kind: g?.payload.kind || 'channel', name: g?.payload.name || k.name || '', pub: k.pub, priv: k.priv };
@@ -1946,7 +1967,7 @@ async function importKeyFile(text) {
     if (!(await checkKeyPair(personal))) return toast('The personal key in that file is not valid');
     const n = personal.controls?.length || 0;
     if (confirm(`Use the personal key from this file in this browser?${n ? ` It controls ${n} older channel(s)/list(s).` : ''} Your current personal key will be replaced, so back it up first if it matters.`)) {
-      await kv.set('identity', { pub: personal.pub, priv: personal.priv, ...(personal.enc ? { enc: personal.enc } : {}) }); await kv.set('personalExported', true);
+      await kv.set('identity', { pub: personal.pub, priv: personal.priv, ...(personal.enc ? { enc: personal.enc } : {}), ...(personal.msg ? { msg: personal.msg } : {}) }); await kv.set('personalExported', true);
       return location.reload();
     }
   }
@@ -3172,6 +3193,7 @@ function parseRoute() {
   if (p[0] === 'explore') return { name: 'explore', tab: p[1] || 'trending' };
   if (p[0] === 'me') return { name: 'me' };
   if (p[0] === 'friends') return { name: 'friends' };
+  if (p[0] === 'messages') return { name: 'messages', with: isKey(p[1]) ? p[1] : null };
   if (p[0] === 'terms') return { name: 'terms' };
   if (p[0] === 'orgs') return { name: 'orgs' };
   if (p[0] === 'square') return /^\d{4}-\d{2}$/.test(p[1] || '') && isHex(p[2], 64) ? { name: 'square', month: p[1], post: p[2] } : { name: 'square', month: /^\d{4}-\d{2}$/.test(p[1] || '') ? p[1] : null };
@@ -3295,7 +3317,8 @@ function listingCard([id, L]) {
   const what = L.kind === 'auction' ? `${L.high ? 'bid' : 'starts at'} ${fmtCoin(listingPrice(L))} · ${L.state === 'open' ? endsText(L.ends) : L.state}` : `${fmtCoin(L.price)} coins${L.state !== 'open' ? ' · ' + L.state : ''}`;
   return h('a', { class: 'card', href: `#/market/item/${id}` }, th,
     h('div', { class: 'meta' }, h('h3', { title: L.title }, L.title), h('div', { class: 'sub' }, what),
-      h('div', { class: 'sub' }, keyName(L.seller), L.certs.length ? ` · ${L.certs.length} ad view${L.certs.length === 1 ? '' : 's'}` : '', L.category && L.category !== 'adviews' ? ' · ' + CAT_NAMES[L.category] : '')));
+      h('div', { class: 'sub' }, keyName(L.seller), L.certs.length ? ` · ${L.certs.length} ad view${L.certs.length === 1 ? '' : 's'}` : '', L.category && L.category !== 'adviews' ? ' · ' + CAT_NAMES[L.category] : ''),
+      L.pending ? h('span', { class: 'badge warn' }, 'waiting for a block…') : null));
 }
 function marketNew() {
   const kind = h('select', {}, h('option', { value: 'fixed' }, 'Fixed price'), h('option', { value: 'auction' }, 'Auction'));
@@ -3326,7 +3349,7 @@ function marketNew() {
       ...(certs.length ? { certs, category: 'adviews' } : cat.value ? { category: cat.value } : {}),
       ...(court.value ? { org: court.value, arbiter: derive(orgCh(court.value).id)?.owner || genesisFor(court.value).author, hold: 14 } : {}), ...(parseTags(tags.value).length ? { tags: parseTags(tags.value) } : {}), ...(image ? { image } : {}) };
     btn.disabled = true;
-    try { await sendTx({ list: x }, me.pub, status); toast('Listed. It shows on the market once the next block confirms it.'); kept.delete('market-new'); location.hash = '#/market/mine'; }
+    try { await sendTx({ list: x }, me.pub, status); toast('Listed. Your browser is confirming it in a main-chain block, which can take a minute; it shows as “waiting for a block” until then.'); kept.delete('market-new'); location.hash = '#/market/mine'; }
     catch { btn.disabled = false; }
   } }, 'List it');
   return h('div', { class: 'panel', style: 'max-width:720px' }, h('h3', { style: 'margin-top:0' }, 'Sell something'),
@@ -3393,7 +3416,8 @@ function adBoard() {
     }) : h('div', { class: 'empty' }, 'No ads known yet. Advertisers create them on their channel’s Advertise tab.'));
 }
 views.market = { render() {
-  const tab = route.tab, all = [...E.ledger.listings].sort((a, b) => b[1].ts - a[1].ts);
+  const pending = [...E.txpool.values()].filter(t => t.list && !E.ledger.listings.has(t.hash)).map(t => [t.hash, { ...t.list, certs: t.list.certs || [], seller: t.from, ts: t.ts, high: null, bids: 0, state: 'open', pending: true }]);
+  const tab = route.tab, all = [...pending, ...E.ledger.listings].sort((a, b) => b[1].ts - a[1].ts);
   const live = all.filter(([, L]) => L.state === 'open' && (L.kind === 'fixed' || L.ends > Date.now()));
   const tabs = [['items', 'For sale'], ['auctions', 'Auctions'], ['adviews', 'Ad views'], ['ads', 'Ad board'], ['mine', 'Mine'], ['new', '＋ Sell something']];
   const grid = (list, empty) => list.length ? h('div', { class: 'grid' }, list.map(listingCard)) : h('div', { class: 'empty' }, empty);
@@ -3626,7 +3650,7 @@ async function retireIdentity(status) {
   }
   const retired = (await kv.get('retiredIdentities')) || []; retired.push({ pub: identity.pub, priv: identity.priv, at: Date.now() });
   await kv.set('retiredIdentities', retired);
-  await kv.set('identity', { ...fresh, ...(identity.enc ? { enc: identity.enc } : {}) }); await kv.set('personalExported', false);
+  await kv.set('identity', { ...fresh, ...(identity.enc ? { enc: identity.enc } : {}), ...(identity.msg ? { msg: identity.msg } : {}) }); await kv.set('personalExported', false);
   status.textContent = 'Done. Reloading with your new key…'; setTimeout(() => location.reload(), 2500);
 }
 // Replace a channel's key: the current key hands the chain to a fresh one (a rekey block the new key agrees to).
@@ -3729,6 +3753,106 @@ views.terms = { render() {
       h('li', {}, 'Goods, services and payments outside the network are between the parties; the courts’ rulings and records are what the network provides.')),
     h('p', { class: 'sub' }, 'This is a plain description of how the system works, not legal advice. Whether it binds you outside the network depends on where you live.'),
     h('button', { class: 'primary', onclick: () => { try { localStorage.setItem('opentube-terms', '1'); } catch {} $('#terms-banner').classList.add('hidden'); toast('Thanks'); } }, 'I agree'));
+} };
+// ---------------------------------------------------------------- private messages (core: MAIL)
+const { MAIL } = globalThis.OpenTubeCore;
+const hexOfBuf = (b) => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join('');
+async function myMsgKeys() {   // [{ pub, priv(CryptoKey) }], newest last; makes and publishes one the first time
+  identity.msg = identity.msg || [];
+  if (!identity.msg.length) {
+    const kp = await crypto.subtle.generateKey(ECDH, true, ['deriveBits']);
+    identity.msg.push({ pub: b64u.enc(await crypto.subtle.exportKey('raw', kp.publicKey)), priv: await crypto.subtle.exportKey('jwk', kp.privateKey), at: Date.now() });
+    await kv.set('identity', identity);
+  }
+  return Promise.all(identity.msg.map(async k => ({ ...k, key: await crypto.subtle.importKey('jwk', k.priv, ECDH, false, ['deriveBits']) })));
+}
+async function publishMsgKeys() {   // make sure the network knows the messaging keys you keep (and only those)
+  const keys = await myMsgKeys(), on = E.ledger.msgkeys.get(me.pub) || [], pend = [...E.txpool.values()].filter(t => t.from === me.pub && t.msgkey);
+  for (const k of keys.filter(k => !k.retired)) if (!on.includes(k.pub) && !pend.some(t => t.msgkey.key === k.pub)) await E.submitTx({ msgkey: { key: k.pub, on: true } }, me).catch(e => console.warn('msgkey', e.message));
+}
+setTimeout(() => publishMsgKeys().catch(() => {}), 12000);
+async function secretFor(privKey, pubB64) { const pub = await crypto.subtle.importKey('raw', b64u.dec(pubB64), ECDH, false, []); return new Uint8Array(await crypto.subtle.deriveBits({ name: 'ECDH', public: pub }, privKey, 256)); }
+const tagFor = (secret, salt) => sha256hex('opentube-mail:' + hexOfBuf(secret) + ':' + salt);
+async function sendMessage(to, text) {
+  const keys = E.ledger.msgkeys.get(E.ledger.resolve(to)) || []; if (!keys.length) throw new Error('They haven’t published a messaging key yet (they need to open Messages once)');
+  const recipientKey = keys[keys.length - 1];
+  const eph = await crypto.subtle.generateKey(ECDH, true, ['deriveBits']), ephPub = b64u.enc(await crypto.subtle.exportKey('raw', eph.publicKey));
+  const secret = await secretFor(eph.privateKey, recipientKey), salt = hexOfBuf(crypto.getRandomValues(new Uint8Array(16)));
+  const at = Date.now(), body = { from: me.pub, to, text, at };
+  body.sig = await me.sign('opentube-msg:' + JSON.stringify([to, text, at, ephPub]));
+  const ck = await crypto.subtle.importKey('raw', secret, 'AES-GCM', false, ['encrypt']), iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, ck, new TextEncoder().encode(JSON.stringify(body)));
+  const chain = mailChain(monthKey(at));
+  const throwaway = await makeSigner(await newIdentity());   // the block is signed by a key used once, not by you
+  await append(chain.id, { type: 'msg', tag: await tagFor(secret, salt), salt, eph: ephPub, iv: b64u.enc(iv), ct: b64u.enc(ct) }, undefined, throwaway);
+  const sent = (await kv.get('sentMessages')) || []; sent.push(body); await kv.set('sentMessages', sent.slice(-2000));   // your own copy stays in this browser
+}
+const mailChain = (m) => { const id = E.squareId(m, 'mail'); if (!id) return null; const fresh = !chains.has(id); const c = openChain(id); if (fresh) E.requestChain(c); return c; };
+const inboxSeen = new Map();   // block hash -> message for me | null
+async function readInbox() {
+  const keys = await myMsgKeys(), out = [];
+  const now = monthKey(Date.now()), months = [now, prevMonth(now)];
+  for (const m of months) {
+    const c = mailChain(m); if (!c) continue;   // before messages began
+    for (const b of c.blocks.values()) {
+      if (b.payload.type !== 'msg') continue;
+      if (!inboxSeen.has(b.hash)) {
+        let got = null;
+        for (const k of keys) {
+          try {
+            const secret = await secretFor(k.key, b.payload.eph);
+            if (await tagFor(secret, b.payload.salt) !== b.payload.tag) continue;   // not for this key
+            const ck = await crypto.subtle.importKey('raw', secret, 'AES-GCM', false, ['decrypt']);
+            const body = JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64u.dec(b.payload.iv) }, ck, b64u.dec(b.payload.ct))));
+            const ok = isKey(body.from) && await globalThis.OpenTubeCore.verify(body.from, 'opentube-msg:' + JSON.stringify([body.to, body.text, body.at, b.payload.eph]), body.sig);
+            got = ok ? body : null; break;
+          } catch {}
+        }
+        inboxSeen.set(b.hash, got);
+      }
+      if (inboxSeen.get(b.hash)) out.push(inboxSeen.get(b.hash));
+    }
+  }
+  return out;
+}
+views.messages = { render() {
+  const box = h('div', { style: 'max-width:820px' });
+  (async () => {
+    await publishMsgKeys();
+    const inbox = await readInbox(), sent = (await kv.get('sentMessages')) || [];
+    const all = [...inbox.map(m => ({ ...m, dir: 'in', other: E.ledger.resolve(m.from) })), ...sent.map(m => ({ ...m, dir: 'out', other: E.ledger.resolve(m.to) }))].sort((a, b) => a.at - b.at);
+    const convos = new Map(); for (const m of all) (convos.get(m.other) || convos.set(m.other, []).get(m.other)).push(m);
+    const nameFor = (k) => settings.friends?.find(f => f.key === k)?.name || keyName(k);
+    const sel = route.with && E.ledger.resolve(route.with);
+    const to = h('input', { type: 'text', placeholder: 'To: a user ID, or @channel (its owner)', value: sel || '', style: 'flex:1' });
+    const text = h('textarea', { placeholder: 'Message (only they can read it)', maxLength: 4000 }), st = h('span', { class: 'sub' });
+    const send = h('button', { class: 'primary', onclick: async () => {
+      let k = to.value.trim(); if (k.startsWith('@')) { const ch = resolveName(k.toLowerCase()); k = ch ? E.ledger.resolve(derive(ch)?.owner || genesisFor(ch).author) : ''; }
+      if (!isKey(k)) return toast('Paste their user ID or a channel @name'); if (!text.value.trim()) return;
+      send.disabled = true; st.textContent = 'Encrypting and doing anti-spam work…';
+      try { await sendMessage(k, text.value.trim()); text.value = ''; st.textContent = 'Sent.'; location.hash = '#/messages/' + k; render(true); } catch (e) { st.textContent = 'Failed: ' + e.message; } finally { send.disabled = false; }
+    } }, 'Send');
+    const keys = await myMsgKeys(), live = E.ledger.msgkeys.get(me.pub) || [];
+    const keyPanel = h('details', { class: 'panel' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Messaging keys'),
+      h('p', { class: 'sub' }, 'Messages to you are encrypted to one of these keys (the newest is used). Retire one if it may have leaked: new messages then use the others.'),
+      keys.map((k, i) => h('div', { class: 'row', style: 'justify-content:space-between' }, h('span', { class: 'mono sub' }, k.pub.slice(0, 24) + '… · ' + (live.includes(k.pub) ? 'published' : 'not published')),
+        live.includes(k.pub) ? h('button', { class: 'small', onclick: async () => { await E.submitTx({ msgkey: { key: k.pub, on: false } }, me); identity.msg[i].retired = true; await kv.set('identity', identity); toast('Retiring it on the network'); } }, 'Retire') : null)),
+      h('button', { class: 'small', style: 'margin-top:6px', onclick: async () => {
+        const kp = await crypto.subtle.generateKey(ECDH, true, ['deriveBits']);
+        identity.msg.push({ pub: b64u.enc(await crypto.subtle.exportKey('raw', kp.publicKey)), priv: await crypto.subtle.exportKey('jwk', kp.privateKey), at: Date.now() });
+        await kv.set('identity', identity); await publishMsgKeys(); toast('New messaging key published');
+      } }, 'New messaging key'));
+    const thread = sel ? h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, nameFor(sel)), (convos.get(sel) || []).map(m => h('div', { style: `margin:6px 0;text-align:${m.dir === 'out' ? 'right' : 'left'}` },
+      h('span', { class: 'tagbox', style: `padding:6px 12px;${m.dir === 'out' ? 'background:var(--accent-soft, var(--panel-2))' : ''}` }, m.text), h('div', { class: 'sub' }, ago(m.at))))) : null;
+    box.replaceChildren(h('h2', { style: 'margin-top:0' }, 'Messages'),
+      h('p', { class: 'sub' }, 'End-to-end encrypted. On the network a message shows neither who sent it nor who it’s for: only the recipient can tell it’s theirs. Messages travel on a shared chain for each month.'),
+      h('div', { class: 'split' }, h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Conversations'),
+        convos.size ? [...convos].sort((a, b) => b[1].at(-1).at - a[1].at(-1).at).map(([k, ms]) => h('a', { href: `#/messages/${k}`, class: 'item', style: 'display:block;color:inherit' }, h('b', {}, nameFor(k)), h('div', { class: 'sub' }, ms.at(-1).text.slice(0, 80))))
+          : h('div', { class: 'sub' }, 'No messages yet.')),
+        h('div', {}, thread, h('div', { class: 'panel' }, h('div', { class: 'row' }, to), text, h('div', { class: 'row', style: 'margin-top:8px' }, send, st)), keyPanel)));
+  })().catch(e => box.replaceChildren(h('div', { class: 'empty' }, 'Messages error: ' + e.message)));
+  views.messages.refresh = () => { clearTimeout(views.messages.t); views.messages.t = setTimeout(() => { if (route.name === 'messages' && !document.activeElement?.matches?.('input,textarea')) render(true); }, 1500); };
+  return box;
 } };
 views.tag = { render() {
   const t = route.tag, found = [];
