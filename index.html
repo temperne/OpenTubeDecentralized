@@ -351,6 +351,26 @@ const COIN = {
   epoch: Date.UTC(2026, 10, 19, 9)                   // videos and votes from before the coin (2026-11-19 09:00 UTC) are free
 };
 const LEDGER = { txBits: COIN.txBits, maxTxs: COIN.maxTxs, memo: COIN.memo };   // older name, still used by callers
+// ---- paying for resources: the network accounts for what each node provides and pays for it.
+// Whoever RECEIVES a resource signs a receipt: "node X sent me N bytes in this 10-minute period" (bytes), "node X was
+// connected to me for N seconds" (uptime), "node X's tracker served me for N seconds" (tracker). A node submits the
+// receipts it got in a `serve` transaction (within an hour after the period). When the period's hour is up, each
+// resource has a pool of coins for that period (newly created coins plus SERVE.feeShare of every view, like and post
+// payment made in it: busier network, bigger pools) split among nodes by their receipted amounts. Receipts only count
+// from keys that did the starter proof of work, at most `cap` per key per period, each counted once. With a grant in
+// the transaction, the earnings go to the node's owner. Mining still pays separately.
+const SERVE = {
+  epochMs: 10 * 60000, grace: 6, start: Date.UTC(2026, 10, 20, 2), feeShare: 0.1, maxReceipts: 100,
+  res: {   // pool: new coins per period (units); cap: per receiving key per period; weight: share of the fee pool
+    bytes: { pool: 200, cap: 20e9, weight: 0.6 },
+    uptime: { pool: 100, cap: 600, weight: 0.2 },
+    tracker: { pool: 50, cap: 600, weight: 0.2 }
+  }
+};
+const epochOf = (ts) => Math.floor(ts / SERVE.epochMs);
+const receiptPreimage = (r) => { const { sig, ...rest } = r; return 'opentube-receipt:' + canon(rest); };
+const receiptShape = (r) => !!r && typeof r === 'object' && r.v === 1 && r.kind === 'receipt' && Object.hasOwn(SERVE.res, r.res) && isKey(r.provider) && isKey(r.by)
+  && r.by !== r.provider && Number.isSafeInteger(r.epoch) && Number.isSafeInteger(r.amt) && r.amt > 0 && typeof r.sig === 'string';
 // Usernames: a channel can hold one @name and a list one ~name (links: site/@name, site/~name). A `name` transaction,
 // signed by the key that created the channel/list, claims a free name; claiming another frees the old one, and
 // handle null releases it. Main-chain order decides who got a name first.
@@ -369,7 +389,11 @@ class Ledger {
     this.minted = src?.minted || 0; this.burned = src?.burned || 0; this.txCount = src?.txCount || 0;
     this.claimed = new Set(src?.claimed); this.slotUsed = new Set(src?.slotUsed); this.adViews = new Map(src?.adViews); this.adPaid = new Map(src?.adPaid);
     this.adBusy = new Map(src?.adBusy);
-    this.views = new Map(src?.views);   // video -> paid views (each viewer pays once per video)   // viewer -> first time slot after the last ad they were paid for
+    this.views = new Map(src?.views);   // video -> paid views (each viewer pays once per video)
+    // resources: 'epoch|res' -> Map(payee -> units); receipts already counted; per-key use; fee pools; settled periods
+    this.served = new Map([...(src?.served || [])].map(([k, v]) => [k, new Map(v)]));
+    this.receipts = new Set(src?.receipts); this.rcptUse = new Map(src?.rcptUse); this.poolFees = new Map(src?.poolFees);
+    this.settled = new Set(src?.settled); this.earned = new Map([...(src?.earned || [])].map(([k, v]) => [k, [...v]])); this.clock = src?.clock || 0;   // viewer -> first time slot after the last ad they were paid for
     this.names = new Map(src?.names); this.nameOf = new Map(src?.nameOf);   // '@cooking' -> { chain, key }; chain -> '@cooking'
   }
   balance(k) { return this.bal.get(k) || 0; }
@@ -388,6 +412,12 @@ class Ledger {
       return null;
     }
     if (t.starter) return this.starters.has(t.from) ? 'starter coins were already claimed by this key' : null;
+    if (t.serve) {
+      const e = t.serve.epoch;
+      if (e < epochOf(SERVE.start) || e >= epochOf(t.ts) || this.settled.has(e)) return 'that period can’t take receipts';
+      if (t.serve.receipts.some(r => r.provider !== t.from || r.epoch !== e)) return 'receipts for another node or period';
+      return null;   // individual receipts that don't count are skipped in apply
+    }
     if (t.host) return null;
     if (t.claim) {
       const tid = claimTid.get(t), c = t.claim, adv = c.terms.advertiser;
@@ -420,6 +450,18 @@ class Ledger {
       if (cur) { this.names.delete(cur); this.nameOf.delete(n.chain); }
       if (n.handle) { this.names.set(n.space + n.handle, { chain: n.chain, key: t.from }); this.nameOf.set(n.chain, n.space + n.handle); }
     } else if (t.starter) { this.starters.add(t.from); this.add(t.from, COIN.starter); this.minted += COIN.starter; }
+    else if (t.serve) {
+      const e = t.serve.epoch, payee = serveGrants.get(t) || t.from;
+      for (const r of t.serve.receipts) {
+        const id = `${e}|${r.res}|${r.by}|${r.provider}`;
+        if (this.receipts.has(id) || !this.starters.has(r.by)) continue;   // counted once; only keys that did the starter work
+        const useK = `${e}|${r.res}|${r.by}`, used = this.rcptUse.get(useK) || 0, amt = Math.min(r.amt, SERVE.res[r.res].cap - used);
+        if (amt <= 0) continue;
+        this.receipts.add(id); this.rcptUse.set(useK, used + amt);
+        const k = `${e}|${r.res}`, m = this.served.get(k) || this.served.set(k, new Map()).get(k);
+        m.set(payee, (m.get(payee) || 0) + amt);
+      }
+    }
     else if (t.host) {
       const set = this.hosts.get(t.host.chain) || this.hosts.set(t.host.chain, new Set()).get(t.host.chain);
       if (t.host.on) set.add(t.from); else { set.delete(t.from); if (!set.size) this.hosts.delete(t.host.chain); }
@@ -431,25 +473,61 @@ class Ledger {
       this.adViews.set(tid, (this.adViews.get(tid) || 0) + 1); this.adPaid.set(tid, (this.adPaid.get(tid) || 0) + p);
     } else if (t.pay) { for (const o of t.pay) { this.add(t.from, -o.amt); this.add(o.to, o.amt); } }
     else if (t.post) {
-      const amt = t.post.amt, hosts = this.hostsOf(t.post.chain).filter(k => k !== t.from);
-      this.add(t.from, -amt);
+      const hosts = this.hostsOf(t.post.chain).filter(k => k !== t.from);
+      this.add(t.from, -t.post.amt);
+      const amt = t.post.amt - this.feeCut(t, t.post.amt);
       if (hosts.length) { const each = Math.floor(amt / hosts.length); for (const k of hosts) this.add(k, each); this.burned += amt - each * hosts.length; }
       else this.fees += amt;   // nobody hosts this channel yet: the block's miner gets it
       this.paid.set('post:' + t.post.video, { from: t.from, amt, to: null });
       this.use.post += t.post.size / 1e9;
     } else if (t.view) {
-      this.add(t.from, -t.view.amt); this.add(t.view.to, t.view.amt);
+      const cut = this.feeCut(t, t.view.amt);
+      this.add(t.from, -t.view.amt); this.add(t.view.to, t.view.amt - cut);
       this.paid.set(`view:${t.view.video}:${t.from}`, { from: t.from, amt: t.view.amt, to: t.view.to }); this.use.view++;
       this.views.set(t.view.video, (this.views.get(t.view.video) || 0) + 1);
     } else if (t.vote) {
       this.add(t.from, -t.vote.amt);
-      if (t.vote.v > 0) this.add(t.vote.to, t.vote.amt); else this.burned += t.vote.amt;   // dislikes are burned
+      const cut = this.feeCut(t, t.vote.amt);
+      if (t.vote.v > 0) this.add(t.vote.to, t.vote.amt - cut); else this.burned += t.vote.amt - cut;   // dislikes are burned
       this.paid.set('vote:' + t.vote.target, { from: t.from, amt: t.vote.amt, to: t.vote.v > 0 ? t.vote.to : null }); this.use.like++;
     }
     return null;
   }
   // After a block's transactions: pay its miner, then move prices toward the target load.
-  endBlock(miner) {
+  feeCut(t, amt) {   // the share of a payment that goes to the resource pools of its period
+    if (t.ts < SERVE.start) return 0;
+    const cut = Math.floor(amt * SERVE.feeShare); if (!cut) return 0;
+    const e = epochOf(t.ts); this.poolFees.set(e, (this.poolFees.get(e) || 0) + cut);
+    return cut;
+  }
+  settle(now) {   // periods whose receipt window has closed: split each resource's pool by receipted amounts
+    const done = epochOf(now) - SERVE.grace - 1;
+    const pending = new Set([...this.served.keys()].map(k => Number(k.split('|')[0])).concat([...this.poolFees.keys()]));
+    for (const e of [...pending].sort((a, b) => a - b)) {
+      if (e > done || this.settled.has(e)) continue;
+      const fees = this.poolFees.get(e) || 0; let paid = 0;
+      for (const [res, cfg] of Object.entries(SERVE.res)) {
+        const m = this.served.get(`${e}|${res}`), total = m ? [...m.values()].reduce((a, b) => a + b, 0) : 0;
+        const feePart = Math.floor(fees * cfg.weight);
+        if (!total) continue;   // nobody provided this resource: its fee share is burned below, no new coins
+        const pool = cfg.pool + feePart; this.minted += cfg.pool;
+        for (const [payee, units] of m) {
+          const amt = Math.floor(pool * units / total); if (!amt) continue;
+          this.add(payee, amt); paid += amt;
+          const list = this.earned.get(payee) || this.earned.set(payee, []).get(payee);
+          list.push({ e, res, units, amt }); if (list.length > 200) list.shift();
+        }
+        paid -= cfg.pool;   // only the fee part counts against the collected fees
+      }
+      this.burned += Math.max(0, fees - Math.max(0, paid));   // unclaimed fee shares (and rounding) are burned
+      this.settled.add(e); this.poolFees.delete(e);
+      for (const k of [...this.served.keys()]) if (k.startsWith(e + '|')) this.served.delete(k);
+      for (const k of [...this.rcptUse.keys()]) if (k.startsWith(e + '|')) this.rcptUse.delete(k);
+      for (const k of [...this.receipts]) if (k.startsWith(e + '|')) this.receipts.delete(k);
+    }
+  }
+  endBlock(miner, ts = 0) {
+    if (ts > this.clock) { this.clock = ts; this.settle(ts); }
     if (isKey(miner)) { this.add(miner, COIN.reward + this.fees); this.minted += COIN.reward; }
     else this.burned += this.fees;
     for (const k of ['post', 'view', 'like']) {
@@ -515,7 +593,7 @@ function txShape(t) {
     if (!Array.isArray(outs) || !Array.isArray(burns) || outs.length > 100 || burns.length > 20 || !(outs.length + burns.length)) return false;
     return outs.every(o => o && isKey(o.to) && isKey(o.token) && amtOk(o.amt) && o.to !== t.from) && burns.every(b => b && isKey(b.token) && b.token !== t.from && amtOk(b.amt));
   }
-  const acts = ['pay', 'starter', 'post', 'view', 'vote', 'host', 'claim', 'name'].filter(k => t[k] !== undefined);
+  const acts = ['pay', 'starter', 'post', 'view', 'vote', 'host', 'claim', 'name', 'serve'].filter(k => t[k] !== undefined);
   if (acts.length !== 1 || t.outs !== undefined || t.burns !== undefined) return false;
   const x = t[acts[0]];
   switch (acts[0]) {
@@ -527,6 +605,8 @@ function txShape(t) {
     case 'host': return !!x && isHex(x.chain, 64) && typeof x.on === 'boolean';
     case 'claim': return claimShape(x);
     case 'name': return nameShape(x);
+    case 'serve': return !!x && Number.isSafeInteger(x.epoch) && Array.isArray(x.receipts) && x.receipts.length >= 1 && x.receipts.length <= SERVE.maxReceipts && x.receipts.every(receiptShape)
+      && new Set(x.receipts.map(r => r.res + '|' + r.by)).size === x.receipts.length && (x.grant === undefined || validNodeGrant(x.grant));
   }
   return false;
 }
@@ -535,8 +615,13 @@ async function checkTx(t) {
   if (!txShape(t) || !isHex(t.hash, 64) || typeof t.sig !== 'string' || !Number.isSafeInteger(t.nonce)) return false;
   if (canon(t).length > 40000 || zeroBits(t.hash) < (t.starter ? COIN.starterBits : COIN.txBits) || await hashBlock(t) !== t.hash) return false;
   if (!(await verify(t.from, t.hash, t.sig))) return false;
+  if (t.serve) {   // every receipt signed by its receiver; a grant (if any) signed by the owner who gets paid
+    for (const r of t.serve.receipts) if (!(await verify(r.by, receiptPreimage(r), r.sig))) return false;
+    if (t.serve.grant) { if (!(await verify(t.serve.grant.user, nodeGrantPreimage(t.serve.grant), t.serve.grant.sig))) return false; serveGrants.set(t, t.serve.grant.user); }
+  }
   return t.claim === undefined || checkClaim(t);
 }
+const serveGrants = new WeakMap();   // serve tx -> owner who gets paid (set by checkTx)
 
 // ---- your nodes: programs you start with the copy-paste command from My node (full node, headless host, OBS
 // receiver). The command carries a GRANT signed by your personal key; the program makes its own node key and
@@ -929,7 +1014,7 @@ async function createEngine(o) {
     const path = []; let h = hash;
     while (!ledgerCache.has(h)) { const b = main.blocks.get(h); if (!b) return null; path.push(b); h = b.parents[0]; }
     let st = ledgerCache.get(h);
-    for (const b of path.reverse()) { st = new Ledger(st); for (const t of b.payload.txs || []) st.apply(t); st.endBlock(b.author); ledgerCache.set(b.hash, st); }
+    for (const b of path.reverse()) { st = new Ledger(st); for (const t of b.payload.txs || []) st.apply(t); st.endBlock(b.author, b.ts); ledgerCache.set(b.hash, st); }
     while (ledgerCache.size > 300) { const k = ledgerCache.keys().next().value; if (k === MAIN_ID) { ledgerCache.delete(k); ledgerCache.set(k, new Ledger()); } else ledgerCache.delete(k); }
     return st;
   }
@@ -955,7 +1040,7 @@ async function createEngine(o) {
     const before = stateAfter(b.parents[0]); if (!before) return false;
     const st = new Ledger(before);
     for (const t of txs) if (!(await checkTx(t)) || !nameAllowed(t) || st.apply(t)) return false;
-    st.endBlock(b.author);   // the miner's reward, and this block's price adjustment
+    st.endBlock(b.author, b.ts);   // the miner's reward, price adjustment, and settling finished resource periods
     ledgerCache.set(b.hash, st);
     return true;
   }
@@ -1133,6 +1218,10 @@ async function createEngine(o) {
       if (await addTx(m.x)) { maybeMine(); changed(); }
     } else if (m.t === 'mem') {
       await acceptMembership(m.m);
+    } else if (m.t === 'rcpt') {   // a usage receipt on its way to the node it pays
+      if (m.r && typeof m.r === 'object') o.onReceipt?.(m.r, from);
+    } else if (m.t === 'nodehi') {   // a peer says it's this node (its uptime/bandwidth earn under that key)
+      if (isKey(m.node)) o.onNodeHi?.(from, m.node);
     } else if (m.t === 'node') {
       await acceptNodeInfo(m.n);
     } else if (m.t === 'memrq' && isKey(m.a)) {
@@ -1279,7 +1368,7 @@ async function createEngine(o) {
   });
 }
 
-globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, COIN, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
+globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, COIN, SERVE, epochOf, receiptPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
 })();
 </script>
 
@@ -1548,6 +1637,7 @@ function saveRankings() { kv.set('rankings', [...engine.rankings.values()]); }
 const fetching = new Set();
 let watchState = null;  // the video being watched (see the watch view)
 let liveHooks = null;   // set up by the live-streaming section
+const nodeHi = new Map();   // link id -> node key (nodes introduce themselves when they connect; see "paying nodes")
 engine = await createEngine({
   signer: me,
   keyFor: (pub) => ownedSigners.get(pub) || null,
@@ -1558,6 +1648,7 @@ engine = await createEngine({
   onChange: () => scheduleRender(),
   onMembership: (m) => { if (m.author === me.pub) kv.set('membership', m); },
   onWatch: (m) => adSession?.onMessage(m),
+  onNodeHi: (from, node) => nodeHi.set(from, node),
   onRanking: () => { clearTimeout(saveRankings.t); saveRankings.t = setTimeout(saveRankings, 2000); }
 });
 const E = engine;
@@ -1586,6 +1677,79 @@ const MIRROR = isKey(params.get('mirror')) ? params.get('mirror') : null;  // se
 // ---------------------------------------------------------------- video transport (WebTorrent)
 const wt = new WebTorrent();
 wt.on('error', (e) => console.warn('webtorrent', e));
+
+// ---------------------------------------------------------------- paying nodes for what they give you (core: SERVE)
+// This browser keeps count, per node, of what it got from it in each 10-minute period: video bytes (from the node's
+// WebTorrent peer, recognized by its peer ID, which is derived from the node's key), time connected to it, and time
+// its tracker served this browser. When the period ends it signs a receipt for each and sends it to the node, which
+// turns them into coins (paid out of the period's pool, not out of your wallet).
+const { SERVE, epochOf, receiptPreimage } = globalThis.OpenTubeCore;
+const meter = {
+  nodeOf: nodeHi,     // link id -> node key
+  use: new Map(),      // epoch -> Map('res|node' -> amount)
+  sent: new Map(),     // receipt sig -> { r, tries }
+  peerIds: new Map(),  // WebTorrent peer id (hex) -> node key
+  wire: new WeakMap(), // wire -> bytes already counted
+  trackerOk: new Map(),// node key -> time its tracker last answered
+  add(res, node, amt) {
+    if (!node || node === me.pub || !(amt > 0)) return;
+    const e = epochOf(Date.now()), m = this.use.get(e) || this.use.set(e, new Map()).get(e), k = res + '|' + node;
+    m.set(k, Math.min(SERVE.res[res].cap, (m.get(k) || 0) + amt));
+  },
+  earnedBy(node) { let n = 0; for (const m of this.use.values()) for (const [k, v] of m) if (k.endsWith('|' + node) && k.startsWith('bytes|')) n += v; return n; }
+};
+const knownNodes = () => new Set([...meter.nodeOf.values(), ...E.nodes.keys()]);
+async function nodePeerIdOf(key) {
+  const h = await crypto.subtle.digest('SHA-1', new TextEncoder().encode('opentube-node:' + key));
+  return [...new Uint8Array(h)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+async function meterTick() {
+  try {
+    for (const k of knownNodes()) if (![...meter.peerIds.values()].includes(k)) meter.peerIds.set(await nodePeerIdOf(k), k);
+    // uptime: each node connected right now (counted once even with two links to it)
+    const up = new Set(); for (const [id, node] of meter.nodeOf) if (net.links.has(id)) up.add(node); else meter.nodeOf.delete(id);
+    for (const node of up) meter.add('uptime', node, 30);
+    // video bytes received from node peers in the torrent swarms
+    for (const t of wt.torrents) for (const w of t.wires || []) {
+      const node = meter.peerIds.get(String(w.peerId || '').toLowerCase()); if (!node) continue;
+      const was = meter.wire.get(w) || 0, now = w.downloaded || 0;
+      if (now > was) { meter.add('bytes', node, now - was); meter.wire.set(w, now); }
+    }
+    // tracker: public nodes (https address) whose tracker answered in the last 10 minutes
+    for (const [node, at] of meter.trackerOk) if (Date.now() - at < SERVE.epochMs) meter.add('tracker', node, 30);
+    await sendReceipts();
+  } catch (e) { console.warn('meter', e); }
+}
+function probeNodeTrackers() {   // one quick WebSocket open per public node per period: is its tracker serving?
+  for (const n of E.nodes.values()) for (const a of n.addrs || []) {
+    if (!a.startsWith('https://')) continue;
+    const u = a.replace(/^https/, 'wss').replace(/\/+$/, '') + '/tracker';
+    if (!TRACKERS.includes(u)) TRACKERS.push(u);
+    try { const ws = new WebSocket(u); ws.onopen = () => { meter.trackerOk.set(n.node, Date.now()); ws.close(); }; ws.onerror = () => {}; setTimeout(() => { try { ws.close(); } catch {} }, 8000); } catch {}
+  }
+}
+async function sendReceipts() {
+  const now = epochOf(Date.now());
+  for (const [e, m] of meter.use) {
+    if (e >= now) continue;
+    meter.use.delete(e);
+    for (const [k, amt] of m) {
+      const [res, provider] = k.split('|'), n = Math.floor(amt); if (n <= 0) continue;
+      const r = { v: 1, kind: 'receipt', res, provider, by: me.pub, epoch: e, amt: n };
+      r.sig = await me.sign(receiptPreimage(r));
+      meter.sent.set(r.sig, { r, tries: 0 });
+    }
+  }
+  for (const [sig, x] of meter.sent) {   // deliver (straight to the node when it's connected, otherwise through the mesh), a few times
+    if (x.tries >= 4 || x.r.epoch < now - SERVE.grace) { meter.sent.delete(sig); continue; }
+    if (x.tries++ % 2) continue;   // every other tick
+    const direct = [...meter.nodeOf].filter(([id, k]) => k === x.r.provider && net.links.has(id)).map(([id]) => id);
+    if (direct.length) for (const id of direct) net.send({ t: 'rcpt', r: x.r }, id); else net.send({ t: 'rcpt', r: x.r });
+  }
+}
+globalThis.openTubeMeter = meter;   // for diagnostics
+setInterval(meterTick, 30000);
+setTimeout(probeNodeTrackers, 15000); setInterval(probeNodeTrackers, SERVE.epochMs);
 // Streaming: a service worker (sw.js) answers the video player's range requests from the torrent, so a video plays
 // while it downloads and can be seeked. Needs https or localhost; without it, videos play once fully downloaded.
 const streaming = (async () => {
@@ -3677,6 +3841,21 @@ const fmtCoin = (units) => (Math.round(units) / 100).toLocaleString(undefined, {
 const coinsToUnits = (text) => { const n = Math.round(Number(String(text).replace(',', '.')) * 100); return Number.isSafeInteger(n) && n > 0 ? n : null; };
 const priceNow = (k) => globalThis.OpenTubeCore.priceOf(E.ledger, k);
 const balanceOf = (k) => E.pendingState(k).balance(k);
+const RES_TEXT = { bytes: 'video served', uptime: 'time connected', tracker: 'tracker service' };
+const periodText = (e) => { const d = new Date(e * globalThis.OpenTubeCore.SERVE.epochMs); return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); };
+const resAmount = (res, units) => res === 'bytes' ? fmtBytes(units) : `${Math.round(units / 60)} min`;
+function earningsPanel(keys) {   // coins paid to your accounts for what your nodes provided
+  const rows = keys.flatMap(k => (E.ledger.earned?.get(k) || []).map(x => ({ ...x, k }))).sort((a, b) => b.e - a.e || a.res.localeCompare(b.res)).slice(0, 30);
+  const S = globalThis.OpenTubeCore.SERVE, total = rows.reduce((n, x) => n + x.amt, 0);
+  return h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Earned by your nodes'),
+    h('p', { class: 'sub', style: 'margin-top:0' }, `Every ${S.epochMs / 60000} minutes the network pays nodes for what they provided, from signed receipts by the people they served: `,
+      `${fmtCoin(S.res.bytes.pool)} new coins split by video bytes delivered, ${fmtCoin(S.res.uptime.pool)} by time connected, ${fmtCoin(S.res.tracker.pool)} by tracker service, plus ${Math.round(S.feeShare * 100)}% of the period's watch, like and post payments. `,
+      'Payouts land about an hour after the period. Run a node from My node to earn.'),
+    rows.length ? h('div', {}, h('div', { class: 'sub' }, `Last ${rows.length}: ${fmtCoin(total)} coins`),
+      rows.map(x => h('div', { class: 'tx' }, h('div', {}, h('span', { class: 'amt-in' }, '+' + fmtCoin(x.amt)), ' ', RES_TEXT[x.res] || x.res, ' · ', resAmount(x.res, x.units), keys.length > 1 ? h('span', { class: 'sub' }, ' → ' + keyName(x.k)) : ''),
+        h('div', { class: 'sub', style: 'text-align:right' }, periodText(x.e)))))
+      : h('div', { class: 'sub' }, 'Nothing yet.'));
+}
 function describeTx(entry, key) {
   const row = (sign, units, text, extra) => h('div', {}, h('span', { class: sign > 0 ? 'amt-in' : 'amt-out' }, (sign > 0 ? '+' : '−') + fmtCoin(units)), ' ', text, extra || '');
   const when = h('div', { class: 'sub', style: 'text-align:right' }, entry.pending ? h('span', { class: 'badge warn' }, 'pending') : `block #${entry.height}`, h('div', {}, ago(entry.ts || entry.tx?.ts)));
@@ -3690,6 +3869,7 @@ function describeTx(entry, key) {
   if (t.vote) rows.push(mine ? row(-1, t.vote.amt, [t.vote.v > 0 ? '👍 liked' : '👎 disliked', ' on ', chainLink(t.vote.chain)], t.vote.v < 0 ? ' (burned)' : '') : row(1, t.vote.amt, [who(t.from), ' liked your post']));
   if (t.host) rows.push(h('div', {}, t.host.on ? 'Registered as a host of ' : 'Stopped hosting ', chainLink(t.host.chain)));
   if (t.name) rows.push(h('div', {}, t.name.handle ? `Claimed ${t.name.space}${t.name.handle}` : 'Released a name'));
+  if (t.serve) rows.push(h('div', {}, `Node submitted ${t.serve.receipts.length} usage receipt${t.serve.receipts.length === 1 ? '' : 's'} for ${periodText(t.serve.epoch)}`, t.serve.grant ? [' (paid to ', who(t.serve.grant.user), ')'] : ''));
   if (t.claim) {
     const p = t.claim.terms.perView, half = Math.floor(p / 2);
     if (t.from === key) rows.push(row(1, half, 'for watching an ad'));
@@ -3811,7 +3991,7 @@ views.wallet = { render() {
   const hist = E.history(histKey.key);
   return h('div', {},
     h('h2', { style: 'margin-top:0' }, 'Wallet'),
-    h('p', { class: 'sub' }, 'OpenTube runs on one shared coin. Watching a video pays its creator, a like pays whoever you liked (a dislike is burned), and posting a video pays the people who host that channel. Watching ads earns coins back. New coins come only from running the network: each main-chain block pays whoever confirmed it. Every new account can claim starter coins once.'),
+    h('p', { class: 'sub' }, 'OpenTube runs on one shared coin. Watching a video pays its creator, a like pays whoever you liked (a dislike is burned), and posting a video pays the people who host that channel. Watching ads earns coins back. New coins come only from running the network: each main-chain block pays whoever confirmed it, and nodes are paid every 10 minutes for the video bandwidth, connection time and tracker service they provide (see Earned by your nodes). Every new account can claim starter coins once.'),
     myAccounts().map(k => accountCard(k, true)),
     h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Prices right now'),
       h('p', { class: 'sub', style: 'margin-top:0' }, 'The network sets these itself. After every main-chain block, each price moves up to 12.5% toward keeping use at a target: busy means dearer, quiet means cheaper.'),
@@ -3821,6 +4001,7 @@ views.wallet = { render() {
         h('div', {}, 'Post a video'), h('div', {}, fmtCoin(Math.max(1, Math.ceil(L.prices.post))) + ' coins per GB'),
         h('div', {}, 'Confirming a block earns'), h('div', {}, fmtCoin(COIN_UI.reward) + ' coins'))),
     form,
+    earningsPanel(myAccounts()),
     h('div', { class: 'panel' }, h('div', { class: 'row', style: 'justify-content:space-between' }, h('h3', { style: 'margin:0' }, 'Activity'), histSel),
       hist.length ? hist.map(x => describeTx(x, histKey.key)) : h('div', { class: 'sub', style: 'margin-top:8px' }, 'No transactions yet.')),
     h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Network'),

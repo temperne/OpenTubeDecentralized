@@ -28,7 +28,8 @@ const DIR = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 8080);
 const DATA = path.resolve(process.env.DATA_DIR || path.join(DIR, 'data'));
 const MAIN_ONLY = process.env.MAIN_ONLY === '1';
-const MINE = process.env.MINE !== '0';
+const MINE = process.env.MINE !== '0' && process.env.MINE !== 'own';
+const MINE_OWN = process.env.MINE === 'own';   // personal nodes: confirm only their own transactions (receipts, etc.)
 const PEERS = (process.env.PEERS || '').split(',').map(s => s.trim()).filter(Boolean);
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
@@ -44,6 +45,7 @@ fs.mkdirSync(DATA, { recursive: true });
 const keyFile = path.join(DATA, 'key.json');
 if (!fs.existsSync(keyFile)) fs.writeFileSync(keyFile, JSON.stringify(await core.newIdentity()), { mode: 0o600 });
 const signer = await core.signer(JSON.parse(fs.readFileSync(keyFile, 'utf8')));
+const nodePeerId = (pub) => crypto.createHash('sha1').update('opentube-node:' + pub).digest('hex');   // this node's WebTorrent peer ID
 const blocksFile = path.join(DATA, 'blocks.jsonl');
 const blockLog = fs.createWriteStream(blocksFile, { flags: 'a' });
 
@@ -94,8 +96,9 @@ const engine = await core.createEngine({
   signer, send,
   onMembership: () => saveMemberships(),
   keyFor: (pub) => pub === rankerSigner.pub ? rankerSigner : null,
-  mine: MINE ? mine : null,
-  shouldMine: () => true,          // a home node confirms everyone's registrations
+  mine: MINE || MINE_OWN ? mine : null,
+  shouldMine: MINE ? () => true : (g) => g.author === signer.pub,   // a home node confirms everyone's registrations; MINE=own: only its own transactions
+  onReceipt: (r, from) => receipts?.take(r, from),
   trackAll: !MAIN_ONLY,
   relayWatch: true,                // pass ad watch-group messages between browsers
   persist: (c, b) => blockLog.write(JSON.stringify({ c, b }) + '\n'),
@@ -178,9 +181,39 @@ if (process.env.RTMP_PORT) {
 if (process.env.VIDEO_DIR && process.env.HOST_USER) {
   try {
     const { startHost } = await import('./host.mjs');
-    globalThis.openTubeHost = await startHost({ engine, user: process.env.HOST_USER, videoDir: path.resolve(process.env.VIDEO_DIR), site: process.env.NODE_SITE || `http://localhost:${PORT}`, capGB: Number(process.env.CAP_GB) || 5, log });
+    globalThis.openTubeHost = await startHost({ engine, nodeKey: signer.pub, user: process.env.HOST_USER, videoDir: path.resolve(process.env.VIDEO_DIR), site: process.env.NODE_SITE || `http://localhost:${PORT}`, capGB: Number(process.env.CAP_GB) || 5, log });
   } catch (e) { log('video hosting unavailable:', e.message, '(npm install webtorrent next to server.mjs)'); }
 }
+
+// ---- getting paid for resources: browsers send signed receipts (bytes received from this node, time connected, tracker
+// service); after each 10-minute period this node submits them in a `serve` transaction (core: SERVE), paid to its
+// owner when it has a grant. Receipts for other nodes are passed on once.
+var receipts = (() => {
+  const byEpoch = new Map(), seen = new Set(), submitted = new Set();
+  const take = async (r, from) => {
+    if (!r || typeof r !== 'object' || typeof r.sig !== 'string' || seen.has(r.sig)) return;
+    seen.add(r.sig); if (seen.size > 50000) seen.clear();
+    if (r.provider !== signer.pub) { for (const [id, p] of peers) if (id !== from) p.send(JSON.stringify({ t: 'rcpt', r })); return; }
+    if (r.v !== 1 || r.kind !== 'receipt' || !core.SERVE.res[r.res] || !(r.amt > 0) || r.epoch >= core.epochOf(Date.now()) || submitted.has(r.epoch)) return;
+    if (!(await core.verify(r.by, core.receiptPreimage(r), r.sig))) return;
+    const m = byEpoch.get(r.epoch) || byEpoch.set(r.epoch, new Map()).get(r.epoch);
+    const k = r.res + '|' + r.by, cur = m.get(k); if (!cur || r.amt > cur.amt) m.set(k, r);
+  };
+  setInterval(async () => {
+    const now = core.epochOf(Date.now());
+    for (const [e, m] of byEpoch) {
+      if (e >= now) continue;
+      byEpoch.delete(e); submitted.add(e);
+      if (e < now - core.SERVE.grace) continue;
+      const list = [...m.values()];
+      for (let i = 0; i < list.length; i += core.SERVE.maxReceipts) {
+        try { await engine.submitTx({ serve: { epoch: e, receipts: list.slice(i, i + core.SERVE.maxReceipts), ...(GRANT ? { grant: GRANT } : {}) } }); log(`[earn] submitted ${list.length} receipt(s) for period ${e}`); }
+        catch (err) { log('[earn] couldn’t submit receipts:', err.message); }
+      }
+    }
+  }, 60000);
+  return { take };
+})();
 
 // ---- "your node": started from someone's My node command, it announces itself to their My node page
 const GRANT = (() => { try { return process.env.NODE_GRANT ? JSON.parse(Buffer.from(process.env.NODE_GRANT, 'base64url').toString('utf8')) : null; } catch { return null; } })();
@@ -193,7 +226,7 @@ else if (GRANT) {
   const announce = async () => {
     let host = globalThis.openTubeHost?.status() || null;
     if (!host) try { host = JSON.parse(fs.readFileSync(process.env.HOST_STATUS_FILE, 'utf8')); if (Date.now() - host.at > 120000) host = { ...host, stale: true }; } catch {}
-    const info = { name: (process.env.NODE_LABEL || os.hostname()).slice(0, 60), os: `${os.platform()} ${os.arch()}`, node: process.version, height: engine.main.best.height,
+    const info = { peerId: nodePeerId(signer.pub), name: (process.env.NODE_LABEL || os.hostname()).slice(0, 60), os: `${os.platform()} ${os.arch()}`, node: process.version, height: engine.main.best.height,
       peers: peers.size, chains: engine.chains.size, site: process.env.NODE_SITE || null, host, obs: globalThis.openTubeRtmp?.status?.() || null };
     try { await engine.publishNodeInfo({ grant: GRANT, roles, addrs: addrs(), info }); } catch (e) { log('announce failed:', e.message); }
   };
@@ -318,6 +351,7 @@ function acceptSocket(req, socket, role = 'node') {
   if (role === 'tracker' || role === 'live') return;
   log(`+ browser ${id} (${peers.size} connected)`);
   engine.peerJoined(id);
+  send({ t: 'nodehi', node: signer.pub }, id);
 }
 
 // ---- outgoing links to other home nodes (federation)
@@ -347,6 +381,7 @@ async function joinMesh() {   // called once the HTTP server listens (its own tr
       const id = 'rtc:' + pid;
       peers.set(id, { send: (s) => action.send(JSON.parse(s), { target: pid }).catch(() => {}), label: 'webrtc ' + pid.slice(0, 6) });
       log(`+ peer ${pid.slice(0, 8)} over WebRTC (${peers.size} connected)`); engine.peerJoined(id);
+      send({ t: 'nodehi', node: signer.pub }, id);
     };
     room.onPeerLeave = (pid) => { if (peers.delete('rtc:' + pid)) log(`- peer ${pid.slice(0, 8)} (${peers.size} connected)`); };
     log(`peer mesh: joined the network's room via ${urls.length} tracker(s)`);

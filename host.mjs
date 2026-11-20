@@ -17,10 +17,12 @@ export async function publicTrackers() {
   const [ws, best] = await Promise.all([get('trackers_all_ws.txt'), get('trackers_best.txt')]);
   return [...ws.slice(0, 20), ...best.slice(0, 20)];
 }
-export async function startHost({ engine, user, videoDir, site, capGB = 5, log = console.log }) {
+export async function startHost({ engine, nodeKey, user, videoDir, site, capGB = 5, log = console.log }) {
   const { default: WebTorrent } = await import('webtorrent');
   // DHT and TCP/UDP trackers too: ordinary BitTorrent apps can share these videos with this node, and it bridges them to browsers.
-  const client = new WebTorrent({ dht: true, lsd: false, natUpnp: false, natPmp: false });
+  const { createHash } = await import('node:crypto');
+  const peerId = nodeKey ? createHash('sha1').update('opentube-node:' + nodeKey).digest('hex') : undefined;   // browsers recognize this node's bytes
+  const client = new WebTorrent({ dht: true, lsd: false, natUpnp: false, natPmp: false, peerId });
   client.on('error', (e) => log('[host] webtorrent:', e.message));
   const listed = await publicTrackers();
   const trackers = [...new Set([site ? site.replace(/^http/, 'ws') + '/tracker' : null, ...(engine.CFG.trackers || []), ...listed].filter(Boolean))];

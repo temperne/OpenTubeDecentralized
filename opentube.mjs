@@ -16,7 +16,8 @@
 //   --name=TEXT       what to call this computer on My node (default: its hostname)
 //   --port=8090       the local node's HTTP port (default: 8090, or the next free one)
 //   --no-host --no-obs --no-node   leave a part out
-//   --mine            also spend CPU confirming registrations (off by default)
+//   --mine            also spend CPU confirming everyone's registrations (by default the node confirms only its own
+//                     transactions, such as the receipts it's paid for)
 //   --cap-gb=5        storage limit per channel you host (your own channels are never trimmed)
 //   --public          make this node public over HTTPS as <your-ip>.sslip.io with a Let's Encrypt certificate, so browsers
 //                     can use it as a node and tracker (needs ports 80 and 443; on Linux run as root). --public=your.domain
@@ -100,7 +101,7 @@ if (want.host && want.node && !args['browser-host']) {
 if (want.node) {
   const roles = ['node', ...(want.host ? ['host'] : []), ...(want.obs ? ['obs'] : [])];
   run('node', 'server.mjs', [], {
-    PORT: String(port), DATA_DIR: path.join(HOME, 'node-data'), PEERS: ws + '/ot', MINE: args.mine ? '1' : '0', RANKER: '0',
+    PORT: String(port), DATA_DIR: path.join(HOME, 'node-data'), PEERS: ws + '/ot', MINE: args.mine ? '1' : 'own', RANKER: '0',
     NODE_GRANT: String(args.grant), NODE_SITE: site.origin, NODE_ROLES: roles.join(','), NODE_LABEL: String(args.name || os.hostname()),
     HOST_STATUS_FILE: STATUS, RTMP_PORT: want.obs ? '1935' : '',
     ...(args.public ? { PUBLIC: args.public === true ? 'auto' : String(args.public), ...(args.email ? { PUBLIC_EMAIL: String(args.email) } : {}) } : {}),

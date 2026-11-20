@@ -115,9 +115,20 @@ OpenTube runs on **one shared coin**. 100 units = 1 coin. Transactions ride in m
   - **Posting** a video pays the members registered as **hosts** of that channel, split evenly (joining a channel registers you). If nobody hosts it yet, the block's miner gets it. A video doesn't show up, rank or get hosted until its fee is paid; its owner sees a *Publish* button.
   - **Tips** and transfers: *Wallet → Send coins*, and the *Tip* button on channels.
 - **Ads pay you back:** watching an ad is what earns coins. A completed ad view pays the ad's price from the advertiser channel's coins, half to the viewer and half to the creator of the video it ran with. When a video costs coins and an ad is available, the ad plays first, and the view is then paid from what you just earned, so you can watch with an empty wallet. Watching the same ad again pays again; ads that overlap in time don't (one ad at a time per viewer). A channel's own ads always run before its own videos. Sponsoring another channel (*Manage → sponsors*), or a list doing so, runs its ads too. When creating an ad, the advertiser chooses whether a view pays only when another viewer watched it in sync and confirms it (safer against bots, but rare on a small network) or always. Ads that don't say pay always, up to their maximum views.
+- **Nodes are paid for what they provide** (`SERVE` in the core). The network counts resources in 10-minute periods. Whoever *receives* something signs a receipt for the node that gave it:
+  - **Video bytes:** bytes downloaded from the node's WebTorrent peer. Its peer ID is derived from the node's key, so browsers know whose bytes they got.
+  - **Time connected:** seconds the browser was linked to the node.
+  - **Tracker service:** seconds the node's public `wss://…/tracker` answered.
+
+  Browsers send the receipts to the node right after the period. The node submits them in a `serve` transaction and confirms its own transactions (personal nodes run with `MINE=own`), so it depends on nobody else. An hour after the period, each resource has a pool that is split among nodes by their receipted amounts:
+  - **bytes:** 2 coins
+  - **time connected:** 1 coin
+  - **tracker service:** 0.5 coin
+
+  Each pool also gets a share of **10% of every watch, like and post payment** made in that period (60/20/20). A busier network means bigger pools, and a share nobody claimed is burned. With your grant the coins go to *your* account (Wallet → *Earned by your nodes*). Mining blocks still pays separately. Receipts count once each, only from keys that did the starter proof of work, and only up to a per-key cap per period (20 GB, 10 minutes, 10 minutes).
 - **Prices set themselves:** after every block, the watch, like and post-per-GB prices each move up to 12.5% toward a target load (`COIN.target`). Busy means dearer and quiet means cheaper, so storage and attention are priced by the network itself. A payment may be up to 25% under the current price, because prices move while it waits for a block.
 - **Before the coin:** videos and votes from before 2026-11-19 09:00 UTC stay free. Transactions in the old per-person tokens stay valid in history but no longer affect balances.
-- **Known weaknesses:** keys are free, so starter coins and block rewards can be farmed with CPU (each costs proof of work, like mining). Host registration isn't checked against actually storing the videos yet (storage proofs are not built). A modified page could watch without paying, because video travels peer to peer.
+- **Known weaknesses:** keys are free, so starter coins and block rewards can be farmed with CPU (each costs proof of work, like mining). Host registration isn't checked against actually storing the videos yet (storage proofs are not built). Resource receipts are only as honest as the keys signing them: someone with many keys (each one needs the starter work) could receipt their own node, up to the per-key caps. A modified page could watch without paying, because video travels peer to peer.
 
 ## Network & diagnostics
 
