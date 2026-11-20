@@ -16,5 +16,5 @@ fs.mkdirSync(path.join(here, 'dist'), { recursive: true });
 fs.writeFileSync(path.join(here, 'dist', 'index.html'), html);
 fs.copyFileSync(path.join(here, '..', 'sw.js'), path.join(here, 'dist', 'sw.js'));  // streaming service worker
 // The programs the My node command downloads and runs on people's computers.
-for (const f of ['opentube.mjs', 'server.mjs', 'headless.mjs', 'rtmp.mjs']) if (fs.existsSync(path.join(here, '..', f))) fs.copyFileSync(path.join(here, '..', f), path.join(here, 'dist', f));
+for (const f of ['opentube.mjs', 'server.mjs', 'headless.mjs', 'rtmp.mjs', 'host.mjs']) if (fs.existsSync(path.join(here, '..', f))) fs.copyFileSync(path.join(here, '..', f), path.join(here, 'dist', f));
 console.log('opentube: built cloudflare/core.gen.mjs, cloudflare/dist/index.html and cloudflare/dist/sw.js');

@@ -10,6 +10,7 @@
 //   NODE_NAME="My site" node server.mjs   # name used for this node's ranking list
 //   RTMP_PORT=1935 node server.mjs        # receive OBS "Start Streaming" (rtmp://localhost/live)
 //   RANKER=0 node server.mjs              # don't run a ranking list
+//   VIDEO_DIR=./videos HOST_USER=<user ID> node server.mjs   # keep and share that user's channels' videos (needs: npm install webtorrent)
 //
 // Started by opentube.mjs (the copy-paste command on My node), it also gets NODE_GRANT (your signed grant: this node
 // is yours), NODE_SITE (the site it belongs to) and NODE_ROLES, and announces itself to your My node page.
@@ -170,6 +171,15 @@ if (process.env.RTMP_PORT) {
   } catch (e) { log('OBS receiver unavailable:', e.message); }
 }
 
+// ---- video hosting without a browser (VIDEO_DIR + HOST_USER, set by opentube.mjs): keep and share the videos of
+// HOST_USER's joined and own channels (host.mjs, needs the webtorrent package)
+if (process.env.VIDEO_DIR && process.env.HOST_USER) {
+  try {
+    const { startHost } = await import('./host.mjs');
+    globalThis.openTubeHost = await startHost({ engine, user: process.env.HOST_USER, videoDir: path.resolve(process.env.VIDEO_DIR), site: process.env.NODE_SITE || `http://localhost:${PORT}`, capGB: Number(process.env.CAP_GB) || 5, log });
+  } catch (e) { log('video hosting unavailable:', e.message, '(npm install webtorrent next to server.mjs)'); }
+}
+
 // ---- "your node": started from someone's My node command, it announces itself to their My node page
 const GRANT = (() => { try { return process.env.NODE_GRANT ? JSON.parse(Buffer.from(process.env.NODE_GRANT, 'base64url').toString('utf8')) : null; } catch { return null; } })();
 if (process.env.NODE_GRANT && !(GRANT && core.validNodeGrant(GRANT))) log('NODE_GRANT is not a valid grant; not announcing this node');
@@ -179,7 +189,8 @@ else if (GRANT) {
   const addrs = () => [...(process.env.PUBLIC_URL ? [process.env.PUBLIC_URL] : []), ...Object.values(os.networkInterfaces()).flat()
     .filter(i => i && i.family === 'IPv4' && !i.internal).map(i => `http://${i.address}:${PORT}`), `http://localhost:${PORT}`].slice(0, 8);
   const announce = async () => {
-    let host = null; try { host = JSON.parse(fs.readFileSync(process.env.HOST_STATUS_FILE, 'utf8')); if (Date.now() - host.at > 120000) host = { ...host, stale: true }; } catch {}
+    let host = globalThis.openTubeHost?.status() || null;
+    if (!host) try { host = JSON.parse(fs.readFileSync(process.env.HOST_STATUS_FILE, 'utf8')); if (Date.now() - host.at > 120000) host = { ...host, stale: true }; } catch {}
     const info = { name: (process.env.NODE_LABEL || os.hostname()).slice(0, 60), os: `${os.platform()} ${os.arch()}`, node: process.version, height: engine.main.best.height,
       peers: peers.size, chains: engine.chains.size, site: process.env.NODE_SITE || null, host, obs: globalThis.openTubeRtmp?.status?.() || null };
     try { await engine.publishNodeInfo({ grant: GRANT, roles, addrs: addrs(), info }); } catch (e) { log('announce failed:', e.message); }
@@ -326,7 +337,7 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' });
     return res.end(fs.readFileSync(path.join(DIR, 'index.html')));
   }
-  if (['/opentube.mjs', '/server.mjs', '/headless.mjs', '/rtmp.mjs'].includes(url.pathname) && fs.existsSync(path.join(DIR, url.pathname.slice(1)))) {   // for the My node command
+  if (['/opentube.mjs', '/server.mjs', '/headless.mjs', '/rtmp.mjs', '/host.mjs'].includes(url.pathname) && fs.existsSync(path.join(DIR, url.pathname.slice(1)))) {   // for the My node command
     res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-cache', 'access-control-allow-origin': '*' });
     return res.end(fs.readFileSync(path.join(DIR, url.pathname.slice(1))));
   }

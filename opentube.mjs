@@ -4,8 +4,8 @@
 // server.mjs, headless.mjs, rtmp.mjs and index.html into ~/.opentube/app, then runs:
 //
 //   node     a full node that syncs with the site and shows up under "Your nodes" on your My node page
-//   host     the headless host: keeps your joined channels' videos in a folder and shares them (Chromium,
-//            installed into ~/.opentube on first run)
+//   host     keeps your joined and own channels' videos in a folder and shares them with viewers (WebTorrent,
+//            installed into ~/.opentube on first run; --browser-host uses headless Chromium instead)
 //   obs      an OBS receiver: OBS → Settings → Stream → Custom, server rtmp://localhost/live, any stream key,
 //            then pick this computer under Go live on the site
 //
@@ -17,6 +17,7 @@
 //   --port=8090       the local node's HTTP port (default: 8090, or the next free one)
 //   --no-host --no-obs --no-node   leave a part out
 //   --mine            also spend CPU confirming registrations (off by default)
+//   --cap-gb=5        storage limit per channel you host (your own channels are never trimmed)
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
@@ -42,7 +43,7 @@ const want = { node: !args['no-node'], host: !args['no-host'], obs: !args['no-ob
 await fsp.mkdir(APP, { recursive: true });
 
 // The site's current code. If the site can't be reached, the copy from last time is used.
-for (const f of ['index.html', 'server.mjs', 'headless.mjs', 'rtmp.mjs', 'sw.js']) {
+for (const f of ['index.html', 'server.mjs', 'headless.mjs', 'rtmp.mjs', 'host.mjs', 'sw.js']) {
   try {
     const r = await fetch(new URL(f, site), { cache: 'no-store' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -54,15 +55,36 @@ const freePort = (p) => new Promise((res) => { const s = net.createServer().once
 const port = await freePort(Number(args.port) || 8090);
 const ws = site.origin.replace(/^http/, 'ws');
 
-// Run a part as a child process, restart it if it stops, prefix its output.
+// Run a part as a child process, restart it if it stops, prefix its output. Stopping this program stops the parts.
+const children = new Set();
+let stopping = false;
 function run(label, file, argv, env) {
   const start = () => {
+    if (stopping) return;
     const child = spawn(process.execPath, [path.join(APP, file), ...argv], { env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    children.add(child);
     const out = (d) => { for (const line of String(d).split('\n')) if (line.trim()) console.log(`[${label}] ${line}`); };
     child.stdout.on('data', out); child.stderr.on('data', out);
-    child.on('exit', (code) => { log(`[${label}] stopped (${code}); restarting in 5 s`); setTimeout(start, 5000); });
+    child.on('exit', (code) => { children.delete(child); if (stopping) return; log(`[${label}] stopped (${code}); restarting in 5 s`); setTimeout(start, 5000); });
   };
   start();
+}
+const stopAll = () => { stopping = true; for (const c of children) c.kill(); };
+process.on('exit', stopAll);
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => { stopAll(); process.exit(0); });
+
+const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm', npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+const installed = (pkg) => fs.existsSync(path.join(HOME, 'node_modules', pkg, 'package.json'));
+const install = (spec) => spawnSync(npm, ['install', '--prefix', HOME, '--no-audit', '--no-fund', spec], { stdio: 'inherit', shell: process.platform === 'win32' });
+
+// Hosting: the node itself keeps and shares the videos (WebTorrent over WebRTC, no browser). Needs the webtorrent
+// package, installed into ~/.opentube once (a few MB). --browser-host runs the older headless-Chromium host instead.
+let nodeHosts = false;
+if (want.host && want.node && !args['browser-host']) {
+  if (!installed('webtorrent')) { log('first run: installing WebTorrent for video hosting (a few MB, once)…'); install('webtorrent@3.0.21'); }
+  nodeHosts = installed('webtorrent');
+  if (nodeHosts) await fsp.mkdir(VIDEOS, { recursive: true });
+  else log('couldn’t install WebTorrent, so video hosting is off. The node and OBS receiver still run.');
 }
 
 if (want.node) {
@@ -70,19 +92,15 @@ if (want.node) {
   run('node', 'server.mjs', [], {
     PORT: String(port), DATA_DIR: path.join(HOME, 'node-data'), PEERS: ws + '/ot', MINE: args.mine ? '1' : '0', RANKER: '0',
     NODE_GRANT: String(args.grant), NODE_SITE: site.origin, NODE_ROLES: roles.join(','), NODE_LABEL: String(args.name || os.hostname()),
-    HOST_STATUS_FILE: STATUS, RTMP_PORT: want.obs ? '1935' : ''
+    HOST_STATUS_FILE: STATUS, RTMP_PORT: want.obs ? '1935' : '',
+    ...(nodeHosts ? { VIDEO_DIR: VIDEOS, HOST_USER: grant.user, CAP_GB: String(args['cap-gb'] || 5) } : {})
   });
 }
 
-if (want.host) {
-  // Chromium for the headless host lives in ~/.opentube (npm and npx come with Node.js).
-  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm', npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-  const has = () => fs.existsSync(path.join(HOME, 'node_modules', 'playwright', 'package.json'));
-  if (!has()) {
-    log('first run: installing Chromium for the headless host (a few hundred MB, once)…');
-    spawnSync(npm, ['install', '--prefix', HOME, '--no-audit', '--no-fund', 'playwright@1.64.1'], { stdio: 'inherit', shell: process.platform === 'win32' });
-  }
-  if (has()) {
+if (want.host && (args['browser-host'] || !want.node)) {
+  // The older host: the site itself in headless Chromium (installed into ~/.opentube on first run).
+  if (!installed('playwright')) { log('first run: installing Chromium for the headless host (a few hundred MB, once)…'); install('playwright@1.64.1'); }
+  if (installed('playwright')) {
     spawnSync(npx, ['--prefix', HOME, 'playwright', 'install', 'chromium'], { stdio: 'inherit', cwd: HOME, shell: process.platform === 'win32' });
     await fsp.mkdir(VIDEOS, { recursive: true });
     run('host', 'headless.mjs', [site.origin + '/', grant.user, VIDEOS], { PROFILE_DIR: path.join(HOME, 'browser-profile'), HOST_STATUS_FILE: STATUS });

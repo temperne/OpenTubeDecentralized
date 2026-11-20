@@ -554,7 +554,8 @@ const validNodeInfo = (n) => !!n && typeof n === 'object' && n.v === 1 && n.kind
 // follows their snapshot and joins exactly the same channels.
 const membershipPreimage = (m) => { const { sig, ...rest } = m; return 'opentube-membership:' + canon(rest); };
 const validMembership = (m) => !!m && typeof m === 'object' && m.v === 1 && isKey(m.author) && Number.isSafeInteger(m.at) && m.at <= Date.now() + 10 * 60000
-  && typeof m.sig === 'string' && Array.isArray(m.joined) && m.joined.length <= 1000 && m.joined.every(x => isHex(x, 64)) && new Set(m.joined).size === m.joined.length;
+  && typeof m.sig === 'string' && Array.isArray(m.joined) && m.joined.length <= 1000 && m.joined.every(x => isHex(x, 64)) && new Set(m.joined).size === m.joined.length
+  && (m.own === undefined || (Array.isArray(m.own) && m.own.length <= 1000 && m.own.every(x => isHex(x, 64))));   // own: the author's own channels (also in joined)
 // Waves (algorithm "waves-v1"): every like/dislike fades with time, so a video rises while votes keep coming and sinks
 // when they stop. Scores at three speeds: w[0] rising (votes from the last minutes count most), w[1] today, w[2] this
 // week, plus w[3] all-time net votes. New uploads get a starting boost that fades, so they get a chance to collect
@@ -1201,8 +1202,9 @@ async function createEngine(o) {
     changed();
     return true;
   }
-  async function publishMembership(joined) {
-    const m = { v: 1, author: o.signer.pub, at: Date.now(), joined: [...new Set(joined)] };
+  async function publishMembership(joined, own = []) {
+    const m = { v: 1, author: o.signer.pub, at: Date.now(), joined: [...new Set([...joined, ...own])] };
+    if (own.length) m.own = [...new Set(own)];
     m.sig = await o.signer.sign(membershipPreimage(m));
     await acceptMembership(m);
     send({ t: 'mem', m });
@@ -2397,9 +2399,14 @@ function chanRow(id) {
 }
 
 const joinedList = () => Object.keys(subs).filter(id => subs[id] === 'join');
+setInterval(() => {   // channels you created since the list was last published: publish again
+  if (MIRROR) return;
+  const m = E.memberships.get(me.pub), own = myChannels().filter(id => E.directory.has(id));
+  if (own.some(id => !m?.joined.includes(id)) || (m && joinedList().some(id => !m.joined.includes(id)))) publishMyMembership();
+}, 15000);
 function publishMyMembership() {
   clearTimeout(publishMyMembership.t);
-  publishMyMembership.t = setTimeout(() => { if (!MIRROR) E.publishMembership(joinedList()).catch(() => {}); }, 1000);
+  publishMyMembership.t = setTimeout(() => { if (!MIRROR) E.publishMembership(joinedList(), myChannels()).catch(() => {}); }, 1000);   // your nodes host your joined channels and your own
 }
 function setSub(id, mode) {
   if (mode === 'join' && !canHost() && !MIRROR) { toast(folder.state === 'unsupported' ? 'Joining means hosting videos, which needs Chrome or Edge on a computer. You can still subscribe and watch.' : 'Choose a video folder first (My node → Video folder). Joined channels download into it.'); return; }
