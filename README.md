@@ -119,13 +119,15 @@ OpenTube runs on **one shared coin**. 100 units = 1 coin. Transactions ride in m
   - **Video bytes:** bytes downloaded from the node's WebTorrent peer. Its peer ID is derived from the node's key, so browsers know whose bytes they got.
   - **Time connected:** seconds the browser was linked to the node.
   - **Tracker service:** seconds the node's public `wss://…/tracker` answered.
+  - **Storage:** MB of video a node proved it holds, signed by the node that challenged it (see Storage proofs).
 
   Browsers send the receipts to the node right after the period. The node submits them in a `serve` transaction and confirms its own transactions (personal nodes run with `MINE=own`), so it depends on nobody else. An hour after the period, each resource has a pool that is split among nodes by their receipted amounts:
   - **bytes:** 2 coins
   - **time connected:** 1 coin
   - **tracker service:** 0.5 coin
+  - **storage:** 1 coin
 
-  Each pool also gets a share of **10% of every watch, like and post payment** made in that period (60/20/20). A busier network means bigger pools, and a share nobody claimed is burned. With your grant the coins go to *your* account (Wallet → *Earned by your nodes*). Mining blocks still pays separately. Receipts count once each, only from keys that did the starter proof of work, and only up to a per-key cap per period (20 GB, 10 minutes, 10 minutes).
+  Each pool also gets a share of **10% of every watch, like and post payment** made in that period (50/15/15/20). A busier network means bigger pools, and a share nobody claimed is burned. With your grant the coins go to *your* account (Wallet → *Earned by your nodes*). Mining blocks still pays separately. Receipts count once each, only from keys that did the starter proof of work, and only up to a per-key cap per period (20 GB of bytes, 10 minutes of connection time, 10 minutes of tracker service, 1 TB of storage).
 - **Prices set themselves:** after every block, the watch, like and post-per-GB prices each move up to 12.5% toward a target load (`COIN.target`). Busy means dearer and quiet means cheaper, so storage and attention are priced by the network itself. A payment may be up to 25% under the current price, because prices move while it waits for a block.
 - **Before the coin:** videos and votes from before 2026-11-19 09:00 UTC stay free. Transactions in the old per-person tokens stay valid in history but no longer affect balances.
 - **Known weaknesses:** keys are free, so starter coins and block rewards can be farmed with CPU (each costs proof of work, like mining). Host registration isn't checked against actually storing the videos yet (storage proofs are not built). Resource receipts are only as honest as the keys signing them: someone with many keys (each one needs the starter work) could receipt their own node, up to the per-key caps. A modified page could watch without paying, because video travels peer to peer.
@@ -184,6 +186,32 @@ Known limits: the recording is WebM straight from the browser's recorder, so som
 Video files travel via WebTorrent (v3). The chains carry only the infohash, title and thumbnail.
 
 **Playback while downloading:** a small service worker (`sw.js`, served next to the page) answers the video player's range requests from the torrent, so videos start within seconds and can be seeked, MP4 included. It needs https or localhost; elsewhere a video plays once it's fully downloaded. Videos you host play straight from the file in your folder. Watch-only copies are kept in the browser's private storage while you watch and deleted when you leave the page.
+
+## Managing your nodes from any console
+
+Every computer you run OpenTube on appears under *My node → Your computers*. Computers that host have a **Manage files** button. It lists each channel and video on that node: size, download progress, peers, and how many **other copies** exist (proven by storage proofs, or seeding in the swarm). You can:
+
+- **Pin** a video. It is never trimmed.
+- **Drop** a video. It is deleted and not downloaded again; *Allow again* undoes this. You're warned when no other copy is known.
+- **Host it here:** keep another channel on this node by ID or @name, even if you haven't joined it.
+- **Stop hosting here:** stop a channel on this node while staying a member, then delete its files if you want.
+- **Change the size limit** per channel.
+
+These overrides live in `<video folder>/.opentube-node.json`. When a channel is over its limit, the node removes the videos the most other hosts have proven they hold first. It never removes a video with fewer than 2 other proven copies; it keeps it and flags the channel instead.
+
+Commands are signed by your personal key, and the node obeys only the user in its grant. It refuses stale or repeated commands, and its answers are signed by the node. The page first connects **directly** to the node's addresses. That works for a public node with HTTPS, or a node on the same computer (localhost); a secure page can't open plain `ws://` to other IP addresses, and home computers sit behind routers. Otherwise the same signed command is passed node to node over the mesh, addressed to the node's key, and the answer comes back the same way.
+
+## Storage proofs (proving a node really has the files)
+
+A torrent's metadata lists a hash for every piece of the video. Every couple of minutes, each hosting node does the following:
+
+1. It picks a video it holds completely, a random piece of it, and a fresh random nonce.
+2. It sends the challenge to other nodes that should have the video: nodes it sees in that video's swarm (recognized by peer IDs derived from their keys) and other hosting nodes.
+3. Each challenged node must answer within 20 s with `sha256("opentube-proof:" + nonce + ":" + its key + ":" + piece bytes)`, signed.
+
+Only a node holding that piece can compute the answer. The challenger checks it against its own copy, so the hashes have to meet up. Because the answering node's key is inside the hash, a node can't pass off another node's answer as its own. A wrong answer, or no answer in time, fails.
+
+Passed proofs count as copies for trimming. They also earn **storage** receipts: the challenger signs "node X proved it holds N MB" for the period, paid from the resource pools like bandwidth. Nodes claim starter coins for their own key so the receipts they sign count. Not done yet: browsers that host don't answer or send challenges, and a challenge only proves the node had the data at that moment.
 
 ## The video folder (hosting uses real files on your disk)
 
