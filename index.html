@@ -362,13 +362,28 @@ const LEDGER = { txBits: COIN.txBits, maxTxs: COIN.maxTxs, memo: COIN.memo };   
 const SERVE = {
   epochMs: 10 * 60000, grace: 6, start: Date.UTC(2026, 10, 20, 2), feeShare: 0.1, maxReceipts: 100,
   res: {   // pool: new coins per period (units); cap: per receiving key per period; weight: share of the fee pool
-    bytes: { pool: 200, cap: 20e9, weight: 0.6 },
-    uptime: { pool: 100, cap: 600, weight: 0.2 },
-    tracker: { pool: 50, cap: 600, weight: 0.2 }
+    bytes: { pool: 200, cap: 20e9, weight: 0.5 },
+    uptime: { pool: 100, cap: 600, weight: 0.15 },
+    tracker: { pool: 50, cap: 600, weight: 0.15 },
+    storage: { pool: 100, cap: 1e6, weight: 0.2 }   // MB of video proven held (piece challenges, see PROOF)
   }
 };
 const epochOf = (ts) => Math.floor(ts / SERVE.epochMs);
 const receiptPreimage = (r) => { const { sig, ...rest } = r; return 'opentube-receipt:' + canon(rest); };
+// ---- storage proofs: a host proves it holds a video by answering a challenge on one of its BitTorrent pieces. The
+// challenger (who has the video too) picks a piece at random and a fresh nonce; the host answers
+// sha256(prefix | nonce | its key | piece bytes) within PROOF.answerMs, signed. Only someone holding that piece can
+// compute it, the challenger checks it against its own copy, and the key inside stops a host from passing off another
+// host's answer as its own. Passed proofs count copies (for "does anybody else still have it?") and earn storage receipts.
+const PROOF = { answerMs: 20000, everyMs: 2 * 60000, freshMs: 2 * 3600000 };
+async function pieceProof(nonce, key, bytes) {
+  const head = new TextEncoder().encode(`opentube-proof:${nonce}:${key}:`), buf = new Uint8Array(head.length + bytes.length);
+  buf.set(head); buf.set(bytes, head.length);
+  return [...new Uint8Array(await crypto.subtle.digest('SHA-256', buf))].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+const proofPreimage = (a) => { const { sig, ...rest } = a; return 'opentube-proof:' + canon(rest); };
+// ---- controlling your nodes: signed commands from the owner's console, answered signed by the node (routed over the mesh)
+const ctlPreimage = (c) => { const { sig, ...rest } = c; return 'opentube-nodectl:' + canon(rest); };
 const receiptShape = (r) => !!r && typeof r === 'object' && r.v === 1 && r.kind === 'receipt' && Object.hasOwn(SERVE.res, r.res) && isKey(r.provider) && isKey(r.by)
   && r.by !== r.provider && Number.isSafeInteger(r.epoch) && Number.isSafeInteger(r.amt) && r.amt > 0 && typeof r.sig === 'string';
 // Usernames: a channel can hold one @name and a list one ~name (links: site/@name, site/~name). A `name` transaction,
@@ -1218,6 +1233,20 @@ async function createEngine(o) {
       if (await addTx(m.x)) { maybeMine(); changed(); }
     } else if (m.t === 'mem') {
       await acceptMembership(m.m);
+    } else if (m.t === 'route') {   // a message for one key, passed hop by hop; the reply goes back the way it came
+      if (typeof m.id !== 'string' || m.id.length > 40 || routes.has(m.id)) return;
+      if (m.re !== undefined) {   // a reply
+        const back = routes.get(m.re); routes.set(m.id, null);
+        if (back === undefined) return;
+        if (back === SELF) { const w = waiting.get(m.re); if (w) { waiting.delete(m.re); w(m.body); } }
+        else send(m, back);
+        return;
+      }
+      if (!isKey(m.dst) || !(m.ttl > 0)) return;
+      routes.set(m.id, from); if (routes.size > 20000) routes.delete(routes.keys().next().value);
+      if (m.dst === o.signer.pub || o.keyFor?.(m.dst)) {
+        o.onRoute?.(m.body, m.dst, (body) => send({ t: 'route', id: rid(), re: m.id, body }, from));
+      } else send({ ...m, ttl: Math.min(8, m.ttl) - 1 });
     } else if (m.t === 'rcpt') {   // a usage receipt on its way to the node it pays
       if (m.r && typeof m.r === 'object') o.onReceipt?.(m.r, from);
     } else if (m.t === 'nodehi') {   // a peer says it's this node (its uptime/bandwidth earn under that key)
@@ -1299,6 +1328,16 @@ async function createEngine(o) {
     send({ t: 'mem', m });
     return m;
   }
+  const routes = new Map(), waiting = new Map(), SELF = Symbol('self');   // route id -> link it came from
+  const rid = () => [...crypto.getRandomValues(new Uint8Array(12))].map(b => b.toString(16).padStart(2, '0')).join('');
+  function route(dst, body, ms = 20000) {   // -> the reply body, or null after ms
+    const id = rid(); routes.set(id, SELF);
+    return new Promise((res) => {
+      const t = setTimeout(() => { waiting.delete(id); res(null); }, ms);
+      waiting.set(id, (b) => { clearTimeout(t); res(b); });
+      send({ t: 'route', id, dst, ttl: 8, body });
+    });
+  }
   function peerJoined(peer) {
     for (const r of E.rankings.values()) send({ t: 'rank', r }, peer);
     const mine = E.memberships.get(o.signer.pub); if (mine) send({ t: 'mem', m: mine }, peer);
@@ -1356,7 +1395,7 @@ async function createEngine(o) {
 
   return Object.assign(E, {
     syncState,
-    acceptRanking, publishRanking, acceptMembership, publishMembership, acceptNodeInfo, publishNodeInfo, submitTx, addTx, history, pendingState, LEDGER, ADS,
+    acceptRanking, publishRanking, acceptMembership, publishMembership, acceptNodeInfo, publishNodeInfo, submitTx, route, addTx, history, pendingState, LEDGER, ADS,
     signTerms: async (terms, signer) => ({ ...terms, sig: await signer.sign(termsPreimage(terms)) }),
     signWitness: async (w) => ({ ...w, sig: await o.signer.sign(witnessPreimage(w)) }),
     termsId: termsIdOf, sessionId: sessionIdOf,
@@ -1368,7 +1407,7 @@ async function createEngine(o) {
   });
 }
 
-globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, COIN, SERVE, epochOf, receiptPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
+globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
 })();
 </script>
 
@@ -4051,6 +4090,77 @@ function nodesPanel() {
         h('div', { style: 'margin-top:8px' }, make), out)));
   return box;
 }
+// ---- controlling your nodes from here. A command is signed by your key and checked by the node (it only obeys the
+// user in its grant). It goes over a direct WebSocket to the node when this page can reach one of its addresses
+// (a public https address, or localhost when the node runs on this computer); otherwise it is passed node to node
+// over the mesh. The node's answer is signed by the node.
+function directUrls(n) {
+  return (n.addrs || []).map(a => a.replace(/\/+$/, '')).filter(a => a.startsWith('https://') || /^http:\/\/(localhost|127\.0\.0\.1)[:/]/.test(a) || location.protocol === 'http:')
+    .map(a => a.replace(/^http/, 'ws') + '/ot');
+}
+async function nodeCtl(n, cmd, args = {}) {
+  for (const u of directUrls(n)) connectNode(u);
+  const direct = () => directUrls(n).some(u => net.links.has('node:' + u));
+  for (let i = 0; i < 15 && !direct(); i++) await new Promise(r => setTimeout(r, 200));   // give a direct link a moment
+  const C = globalThis.OpenTubeCore;
+  const c = { v: 1, kind: 'nodectl', node: n.node, user: me.pub, at: Date.now(), nonce: [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join(''), cmd, args };
+  c.sig = await me.sign(C.ctlPreimage(c));
+  const r = await E.route(n.node, c, 25000);
+  if (!r) throw new Error('no answer: the node is offline or can’t be reached right now');
+  if (r.node !== n.node || r.re !== c.nonce || !(await C.verify(n.node, C.ctlPreimage(r), r.sig))) throw new Error('the answer wasn’t signed by this node');
+  if (!r.ok) throw new Error(r.error || 'refused');
+  return { data: r.data, via: direct() ? 'direct' : 'mesh' };
+}
+const openManagers = new Map();   // node key -> its open file manager (kept while the page redraws)
+function fileManager(n) {
+  const box = h('div', { class: 'panel', style: 'margin-top:8px' }), status = h('span', { class: 'sub' });
+  let data = null, via = '';
+  const run = async (cmd, args, confirmText) => {
+    if (confirmText && !confirm(confirmText)) return;
+    status.textContent = cmd === 'files' ? 'asking the node…' : 'sending…';
+    try { const r = await nodeCtl(n, cmd, args); data = r.data; via = r.via; status.textContent = `updated ${new Date().toLocaleTimeString()} · ${via === 'direct' ? 'direct connection' : 'through the mesh'}`; draw(); }
+    catch (e) { status.textContent = '✗ ' + e.message; }
+  };
+  const copiesText = (v) => v.proven || v.seeds ? `${Math.max(v.proven, v.seeds)} other cop${Math.max(v.proven, v.seeds) === 1 ? 'y' : 'ies'} (${v.proven} proven, ${v.seeds} seeding)` : 'no other copy known';
+  const draw = () => {
+    if (!data) return box.replaceChildren(h('div', { class: 'row' }, h('b', {}, 'Files on this node'), status));
+    const cap = h('input', { type: 'number', min: 0.1, step: 0.5, value: data.capGB, style: 'width:90px' });
+    const add = h('input', { type: 'text', placeholder: 'Channel ID or @name to host on this node', style: 'flex:1;min-width:200px' });
+    const addBtn = h('button', { class: 'small', onclick: () => {
+      const t = add.value.trim().toLowerCase(), chain = isHex(t, 64) ? t : E.ledger.names.get(t.startsWith('@') ? t : '@' + t)?.chain;
+      if (!chain) return toast('Not a channel ID or registered @name'); run('keepChannel', { chain, on: true });
+    } }, 'Host it here');
+    const chans = data.channels.map(c => {
+      const tags = [c.own && 'your channel', c.joined && 'joined', c.extra && 'kept by this node', c.stopped && 'stopped here'].filter(Boolean).join(' · ');
+      const acts = [];
+      if (c.stopped) acts.push(h('button', { class: 'small', onclick: () => run('stopChannel', { chain: c.chain, on: false }) }, 'Host here again'),
+        h('button', { class: 'small', onclick: () => run('removeChannelFiles', { chain: c.chain }, `Delete the files of ${c.name} from this node?`) }, 'Delete its files'));
+      else if (c.extra) acts.push(h('button', { class: 'small', onclick: () => run('keepChannel', { chain: c.chain, on: false }) }, 'Stop keeping'));
+      else acts.push(h('button', { class: 'small', onclick: () => run('stopChannel', { chain: c.chain, on: true }) }, 'Stop hosting here'));
+      return h('div', { class: 'item' },
+        h('div', { class: 'row', style: 'justify-content:space-between' },
+          h('div', {}, '📁 ', h('b', {}, c.folder || c.name), ' ', h('a', { href: `#/c/${c.chain}` }, 'open'), h('span', { class: 'sub' }, ` · ${tags} · ${fmtBytes(c.used)}`), c.overCap ? h('span', { class: 'badge warn', style: 'margin-left:6px' }, 'over the limit: the rest are rare or pinned') : null),
+          h('div', { class: 'row' }, acts)),
+        c.videos.length ? c.videos.map(v => h('div', { class: 'row', style: 'justify-content:space-between;margin:4px 0 0 18px' },
+          h('div', { style: 'flex:1;min-width:200px' }, v.pinned ? '📌 ' : '', v.title || v.file, h('span', { class: 'sub' }, ` · ${fmtBytes(v.size)} · ${v.complete ? '✓ saved' : `downloading ${v.progress}%`}${v.sharing ? ` · ${v.peers} peer(s)` : ' · not sharing'} · `),
+            h('span', { class: v.proven || v.seeds ? 'sub' : 'sub warn-text', style: v.proven || v.seeds ? '' : 'color:var(--warn)' }, copiesText(v))),
+          h('div', { class: 'row' },
+            h('button', { class: 'small', onclick: () => run('pin', { ih: v.ih, on: !v.pinned }) }, v.pinned ? 'Unpin' : 'Pin'),
+            h('button', { class: 'small', onclick: () => run('drop', { ih: v.ih }, (v.proven || v.seeds ? '' : 'No other copy of this video is known on the network. ') + `Delete “${v.title || v.file}” from this node and don’t download it again?`) }, 'Drop'))))
+          : h('div', { class: 'sub', style: 'margin-left:18px' }, 'No videos here yet.'));
+    });
+    box.replaceChildren(
+      h('div', { class: 'row', style: 'justify-content:space-between' }, h('b', {}, 'Files on this node'), h('div', { class: 'row' }, status, h('button', { class: 'small', onclick: () => run('files') }, 'Refresh'))),
+      h('div', { class: 'sub' }, `Folder: ${data.videoDir}. Pinned videos are never trimmed. Over the limit, the node removes videos that at least ${data.minCopies} other hosts have proven they hold (most widely held first) and keeps rare ones.`),
+      h('div', { class: 'row', style: 'margin-top:6px' }, h('span', {}, 'Limit per channel'), cap, h('span', {}, 'GB'), h('button', { class: 'small', onclick: () => run('cap', { gb: Number(cap.value) }) }, 'Save')),
+      h('div', { class: 'row', style: 'margin-top:6px' }, add, addBtn),
+      ...(chans.length ? chans : [h('div', { class: 'sub' }, 'This node doesn’t host any channel yet. Join one, or add one above.')]),
+      data.dropped.length ? h('div', { style: 'margin-top:8px' }, h('div', { class: 'sub' }, 'Dropped (won’t be downloaded again):'),
+        data.dropped.map(ih => h('div', { class: 'row', style: 'margin-left:18px' }, h('span', { class: 'mono sub' }, ih.slice(0, 16) + '…'), h('button', { class: 'small', onclick: () => run('restore', { ih }) }, 'Allow again')))) : null);
+  };
+  draw(); run('files');
+  return box;
+}
 function nodeRow(n) {
   const age = Date.now() - n.at, online = age < 90000, i = n.info || {};
   const test = h('span', { class: 'sub' });
@@ -4066,11 +4176,12 @@ function nodeRow(n) {
   return h('div', { class: 'item' },
     h('div', { class: 'row', style: 'justify-content:space-between' },
       h('div', {}, h('span', { class: 'dot' + (online ? ' on' : '') }), ' ', h('b', {}, i.name || n.grant.label || 'computer'), h('span', { class: 'sub' }, ` · ${n.roles.map(r => ({ node: 'full node', host: 'host', obs: 'OBS receiver' })[r] || r).join(' · ')} · ${online ? 'online' : 'last seen ' + ago(n.at)}`)),
-      h('button', { class: 'small', onclick: check }, 'Test connection')),
+      h('div', { class: 'row' }, h('button', { class: 'small', onclick: check }, 'Test connection'),
+        n.roles.includes('host') ? h('button', { class: 'small', onclick: (e) => { const row = e.target.closest('.item'); if (openManagers.has(n.node)) { openManagers.get(n.node).remove(); openManagers.delete(n.node); return; } const fm = fileManager(n); openManagers.set(n.node, fm); row.append(fm); } }, openManagers.has(n.node) ? 'Close files' : 'Manage files') : null)),
     h('div', { class: 'sub' }, [i.os, i.node && 'Node ' + i.node, i.height != null && `main #${i.height}`, i.peers != null && `${i.peers} peer(s)`, i.chains != null && `${i.chains} chains`].filter(Boolean).join(' · ')),
     i.host ? h('div', { class: 'sub' }, `Hosting ${i.host.hosting ?? 0} videos (${fmtBytes(i.host.hostedBytes || 0)}) for ${i.host.channels ?? 0} joined channels in ${i.host.videoDir || 'its folder'}` + (i.host.downloading ? ` · downloading ${i.host.downloading}` : '') + (i.host.stale ? ' · host not reporting' : '')) : null,
     i.obs ? h('div', { class: 'sub' }, i.obs.live ? `OBS: streaming now (${fmtBytes(i.obs.bytes || 0)})` : i.obs.armed ? 'OBS: ready, waiting for Start Streaming' : `OBS: listening on rtmp://localhost:${i.obs.port}/live`) : null,
-    h('div', { class: 'sub mono' }, n.addrs.join('  ')), test);
+    h('div', { class: 'sub mono' }, n.addrs.join('  ')), test, openManagers.get(n.node) || null);
 }
 function folderPanel() {
   const chans = [...folder.channels.entries()].map(([id, ch]) => {

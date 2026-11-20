@@ -99,6 +99,7 @@ const engine = await core.createEngine({
   mine: MINE || MINE_OWN ? mine : null,
   shouldMine: MINE ? () => true : (g) => g.author === signer.pub,   // a home node confirms everyone's registrations; MINE=own: only its own transactions
   onReceipt: (r, from) => receipts?.take(r, from),
+  onRoute: (body, dst, reply) => onRoute(body, reply),
   trackAll: !MAIN_ONLY,
   relayWatch: true,                // pass ad watch-group messages between browsers
   persist: (c, b) => blockLog.write(JSON.stringify({ c, b }) + '\n'),
@@ -214,6 +215,87 @@ var receipts = (() => {
   }, 60000);
   return { take };
 })();
+
+// ---- control from the owner's console, and storage proofs. Both arrive as routed messages (engine.route): over a
+// direct WebSocket when the console can reach this node's address, otherwise hop by hop over the mesh.
+const ctlSeen = new Map();   // nonce -> time (replay protection)
+async function onRoute(body, reply) {
+  if (!body || typeof body !== 'object') return;
+  if (body.kind === 'nodectl') return reply(await control(body));
+  if (body.kind === 'pchal') return reply(await answerChallenge(body));
+}
+async function signed(x) { x.sig = await signer.sign(core.ctlPreimage(x)); return x; }
+async function control(c) {
+  const fail = (error) => signed({ v: 1, kind: 'nodectlr', node: signer.pub, re: c.nonce, at: Date.now(), ok: false, error });
+  if (c.v !== 1 || c.node !== signer.pub || typeof c.nonce !== 'string' || c.nonce.length > 40 || typeof c.cmd !== 'string') return fail('bad command');
+  if (!GRANT || c.user !== GRANT.user) return fail('this node belongs to someone else');
+  if (Math.abs(Date.now() - c.at) > 2 * 60000 || ctlSeen.has(c.nonce)) return fail('stale or repeated command');
+  if (!(await core.verify(c.user, core.ctlPreimage(c), c.sig))) return fail('bad signature');
+  ctlSeen.set(c.nonce, Date.now()); for (const [k, at] of ctlSeen) if (Date.now() - at > 5 * 60000) ctlSeen.delete(k);
+  try {
+    let data;
+    if (c.cmd === 'status') data = { height: engine.main.best.height, peers: peers.size, chains: engine.chains.size, host: globalThis.openTubeHost?.status() || null, obs: globalThis.openTubeRtmp?.status?.() || null };
+    else if (!globalThis.openTubeHost) return fail('video hosting is off on this node (started with --no-host?)');
+    else data = globalThis.openTubeHost.command(c.cmd, c.args || {});
+    log(`[control] ${c.cmd} from the owner's console`);
+    return signed({ v: 1, kind: 'nodectlr', node: signer.pub, re: c.nonce, at: Date.now(), ok: true, data });
+  } catch (e) { return fail(e.message); }
+}
+async function answerChallenge(q) {
+  const host = globalThis.openTubeHost;
+  if (!host || !/^[0-9a-f]{40}$/.test(q.ih) || typeof q.nonce !== 'string' || q.nonce.length !== 32) return { kind: 'pproof', has: false };
+  const bytes = await host.piece(q.ih, q.piece);
+  if (!bytes) return { kind: 'pproof', has: false };
+  const a = { v: 1, kind: 'pproof', has: true, ih: q.ih, piece: q.piece, nonce: q.nonce, node: signer.pub, at: Date.now(), h: await core.pieceProof(q.nonce, signer.pub, bytes) };
+  a.sig = await signer.sign(core.proofPreimage(a));
+  return a;
+}
+// Challenge other hosts of the videos this node holds: a random piece, a fresh nonce, an answer within PROOF.answerMs
+// that must match what this node computes from its own copy. Passed proofs count as copies (trimming keeps rare videos)
+// and earn the prover storage receipts (MB proven, once per video per period), signed by this node at period end.
+const provedOnce = new Set();
+const storage = new Map();   // epoch -> Map(provider -> Map(ih -> MB))
+async function challengeRound() {
+  const host = globalThis.openTubeHost; if (!host) return;
+  const mine = host.complete(); if (!mine.length) return;
+  const { ih, t } = mine[Math.floor(Math.random() * mine.length)];
+  // candidates: nodes seen in this video's swarm (peer IDs come from node keys) and other hosting nodes
+  const byPeer = new Map([...engine.nodes.keys()].map(k => [nodePeerId(k), k]));
+  const inSwarm = (t.wires || []).map(w => byPeer.get(w.peerId)).filter(Boolean);
+  const others = [...engine.nodes.values()].filter(n => n.roles.includes('host') && Date.now() - n.at < 120000).map(n => n.node);
+  const targets = [...new Set([...inSwarm, ...others.sort(() => Math.random() - 0.5)])].filter(k => k !== signer.pub).slice(0, 4);
+  for (const key of targets) {
+    const index = Math.floor(Math.random() * t.pieces.length), nonce = crypto.randomBytes(16).toString('hex');
+    const mineBytes = await host.piece(ih, index); if (!mineBytes) return;
+    const expect = await core.pieceProof(nonce, key, mineBytes);
+    engine.route(key, { kind: 'pchal', ih, piece: index, nonce }, core.PROOF.answerMs).then(async (a) => {
+      if (!a || a.has === false) return;   // doesn't have it (or didn't answer in time)
+      const ok = a.node === key && a.nonce === nonce && a.piece === index && a.h === expect && await core.verify(key, core.proofPreimage(a), a.sig);
+      host.noteProof(ih, key, ok);
+      if (!ok) { log(`[proof] ${key.slice(0, 8)} failed a storage proof for ${ih.slice(0, 8)}`); return; }
+      if (!provedOnce.has(key + ih)) { provedOnce.add(key + ih); log(`[proof] ${key.slice(0, 8)} proved it holds ${ih.slice(0, 8)} (piece ${index})`); }
+      const e = core.epochOf(Date.now()), m = storage.get(e) || storage.set(e, new Map()).get(e), v = m.get(key) || m.set(key, new Map()).get(key);
+      v.set(ih, Math.max(1, Math.round(t.length / 1e6)));
+    });
+  }
+}
+setInterval(() => challengeRound().catch(e => log('[proof]', e.message)), Number(process.env.PROOF_EVERY_MS) || core.PROOF.everyMs);
+setInterval(async () => {   // sign storage receipts for finished periods and send them toward the provers
+  const now = core.epochOf(Date.now());
+  for (const [e, m] of storage) {
+    if (e >= now) continue; storage.delete(e);
+    for (const [provider, vids] of m) {
+      const r = { v: 1, kind: 'receipt', res: 'storage', provider, by: signer.pub, epoch: e, amt: [...vids.values()].reduce((a, b) => a + b, 0) };
+      r.sig = await signer.sign(core.receiptPreimage(r));
+      for (const p of peers.values()) p.send(JSON.stringify({ t: 'rcpt', r }));
+    }
+  }
+}, 60000);
+// Receipts only count from keys that did the starter proof of work, so a node that signs receipts claims its starter once.
+setTimeout(async () => {
+  if (!globalThis.openTubeHost || engine.ledger.starters.has(signer.pub) || !(MINE || MINE_OWN)) return;
+  try { await engine.submitTx({ starter: true }); log('[earn] claimed starter coins for this node’s key (so its receipts count)'); } catch (e) { log('[earn] starter:', e.message); }
+}, 20000);
 
 // ---- "your node": started from someone's My node command, it announces itself to their My node page
 const GRANT = (() => { try { return process.env.NODE_GRANT ? JSON.parse(Buffer.from(process.env.NODE_GRANT, 'base64url').toString('utf8')) : null; } catch { return null; } })();
