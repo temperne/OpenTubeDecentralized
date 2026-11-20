@@ -368,6 +368,7 @@ class Ledger {
     this.use = { post: 0, view: 0, like: 0 }; this.fees = 0;   // this block's load and unclaimed fees
     this.minted = src?.minted || 0; this.burned = src?.burned || 0; this.txCount = src?.txCount || 0;
     this.claimed = new Set(src?.claimed); this.slotUsed = new Set(src?.slotUsed); this.adViews = new Map(src?.adViews); this.adPaid = new Map(src?.adPaid);
+    this.adBusy = new Map(src?.adBusy);   // viewer -> first time slot after the last ad they were paid for
     this.names = new Map(src?.names); this.nameOf = new Map(src?.nameOf);   // '@cooking' -> { chain, key }; chain -> '@cooking'
   }
   balance(k) { return this.bal.get(k) || 0; }
@@ -390,8 +391,8 @@ class Ledger {
     if (t.claim) {
       const tid = claimTid.get(t), c = t.claim, adv = c.terms.advertiser;
       if (!tid) return 'claim not verified';
-      if (this.claimed.has(tid + '|' + t.from)) return 'already claimed this ad';
-      if (this.slotUsed.has(t.from + '|' + c.slot)) return 'already claimed an ad in this time slot';
+      // Watching the same ad again pays again; ads that overlap in time don't (one ad at a time per viewer).
+      if ((this.adBusy.get(t.from) || 0) > c.slot) return 'you were already paid for an ad at that time';
       if ((this.adViews.get(tid) || 0) >= c.terms.maxViews) return 'this ad has reached its maximum views';
       if (this.balance(adv) < c.terms.perView) return 'the advertiser has run out of coins for this ad';
       return null;
@@ -425,6 +426,7 @@ class Ledger {
       const tid = claimTid.get(t), c = t.claim, adv = c.terms.advertiser, p = c.terms.perView, half = Math.floor(p / 2);
       this.add(adv, -p); this.add(t.from, half); this.add(c.creator, p - half);
       this.claimed.add(tid + '|' + t.from); this.slotUsed.add(t.from + '|' + c.slot);
+      this.adBusy.set(t.from, c.slot + Math.max(1, Math.ceil(c.terms.duration * 1000 / ADS.slotMs)));
       this.adViews.set(tid, (this.adViews.get(tid) || 0) + 1); this.adPaid.set(tid, (this.adPaid.get(tid) || 0) + p);
     } else if (t.pay) { for (const o of t.pay) { this.add(t.from, -o.amt); this.add(o.to, o.amt); } }
     else if (t.post) {
@@ -3084,7 +3086,8 @@ views.watch = {
       else t.ready ? play() : t.once('ready', play);
     });
     (async () => {
-      const ad = await pickAd(id).catch(() => null);
+      const ad = adSeen.has(video) ? null : await pickAd(id).catch(() => null);
+      adSeen.delete(video);
       if (!ad || !alive()) return startMain();
       adPanel.style.display = 'block';
       const res = await runAd(ad, { player, panel: adPanel, video, creator: d.owner, alive });
@@ -3458,7 +3461,8 @@ function runAd(ad, { player, panel, video, creator, alive }) {
     if (!alive() || ended) return finish({ ok: false, text: '' });
     if (!blob || blob.size !== t.size) return finish({ ok: false, text: 'The ad could not be loaded (no peer has it), so it was skipped.' });
     // 2. Join the group for the next slot.
-    const slot = Math.ceil((nowSync() + 1500) / slotMs), start = slot * slotMs;
+    const solo = !(t.witnesses ?? 0);   // this ad pays without confirmation from other viewers: no need to sync up
+    const slot = solo ? Math.floor(nowSync() / slotMs) : Math.ceil((nowSync() + 1500) / slotMs), start = solo ? nowSync() + 300 : slot * slotMs;
     const session = await E.sessionId(ad.tid, slot);
     const mine_ = new Map();
     const hashAt = async (i) => {
@@ -3490,13 +3494,13 @@ function runAd(ad, { player, panel, video, creator, alive }) {
       status.textContent = `Ad · ${t.duration - i} s left`;
       syncInfo.textContent = `· in sync with ${inSync()} other viewer(s)`;
     }
-    await sleepUntil(start + t.duration * 1000 + 2000);
+    await sleepUntil(start + t.duration * 1000 + (solo ? 300 : 2000));
     if (!alive() || ended) return finish({ ok: false, text: '' });
     // 4. Sign what we saw; collect what others saw about us.
     const saw = [...matches].filter(([, x]) => x.size >= need).map(([k]) => k);
     if (sent >= need) E.send({ t: 'watch', s: session, w: await E.signWitness({ v: 1, kind: 'witness', session, terms: ad.tid, slot, video, creator, witness: me.pub, saw }) });
-    status.textContent = 'Ad finished · collecting confirmations from the other viewers…'; syncInfo.textContent = '';
-    await new Promise(r => setTimeout(r, 4000));
+    status.textContent = solo ? 'Ad finished · getting paid…' : 'Ad finished · collecting confirmations from the other viewers…'; syncInfo.textContent = '';
+    if (!solo) await new Promise(r => setTimeout(r, 4000));
     if (!alive()) return finish({ ok: false, text: '' });
     const ws = [...witnesses.values()].slice(0, E.ADS.maxWitnesses);
     if (sent < need) return finish({ ok: false, text: 'Not counted: the ad was not playing (and visible) for enough of the time.' });
@@ -3657,19 +3661,44 @@ function payPost(chainId, vb, size) {
   return E.submitTx({ post: { chain: chainId, video: vb.hash, size, amt: globalThis.OpenTubeCore.postCost(E.ledger.prices.post, size) } }, me);
 }
 const postPrice = (size) => globalThis.OpenTubeCore.postCost(E.ledger.prices.post, size);
+// Watching someone else's video: an ad plays first and the advertiser pays you for watching it; the view is then paid
+// from that automatically. Without an ad (or if it didn't pay), you pay from your coins.
+const adSeen = new Set();   // videos whose ad you just watched (don't show another one before the video)
 function paywall(id, b, d) {
-  const price = priceNow('view'), bal = balanceOf(me.pub), status = h('div', { class: 'sub' });
-  const pay = h('button', { class: 'primary', disabled: bal < price, onclick: async () => {
-    pay.disabled = true; status.textContent = 'Paying…';
-    try { await E.submitTx({ view: { chain: id, video: b.hash, to: d.owner, amt: price } }, me, (n) => { status.textContent = `Signing (anti-spam work: ${n.toLocaleString()} hashes)…`; }); render(true); }
-    catch (e) { status.textContent = e.message; pay.disabled = false; }
-  } }, `▶ Watch for ${fmtCoin(price)} coins`);
-  return h('div', { class: 'panel', style: 'max-width:720px' },
-    b.payload.thumb ? h('img', { src: b.payload.thumb, alt: '', style: 'width:100%;border-radius:8px;display:block' }) : null,
-    h('h2', {}, b.payload.title), h('div', { class: 'sub' }, h('a', { href: `#/c/${id}` }, d.profile.name), ' · ', ago(b.ts)),
-    h('p', {}, `Watching pays the creator ${fmtCoin(price)} coins. You have ${fmtCoin(bal)}.`),
-    h('div', { class: 'row' }, pay, bal < price ? starterButton(me.pub, status) : null, h('a', { class: 'act', href: '#/wallet' }, 'Wallet')), status,
-    h('p', { class: 'sub' }, 'Earn coins back: ads before videos pay you half of each verified view, and hosting channels (Join) earns a share of what people pay to post there.'));
+  const price = priceNow('view'), status = h('div', { class: 'sub' });
+  const box = h('div', { class: 'panel', style: 'max-width:720px' });
+  const head = [h('h2', {}, b.payload.title), h('div', { class: 'sub' }, h('a', { href: `#/c/${id}` }, d.profile.name), ' · ', ago(b.ts))];
+  const alive = () => box.isConnected && route.video === b.hash;
+  const payView = async () => {
+    status.textContent = 'Paying for the view…';
+    try {
+      await E.submitTx({ view: { chain: id, video: b.hash, to: d.owner, amt: price } }, me, (n) => { status.textContent = `Signing (anti-spam work: ${n.toLocaleString()} hashes)…`; });
+      adSeen.add(b.hash); if (alive()) render(true);
+    } catch (e) { status.textContent = e.message; manual(); }
+  };
+  function manual(note = '') {
+    const bal = balanceOf(me.pub);
+    const pay = h('button', { class: 'primary', disabled: bal < price, onclick: () => { pay.disabled = true; payView(); } }, `▶ Watch for ${fmtCoin(price)} coins`);
+    box.replaceChildren(b.payload.thumb ? h('img', { src: b.payload.thumb, alt: '', style: 'width:100%;border-radius:8px;display:block' }) : '', ...head,
+      note ? h('p', {}, note) : '', h('p', {}, `Watching pays the creator ${fmtCoin(price)} coins. You have ${fmtCoin(bal)}.`),
+      h('div', { class: 'row' }, pay, bal < price ? starterButton(me.pub, status) : null, h('a', { class: 'act', href: '#/wallet' }, 'Wallet')), status,
+      h('p', { class: 'sub' }, 'Ads earn you coins: when a channel has ads, one plays first and the advertiser pays you for watching it. Hosting channels (Join) also earns a share of what people pay to post there.'));
+  }
+  box.replaceChildren(...head, h('p', { class: 'sub' }, 'Finding an ad…'));
+  (async () => {
+    const ad = await pickAd(id).catch(() => null);
+    if (!alive()) return;
+    if (!ad) return manual();
+    const player = h('video', { playsInline: true, autoplay: true, style: 'width:100%;background:#000;border-radius:8px' });
+    const adPanel = h('div', { class: 'panel', style: 'margin:8px 0' });
+    box.replaceChildren(player, adPanel, ...head, h('p', { class: 'sub' }, `This ad pays you; the video then plays (it costs ${fmtCoin(price)} coins, paid from what you earn).`), status);
+    const res = await runAd(ad, { player, panel: adPanel, video: b.hash, creator: d.owner, alive });
+    player.pause();
+    if (!alive()) return;
+    if (res.ok && balanceOf(me.pub) >= price) return payView();
+    manual(res.text || 'The ad didn’t finish.');
+  })();
+  return box;
 }
 const chainLink = (id) => { const g = genesisFor(id); return h('a', { href: `#/c/${id}` }, g ? (derive(id)?.profile.name || g.payload.name) : id.slice(0, 8) + '…'); };
 function starterButton(key, statusEl) {
