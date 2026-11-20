@@ -368,7 +368,8 @@ class Ledger {
     this.use = { post: 0, view: 0, like: 0 }; this.fees = 0;   // this block's load and unclaimed fees
     this.minted = src?.minted || 0; this.burned = src?.burned || 0; this.txCount = src?.txCount || 0;
     this.claimed = new Set(src?.claimed); this.slotUsed = new Set(src?.slotUsed); this.adViews = new Map(src?.adViews); this.adPaid = new Map(src?.adPaid);
-    this.adBusy = new Map(src?.adBusy);   // viewer -> first time slot after the last ad they were paid for
+    this.adBusy = new Map(src?.adBusy);
+    this.views = new Map(src?.views);   // video -> paid views (each viewer pays once per video)   // viewer -> first time slot after the last ad they were paid for
     this.names = new Map(src?.names); this.nameOf = new Map(src?.nameOf);   // '@cooking' -> { chain, key }; chain -> '@cooking'
   }
   balance(k) { return this.bal.get(k) || 0; }
@@ -439,6 +440,7 @@ class Ledger {
     } else if (t.view) {
       this.add(t.from, -t.view.amt); this.add(t.view.to, t.view.amt);
       this.paid.set(`view:${t.view.video}:${t.from}`, { from: t.from, amt: t.view.amt, to: t.view.to }); this.use.view++;
+      this.views.set(t.view.video, (this.views.get(t.view.video) || 0) + 1);
     } else if (t.vote) {
       this.add(t.from, -t.vote.amt);
       if (t.vote.v > 0) this.add(t.vote.to, t.vote.amt); else this.burned += t.vote.amt;   // dislikes are burned
@@ -2343,12 +2345,14 @@ function unpaidCard(id, b) {
   } }, `Publish for ${fmtCoin(postPrice(b.payload.size))} coins`);
   return h('div', {}, card, h('div', { style: 'margin-top:6px' }, h('span', { class: 'badge warn' }, 'not published: posting fee unpaid'), ' ', btn, status));
 }
+const viewsOf = (hash) => (E.ledger.views.get(hash) || 0) + [...E.txpool.values()].filter(t => t.v === 2 && t.view?.video === hash).length;
+const fmtViews = (n) => n === 1 ? '1 view' : (n >= 1e6 ? (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M' : n >= 1e4 ? Math.round(n / 1e3) + 'K' : n.toLocaleString()) + ' views';
 function videoCard(chainId, b) {
   const v = b.payload, d = derive(chainId);
   const th = h('div', { class: 'thumb' }); if (v.thumb) th.style.backgroundImage = `url("${v.thumb}")`; else th.textContent = '▶';
   return h('a', { class: 'card', href: `#/v/${chainId}/${b.hash}` }, th,
     h('div', { class: 'meta' }, h('h3', { title: v.title }, v.title),
-      h('div', { class: 'sub' }, `${d?.profile.name ?? ''} · ${ago(b.ts)} · 👍 ${d?.votes.get(b.hash)?.up || 0}`),
+      h('div', { class: 'sub' }, `${d?.profile.name ?? ''} · ${fmtViews(viewsOf(b.hash))} · ${ago(b.ts)} · 👍 ${d ? votesOf(d, b.hash).up : 0}`),
       hosting.has(v.infohash) ? h('span', { class: 'badge ok' }, 'hosting') : null));
 }
 // A card from a ranking entry. Uses the real block (thumbnail, live votes) once that channel is loaded.
@@ -2357,7 +2361,7 @@ function rankCard(i, n) {
   if (!c && genesisFor(i.c)) { openChain(i.c); E.requestChain(chains.get(i.c)); }
   const b = chains.get(i.c)?.blocks.get(i.v);
   const card = b ? videoCard(i.c, b) : h('a', { class: 'card', href: `#/v/${i.c}/${i.v}` }, h('div', { class: 'thumb' }, '▶'),
-    h('div', { class: 'meta' }, h('h3', { title: i.t }, i.t), h('div', { class: 'sub' }, `${i.n} · ${ago(i.ts)} · 👍 ${i.up}`)));
+    h('div', { class: 'meta' }, h('h3', { title: i.t }, i.t), h('div', { class: 'sub' }, `${i.n} · ${fmtViews(viewsOf(i.v))} · ${ago(i.ts)} · 👍 ${i.up}`)));
   if (n) card.querySelector('.thumb').append(h('span', { class: 'rank-n' }, '#' + n));
   return card;
 }
@@ -3154,7 +3158,7 @@ views.watch = {
       h('div', {}, player, watchState.adPanel, h('div', { class: 'bar' }, bar), stats,
         h('h2', { style: 'margin:8px 0 4px' }, v.title),
         h('div', { class: 'row' }, h('a', { href: `#/c/${id}`, class: 'row', style: 'color:var(--text)' }, avatar(d.profile.avatar, d.profile.name, 'sm'), h('b', {}, d.profile.name)),
-          h('span', { class: 'sub' }, ago(b.ts) + ' · ' + fmtBytes(v.size)),
+          h('span', { class: 'sub' }, fmtViews(viewsOf(video)) + ' · ' + ago(b.ts) + ' · ' + fmtBytes(v.size)),
           h('span', { class: 'votes' }, upBtn, downBtn), voteStatus,
           h('button', { class: 'small', onclick: () => { const url = location.href; navigator.clipboard?.writeText(url).then(() => toast('Link copied'), () => prompt('Copy link', url)); } }, 'Copy link'),
           isMine(d.owner) ? h('button', { class: 'small', onclick: async () => { await append(id, { type: 'hide', target: video }); location.hash = `#/c/${id}`; } }, 'Hide video') : null),
