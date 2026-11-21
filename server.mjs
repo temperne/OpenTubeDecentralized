@@ -816,6 +816,16 @@ async function control(c) {
       relayAsked.set(a.stream, { chain: a.chain, at: Date.now(), record: a.record === true && !!globalThis.openTubeHost?.seedRecording, title: String(a.title || 'Live').slice(0, 100) }); setTimeout(liveRelays, 500);
       return signed({ v: 1, kind: 'nodectlr', node: signer.pub, re: c.nonce, at: Date.now(), ok: true, data: { relaying: !!RTCPC } });
     }
+    if (c.cmd === 'public.set') {   // make this computer public through Cloudflare Tunnel (or stop): saved for every start, then restart
+      if (!owner) return fail('only the owner can change this');
+      if (!process.env.OPENTUBE_LAUNCHER || !process.env.LAUNCH_FILE) return fail('this node wasn’t started with the OpenTube command, so it can’t change how it starts');
+      const a = c.args || {}, mode = ['tunnel', 'off'].includes(a.mode) ? a.mode : null; if (!mode) return fail('bad mode');
+      let saved = {}; try { saved = JSON.parse(fs.readFileSync(process.env.LAUNCH_FILE, 'utf8')); } catch {}
+      saved.tunnel = mode === 'tunnel'; fs.writeFileSync(process.env.LAUNCH_FILE, JSON.stringify(saved, null, 2));
+      log(`[control] public ${mode === 'tunnel' ? 'on (Cloudflare Tunnel)' : 'off'}: restarting`);
+      setTimeout(() => process.exit(75), 800);
+      return signed({ v: 1, kind: 'nodectlr', node: signer.pub, re: c.nonce, at: Date.now(), ok: true, data: { restarting: true } });
+    }
     if (c.cmd === 'update') {   // download the site's current code and restart (needs the one-command launcher, which restarts us)
       if (!owner && !may(c.user, 'manage')) return fail('only the owner can update this computer');
       if (!process.env.OPENTUBE_LAUNCHER) return fail('this node wasn’t started with the OpenTube command, so it can’t update itself: stop it and start it again');
@@ -953,7 +963,7 @@ else if (GRANT) {
   const announce = async () => {
     let host = globalThis.openTubeHost?.status() || null;
     if (!host) try { host = JSON.parse(fs.readFileSync(process.env.HOST_STATUS_FILE, 'utf8')); if (Date.now() - host.at > 120000) host = { ...host, stale: true }; } catch {}
-    const info = { publicIp: (await publicIp()) || null, users: Object.fromEntries(Object.entries(obsStore.users).filter(([, u]) => !(u.until < Date.now())).slice(0, 20).map(([k, u]) => [k, u.can.map(x => x[0]).join('') + (u.guestOf ? 'g' : '')])),   // who may use it: o(bs) h(ost) m(anage)
+    const info = { public: process.env.PUBLIC_URL || null, tunnel: process.env.TUNNEL_STATE || null, publicIp: (await publicIp()) || null, users: Object.fromEntries(Object.entries(obsStore.users).filter(([, u]) => !(u.until < Date.now())).slice(0, 20).map(([k, u]) => [k, u.can.map(x => x[0]).join('') + (u.guestOf ? 'g' : '')])),   // who may use it: o(bs) h(ost) m(anage)
       version: { name: core.VERSION, build: BUILD, files: FILES }, peerId: nodePeerId(signer.pub), name: (process.env.NODE_LABEL || os.hostname()).slice(0, 60), os: `${os.platform()} ${os.arch()}`, node: process.version, height: engine.main.best.height,
       peers: peers.size, chains: engine.chains.size, site: process.env.NODE_SITE || null, host, obs: globalThis.openTubeRtmp?.status?.() || null };
     try { await engine.publishNodeInfo({ grant: GRANT, roles: rolesNow(), addrs: addrs(), info }); } catch (e) { log('announce failed:', e.message); }

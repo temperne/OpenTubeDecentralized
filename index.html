@@ -7207,6 +7207,15 @@ function nodeRow(n) {
     h('div', { class: 'sub' }, [i.os, i.node && 'Node ' + i.node, i.height != null && `main #${i.height}`, i.peers != null && `${i.peers} peer(s)`, i.chains != null && `${i.chains} chains`].filter(Boolean).join(' · '), ' ', versionBadge(i.version)),
     i.host ? h('div', { class: 'sub' }, `Hosting ${i.host.hosting ?? 0} videos (${fmtBytes(i.host.hostedBytes || 0)}) for ${i.host.channels ?? 0} joined channels in ${i.host.videoDir || 'its folder'}` + (i.host.downloading ? ` · downloading ${i.host.downloading}` : '') + (i.host.stale ? ' · host not reporting' : '')) : null,
     i.obs ? h('div', { class: 'sub', style: i.obs.error || i.obs.listening === false ? 'color:var(--warn)' : '' }, i.obs.error ? '⚠ OBS: ' + i.obs.error : i.obs.listening === false ? '⚠ OBS: not listening' : i.obs.live ? `OBS: streaming now (${fmtBytes(i.obs.bytes || 0)})` : i.obs.armed ? 'OBS: ready, waiting for Start Streaming' : `OBS: listening on port ${i.obs.port} (stream key and server under 🎥 OBS & streaming)`) : null,
+    // public (an entry node: browsers use it as a way in, tracker and live hub) or not, and switching it from here
+    h('div', { class: 'row', style: 'gap:8px;margin-top:4px;flex-wrap:wrap' },
+      i.public ? h('span', {}, '🌐 Public at ', h('a', { href: i.public, target: '_blank', rel: 'noopener' }, i.public), n.roles.includes('entry') ? h('span', { class: 'badge ok', style: 'margin-left:6px' }, 'entry node') : null)
+        : h('span', { class: 'sub' }, '🔒 Not public: only reachable from the peer mesh', i.tunnel && i.tunnel !== 'on' ? h('span', { style: 'color:var(--warn)' }, ` · tunnel failed: ${i.tunnel}`) : null),
+      owner && online ? h('button', { class: 'small' + (i.public ? '' : ' primary'), title: i.public ? 'Stop the Cloudflare Tunnel' : 'Give this computer a public HTTPS address through Cloudflare Tunnel: no open ports or account needed', onclick: async (e) => {
+        const b = e.target; b.disabled = true; test.textContent = i.public ? 'Turning public access off…' : 'Starting a Cloudflare Tunnel: the computer restarts and reports its public address within a minute…';
+        try { await nodeCtl(n, 'public.set', { mode: i.public && i.tunnel === 'on' ? 'off' : 'tunnel' }); }
+        catch (err) { b.disabled = false; test.textContent = /unknown command|bad command/.test(err.message) ? '✗ This computer runs an older OpenTube: press ⟳ Update first.' : '✗ ' + err.message; }
+      } }, i.public ? (i.tunnel === 'on' ? 'Stop being public' : 'Public (its own HTTPS)') : '🌐 Make public') : null),
     h('div', { class: 'sub mono' }, n.addrs.join('  ')), test, openManagers.get('obs:' + n.node) || null, openManagers.get('people:' + n.node) || null, openManagers.get(n.node) || null);
 }
 function folderPanel() {

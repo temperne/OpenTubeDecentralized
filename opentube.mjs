@@ -46,6 +46,10 @@ try { grant = JSON.parse(Buffer.from(String(args.grant), 'base64url').toString('
 if (!grant?.user) { console.error('Missing or broken --grant. Copy the command again from My node → Run OpenTube on your computer.'); process.exit(1); }
 
 const HOME = path.join(os.homedir(), '.opentube');
+// Choices made on the site (Devices → Make public…) are saved here by the node and apply on every start; options on
+// the command line win.
+const LAUNCH_FILE = path.join(HOME, 'launch.json');
+try { const saved = JSON.parse(fs.readFileSync(LAUNCH_FILE, 'utf8')); for (const [k, v] of Object.entries(saved)) if (!(k in args) && v !== false && v != null) args[k] = v; } catch {}
 const APP = path.join(HOME, 'app');
 const VIDEOS = path.resolve(String(args.videos || path.join(os.homedir(), 'OpenTube Videos')));
 const STATUS = path.join(HOME, 'host-status.json');
@@ -173,7 +177,7 @@ async function cloudflaredPath() {
   else fs.writeFileSync(file, buf);
   fs.chmodSync(file, 0o755); return file;
 }
-let tunnelUrl = null;
+let tunnelUrl = null, tunnelState = null;
 if (want.node && (args.tunnel || args['tunnel-token'])) {
   try {
     const bin = await cloudflaredPath(), token = args['tunnel-token'] ? String(args['tunnel-token']) : null;
@@ -186,9 +190,9 @@ if (want.node && (args.tunnel || args['tunnel-token'])) {
       const look = (d) => { const m = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/.exec(String(d)); if (m) { clearTimeout(t); res(m[0]); } };
       tunnel.stdout.on('data', look); tunnel.stderr.on('data', look);
     });
-    if (tunnelUrl) log(`  public: ${tunnelUrl} (through Cloudflare Tunnel; browsers use it as a way into the network, tracker and live hub)`);
-    else log('the tunnel didn’t give an address within 45 s; the node runs without a public address');
-  } catch (e) { log('tunnel off:', e.message); }
+    if (tunnelUrl) { tunnelState = 'on'; log(`  public: ${tunnelUrl} (through Cloudflare Tunnel; browsers use it as a way into the network, tracker and live hub)`); }
+    else { tunnelState = 'no address from cloudflared within 45 s'; log('the tunnel didn’t give an address within 45 s; the node runs without a public address'); }
+  } catch (e) { tunnelState = e.message; log('tunnel off:', e.message); }
 }
 
 if (want.node) {
@@ -198,7 +202,7 @@ if (want.node) {
     NODE_GRANT: String(args.grant), NODE_SITE: site.origin, NODE_ROLES: roles.join(','), NODE_LABEL: String(args.name || os.hostname()),
     HOST_STATUS_FILE: STATUS, RTMP_PORT: want.obs ? String(Number(args['obs-port']) || 1935) : '',
     ...(args.public ? { PUBLIC: args.public === true ? 'auto' : String(args.public), ...(args.email ? { PUBLIC_EMAIL: String(args.email) } : {}) } : {}),
-    ...(tunnelUrl ? { PUBLIC_URL: tunnelUrl } : {}),
+    ...(tunnelUrl ? { PUBLIC_URL: tunnelUrl } : {}), LAUNCH_FILE, ...(tunnelState ? { TUNNEL_STATE: String(tunnelState).slice(0, 200) } : {}),
     ...(nodeHosts ? { VIDEO_DIR: VIDEOS, HOST_USER: grant.user, CAP_GB: String(args['cap-gb'] || 5) } : {})
   });
 }
