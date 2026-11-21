@@ -33,6 +33,20 @@ export async function startHost({ engine, nodeKey, user, users = () => [], video
   // WebRTC, so browsers can swarm with this node (they only speak BitTorrent over WebRTC). Without it the node only
   // reaches ordinary BitTorrent apps (TCP/UDP, DHT).
   const wrtc = await import('webrtc-polyfill').then(m => ({ RTCPeerConnection: m.RTCPeerConnection, RTCSessionDescription: m.RTCSessionDescription, RTCIceCandidate: m.RTCIceCandidate })).catch(() => null);
+  // Node's WebRTC never reports the end of its candidates, so simple-peer waits its full 5 s before sending each offer or
+  // answer; by then the browser has paired with us the other way round, and each side drops one of the two
+  // connections as a duplicate (opposite ones), so none survives. Our candidates are gathered within milliseconds:
+  // stop waiting after 300 ms. (Patched in the copy WebTorrent itself loads.)
+  if (wrtc) try {
+    const { createRequire } = await import('node:module'), { pathToFileURL } = await import('node:url');
+    let dir = path.dirname(fs.realpathSync(createRequire(import.meta.url).resolve('webtorrent')));
+    while (path.basename(dir) !== 'webtorrent' && dir !== path.dirname(dir)) dir = path.dirname(dir);   // the webtorrent package folder
+    const peerPath = [path.join(dir, 'node_modules/@thaunknown/simple-peer/lite.js'), path.join(path.dirname(dir), '@thaunknown/simple-peer/lite.js')].find(p => fs.existsSync(p));
+    if (!peerPath) throw new Error('simple-peer not found next to webtorrent');
+    const { default: Peer } = await import(pathToFileURL(peerPath).href);
+    const start = Peer.prototype._startIceCompleteTimeout;
+    if (start && !Peer.prototype._otQuick) { Peer.prototype._otQuick = true; Peer.prototype._startIceCompleteTimeout = function () { this.iceCompleteTimeout = Math.min(this.iceCompleteTimeout || 5000, 300); return start.call(this); }; }
+  } catch (e) { log('[host] couldn’t shorten the WebRTC wait (browsers may connect slowly):', e.message); }
   if (!wrtc) log('[host] webrtc-polyfill missing: browsers can’t download from this node over BitTorrent (npm install webrtc-polyfill)');
   const client = new WebTorrent({ dht: true, lsd: false, natUpnp: false, natPmp: false, peerId, ...(wrtc ? { tracker: { wrtc } } : {}) });
   client.on('error', (e) => log('[host] webtorrent:', e.message));
