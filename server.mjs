@@ -95,7 +95,7 @@ let memTimer = null;
 const saveMemberships = () => { memTimer ||= setTimeout(() => { memTimer = null; fs.writeFileSync(memFile, JSON.stringify([...engine.memberships.values()])); }, 2000); };
 
 const engine = await core.createEngine({
-  signer, send,
+  signer, send, peers: () => [...peers.keys()],
   onMembership: () => saveMemberships(),
   keyFor: (pub) => pub === rankerSigner.pub ? rankerSigner : null,
   mine: MINE || MINE_OWN ? mine : null,
@@ -136,7 +136,7 @@ function liveSink(chain, stream, mime) {
     const g = { stream, n: n++, o, h: crypto.createHash('sha256').update(bytes).digest('hex') };
     o += bytes.length;
     g.sig = await signer.sign(core.liveSegPreimage(g)); g.d = bytes.toString('base64'); if (k) g.k = 1;
-    send(g);
+    send(g); engine.liveMesh.publish(g);   // and over the mesh: viewers who want it get it without any hub
   }).catch(e => log('[obs] segment failed:', e.message)));
   let send, finish;
   const site = process.env.NODE_SITE;

@@ -355,6 +355,17 @@ On your channel's Videos tab, **Go live**: pick a camera, a microphone, or *Shar
 
 Known limits: the recording is WebM straight from the browser's recorder, so some players can't seek in it. The hub keeps the last minute of chunks, so a member who joins later than that fetches the gap after the stream is published.
 
+
+**Live over the mesh (no hub needed).** A hub on the site's node is now optional. The broadcaster also publishes every signed segment to the peer-to-peer mesh (an OBS node does too):
+
+- **Wanting:** a viewer sends `lwant` for a stream. Each peer remembers which links want it and passes the want on, a few hops, toward whoever has the stream.
+- **Delivery:** segments (`lseg`) flow back only along those paths, so the delivery tree arranges itself through the mesh and nobody receives a stream they didn't ask for.
+- **Catching up:** every peer on a path keeps the stream's header and the last minute of segments, and answers a new want with them. A late viewer catches up from the nearest peer, like BitTorrent pieces.
+- **Checking:** viewers verify each segment's hash and the channel's signature; relays only pass segments on.
+- **With a hub too:** viewers use both paths and drop duplicates.
+
+Camera streams work with no hub at all. OBS needs one of your computers running OpenTube.
+
 ## Subscribe vs. Join
 
 - **Subscribe:** your node keeps that channel's chain in sync and shows its videos in your feed. Videos download only when you watch them.

@@ -1729,6 +1729,10 @@ async function createEngine(o) {
       if (m.dst === o.signer.pub || o.keyFor?.(m.dst)) {
         o.onRoute?.(m.body, m.dst, (body) => send({ t: 'route', id: rid(), re: m.id, body }, from));
       } else send({ ...m, ttl: Math.min(8, m.ttl) - 1 });
+    } else if (m.t === 'lwant' && isHex(m.stream, 64)) {   // live over the mesh: someone wants this stream (see liveMesh)
+      liveMesh.want(m.stream, from, Math.min(8, m.ttl | 0));
+    } else if (m.t === 'lseg' && m.seg && isHex(m.seg.stream, 64)) {
+      liveMesh.seg(m.seg, from);
     } else if (m.t === 'rcpt') {   // a usage receipt on its way to the node it pays
       if (m.r && typeof m.r === 'object') o.onReceipt?.(m.r, from);
     } else if (m.t === 'nodehi') {   // a peer says it's this node (its uptime/bandwidth earn under that key)
@@ -1810,6 +1814,34 @@ async function createEngine(o) {
     send({ t: 'mem', m });
     return m;
   }
+  // ---- live over the mesh (no hub needed). A viewer sends `lwant` for a stream; each peer remembers which links want
+  // it and passes the want on (a few hops) toward whoever has it. Signed segments (`lseg`) flow back only along those
+  // paths, so the delivery tree arranges itself through the mesh. Every peer on a path keeps the stream's header and
+  // the last minute of segments and answers a new want with them, so a late viewer catches up from the nearest peer,
+  // like pieces in BitTorrent. Segments are checked (hash and signature) by the viewers; relays only pass them on.
+  const liveMesh = (() => {
+    const lives = new Map();   // stream -> { wanted: Map(link -> until), segs: Map(n -> seg), seg0, last, fwdAt }
+    const get = (st) => lives.get(st) || lives.set(st, { wanted: new Map(), segs: new Map(), seg0: null, last: 0, fwdAt: 0 }).get(st);
+    const okSeg = (g) => Number.isSafeInteger(g.n) && g.n >= 0 && Number.isSafeInteger(g.o) && isHex(g.h, 64) && typeof g.sig === 'string' && typeof g.d === 'string' && g.d.length <= LIVE.maxSeg * 1.4;
+    function want(stream, from, ttl, local = false) {
+      const L = get(stream), now = Date.now();
+      if (from) { L.wanted.set(from, now + 70000); for (const g of [L.seg0, ...L.segs.values()].filter(Boolean)) send({ t: 'lseg', seg: g }, from); }   // catch up
+      if (local) L.local = now + 70000;
+      if (ttl > 0 && now - L.last > 5000 && now - L.fwdAt > 15000) { L.fwdAt = now; for (const id of [...(o.peers?.() || [])]) if (id !== from) send({ t: 'lwant', stream, ttl: ttl - 1 }, id); }
+    }
+    function seg(g, from) {
+      if (!okSeg(g)) return;
+      const L = get(g.stream), now = Date.now();
+      if (L.segs.has(g.n) || (g.n === 0 && L.seg0)) return;   // seen
+      L.last = now;
+      if (g.n === 0) L.seg0 = g; else { L.segs.set(g.n, g); for (const [n, x] of L.segs) if (n < g.n - 60) L.segs.delete(n); }
+      for (const [id, until] of L.wanted) { if (until < now) { L.wanted.delete(id); continue; } if (id !== from) send({ t: 'lseg', seg: g }, id); }
+      o.onLiveSeg?.(g);
+      for (const [st, x] of lives) if (now - x.last > 10 * 60000 && !(x.local > now)) lives.delete(st);
+    }
+    const publish = (g) => seg(g, null);   // our own segment (broadcaster, or an OBS node)
+    return { want, seg, publish, lives };
+  })();
   const routes = new Map(), waiting = new Map(), SELF = Symbol('self');   // route id -> link it came from
   const rid = () => [...crypto.getRandomValues(new Uint8Array(12))].map(b => b.toString(16).padStart(2, '0')).join('');
   function route(dst, body, ms = 20000) {   // -> the reply body, or null after ms
@@ -1887,7 +1919,7 @@ async function createEngine(o) {
 
   return Object.assign(E, {
     syncState,
-    acceptRanking, publishRanking, acceptMembership, publishMembership, acceptNodeInfo, publishNodeInfo, submitTx, route, squareId, squares, createChild, childGenesis, addTx, history, pendingState, LEDGER, ADS,
+    acceptRanking, publishRanking, acceptMembership, publishMembership, acceptNodeInfo, publishNodeInfo, submitTx, route, squareId, squares, createChild, childGenesis, liveMesh, addTx, history, pendingState, LEDGER, ADS,
     signTerms: async (terms, signer) => ({ ...terms, sig: await signer.sign(termsPreimage(terms)) }),
     signWitness: async (w) => ({ ...w, sig: await o.signer.sign(witnessPreimage(w)) }),
     termsId: termsIdOf, sessionId: sessionIdOf,
@@ -2190,6 +2222,8 @@ engine = await createEngine({
   keyFor: (pub) => ownedSigners.get(pub) || null,
   mine,
   send: (m, to) => net.send(m, to),
+  peers: () => [...net.links.keys()],
+  onLiveSeg: (g) => { const sess = viewing.get(g.stream); if (sess) onLiveMsg(sess, { t: 'seg', seg: g, via: 'mesh' }); },
   persist: (chainId, b) => { idb('blocks', 'readwrite', s => s.put({ hash: b.hash, chainId, block: b })).catch(() => {}); chainDisk?.queue(chainId, b); },
   onBlock: (chain, b) => { if (subs[chain.id] === 'join' && b.payload.type === 'video' && b.author === chain.owner && E.postPaid(b)) hostVideo(chain.id, b.payload); if (b.author === chain.owner) liveHooks?.onBlock(chain.id, b); },
   onChange: () => scheduleRender(),
@@ -2844,9 +2878,9 @@ const broadcasts = new Map();   // chainId -> session
 async function startLive(chainId, media, title) {
   if (!canHost()) throw new Error('Going live needs a video folder (it records the stream there).');
   if (!LIVE_MIME) throw new Error('This browser can’t record video for streaming. Use Chrome, Edge or Firefox.');
-  if (!(await liveNet.connect())) throw new Error('No home node to stream through. Open the site from its own address (not a file or ?net=p2p).');
+  const hub = await liveNet.connect();   // a hub helps (WebRTC tree, more viewers), but the mesh carries the stream without one
   const d = derive(chainId), signer = signerFor(d.owner);
-  await liveNet.auth(signer);
+  if (hub) await liveNet.auth(signer);
   const stream = toHex(crypto.getRandomValues(new Uint8Array(32)));
   const ch = await channelFolder(chainId);
   const file = await uniqueFileName(ch, cleanName(title, 'Live') + '.webm');
@@ -2878,6 +2912,7 @@ async function pushSegment(sess, blob) {
   g.sig = await sess.signer.sign(liveSegPreimage(g));
   g.d = b64.enc(u8);
   liveNet.send({ t: 'seg', seg: g });
+  E.liveMesh.publish(g);   // and over the mesh, to everyone who wants it
   await new Promise((res, rej) => sess.rec.put(g.o, u8, (e) => e ? rej(e) : res()));
 }
 async function stopLive(chainId) {
@@ -2963,12 +2998,16 @@ async function joinLive(chainId, lb, ui = null) {
   const stream = lb.payload.stream;
   let sess = viewing.get(stream);
   if (sess) { sess.ui = ui || sess.ui; if (ui) ui.attach(sess); return sess; }
-  if (!(await liveNet.connect())) { ui?.status('No home node to watch live streams through.'); return null; }
+  const hub = await liveNet.connect();
   sess = { chainId, stream, block: lb.hash, mime: lb.payload.mime, title: lb.payload.title, keys: liveSigner(chainId, lb), ui, parent: null, parentPc: null, media: null,
     kids: new Map(), pendingKids: new Set(), mode: 'pending', member: false, capture: null, ended: false, tries: 0, background: !ui };
   viewing.set(stream, sess);
-  liveNet.on(stream, (m) => onLiveMsg(sess, m));
-  sendWatch(sess);
+  sess.gotN = new Set();
+  // over the mesh, always (and only, when no hub answers): ask peers for the stream every 20 s
+  const wantIt = () => { if (viewing.get(stream) !== sess || sess.ended) return clearInterval(sess.wantTimer); E.liveMesh.want(stream, null, 6, true); };
+  wantIt(); sess.wantTimer = setInterval(wantIt, 20000);
+  if (hub) { liveNet.on(stream, (m) => onLiveMsg(sess, m)); sendWatch(sess); }
+  else { sess.mode = 'seg'; setTimeout(() => sess.ui?.segmentMode(), 0); ui?.status('Watching through the peer-to-peer mesh…'); }
   if (ui) ui.attach(sess);
   return sess;
 }
@@ -2977,7 +3016,7 @@ function leaveLive(stream, { keepIfMember = true } = {}) {
   const sess = viewing.get(stream); if (!sess) return;
   sess.ui = null;
   if (keepIfMember && sess.capture && !sess.ended) { sess.background = true; return; }   // members keep relaying and saving
-  liveNet.send({ t: 'leave', stream }); liveNet.off(stream);
+  liveNet.send({ t: 'leave', stream }); liveNet.off(stream); clearInterval(sess.wantTimer);
   sess.parentPc?.close(); for (const pc of sess.kids.values()) pc.close();
   clearTimeout(sess.mediaTimer);
   sess.capture?.store.close();
@@ -3034,6 +3073,8 @@ async function onLiveMsg(sess, m) {
       return;
     case 'seg': {
       const g = m.seg; if (!g || g.stream !== sess.stream) return;
+      if (sess.gotN?.has(g.n)) return; sess.gotN?.add(g.n);   // the same segment can arrive from the hub and the mesh
+      if (m.via === 'mesh' && sess.mode === 'pending') { sess.mode = 'seg'; sess.ui?.segmentMode(); }
       const u8 = b64.dec(g.d);
       if (await sha256Bytes(u8) !== g.h) { if (params.get('debug')) console.log('live seg bad hash', g.n); return; }
       let ok = false; for (const k of sess.keys) if (await coreVerify(k, liveSegPreimage(g), g.sig)) { ok = true; break; }
@@ -4568,7 +4609,7 @@ function liveStudio(chainId) {
   function setup() {
     const head = h('h3', { style: 'margin-top:0' }, '🔴 Go live');
     if (!LIVE_MIME) return [head, h('p', { class: 'sub' }, 'This browser can’t record video for streaming. Use Chrome, Edge or Firefox on a computer.')];
-    if (!liveNet.available()) return [head, h('p', { class: 'sub' }, 'Live streams go through the site’s home node. Open the site from its own address (not a saved file or ?net=p2p).')];
+    const meshNote = liveNet.available() ? null : h('p', { class: 'sub' }, 'No home node here: the stream goes out over the peer-to-peer mesh only (camera streams; OBS needs one of your computers running OpenTube).');
     if (!canHost()) return [head, folderPrompt('Going live (the recording is kept in your video folder)')];
     const source = h('select', {}, h('option', { value: '' }, 'Choose a camera…'));
     const mic = h('select', {}, h('option', { value: '' }, 'No microphone'));
@@ -4632,7 +4673,7 @@ function liveStudio(chainId) {
     const obs = diag.home?.ingest ? h('details', { style: 'margin-top:14px' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Or send the stream from OBS with a stream key'),
       h('p', { class: 'sub' }, 'OBS sends the video straight to this site’s server, which relays it. Viewers watch a few seconds behind. Your browser records it, so keep this page open.'),
       h('label', {}, 'Title'), obsTitle, h('div', { class: 'row', style: 'margin-top:8px' }, obsGo, obsStatus)) : null;
-    return [head, viaComputer,
+    return [head, meshNote, viaComputer,
       h('p', { class: 'sub', style: 'margin-top:0' }, 'Or stream from this browser: a camera, your screen, or OBS’s “Start Virtual Camera” (pick “OBS Virtual Camera” below). Your stream is recorded into this channel’s folder; when you end it you choose whether to publish the recording.'),
       ask, h('div', { class: 'split', style: 'margin-top:8px' }, h('div', {}, h('label', {}, 'Video'), source), h('div', {}, h('label', {}, 'Audio'), mic)),
       h('label', {}, 'Title'), title, preview, h('div', { class: 'row', style: 'margin-top:10px' }, go, status), obs];
