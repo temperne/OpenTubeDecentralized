@@ -136,6 +136,8 @@
     <a href="#/" data-nav="home">Home</a>
     <a href="#/explore" data-nav="explore">Explore</a>
     <a href="#/square" data-nav="square">Posts</a>
+    <a href="#/friends" data-nav="friends">Friends</a>
+    <a href="#/messages" data-nav="messages">Messages</a>
     <a href="#/market" data-nav="market">Market</a>
     <a href="#/exchange" data-nav="exchange">Exchange</a>
     <a href="#/orgs" data-nav="orgs">Orgs</a>
@@ -3435,7 +3437,7 @@ route = parseRoute();
 const startedAt = Date.now();
 function render(force) {
   updateStatus();
-  const navOf = ['wallet', 'friends', 'messages', 'you'].includes(route.name) || (route.name === 'user' && route.key === me.pub) ? 'you' : route.name === 'network' ? 'me' : route.name;
+  const navOf = ['wallet', 'you'].includes(route.name) || (route.name === 'user' && route.key === me.pub) ? 'you' : route.name === 'network' ? 'me' : route.name;
   document.querySelectorAll('[data-nav]').forEach(a => a.classList.toggle('active', a.dataset.nav === navOf));
   const key = JSON.stringify(route);
   // Preserve focus/inputs on views with forms: only full re-render when route changes, otherwise refresh live parts.
@@ -3924,8 +3926,9 @@ views.friends = { render() {
         rbox, h('div', { class: 'row', style: 'margin:6px 0 0 18px' }, rin, rbtn)));
     }
     if (!items.length) feed.append(h('div', { class: 'sub' }, 'Nothing yet. Posts from you and your friends show up here.'));
-    box.replaceChildren(h('h2', { style: 'margin-top:0' }, 'Friends'),
-      h('div', { class: 'panel' }, fmtBar(ta), ta, att, h('div', { class: 'row', style: 'margin-top:8px' }, audience, post, st)), feed, friendsBox);
+    if (route.name === 'you') return box.replaceChildren(friendsBox);
+    box.replaceChildren(h('div', { class: 'row', style: 'justify-content:space-between' }, h('h2', { style: 'margin:0' }, 'Friends'), h('a', { href: '#/you/friends' }, 'Manage friends ›')),
+      h('div', { class: 'panel' }, fmtBar(ta), ta, att, h('div', { class: 'row', style: 'margin-top:8px' }, audience, post, st)), feed);
   })().catch(e => box.replaceChildren(h('div', { class: 'empty' }, 'Friends page error: ' + e.message)));
   views.friends.refresh = () => { clearTimeout(views.friends.t); views.friends.t = setTimeout(() => { if (route.name === 'friends' && !document.activeElement?.matches?.('input,textarea')) render(true); }, 800); };
   return box;
@@ -4146,7 +4149,7 @@ views.messages = { render() {
       try { await sendMessage(k, text.value.trim()); text.value = ''; msgDraft = ''; st.textContent = 'Sent.'; location.hash = '#/messages/' + k; render(true); } catch (e) { st.textContent = 'Failed: ' + e.message; } finally { send.disabled = false; }
     } }, 'Send');
     const keys = await myMsgKeys(), live = E.ledger.msgkeys.get(me.pub) || [];
-    const keyPanel = h('details', { class: 'panel' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Messaging keys'),
+    const keyPanel = h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Messaging keys'),
       h('p', { class: 'sub' }, 'Messages to you are encrypted to one of these keys (the newest is used). Retire one if it may have leaked: new messages then use the others.'),
       keys.map((k, i) => h('div', { class: 'row', style: 'justify-content:space-between' }, h('span', { class: 'mono sub' }, k.pub.slice(0, 24) + '… · ' + (live.includes(k.pub) ? 'published' : 'not published')),
         live.includes(k.pub) ? h('button', { class: 'small', onclick: async () => { await E.submitTx({ msgkey: { key: k.pub, on: false } }, me); identity.msg[i].retired = true; await kv.set('identity', identity); toast('Retiring it on the network'); } }, 'Retire') : null)),
@@ -4157,12 +4160,13 @@ views.messages = { render() {
       } }, 'New messaging key'));
     const thread = sel ? h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, nameFor(sel)), (convos.get(sel) || []).map(m => h('div', { style: `margin:6px 0;text-align:${m.dir === 'out' ? 'right' : 'left'}` },
       h('span', { class: 'tagbox', style: `padding:6px 12px;display:inline-block;text-align:left;${m.dir === 'out' ? 'background:var(--accent-soft, var(--panel-2))' : ''}` }, ...inlineRich(m.text, m.from)), h('div', { class: 'sub' }, ago(m.at))))) : null;
-    box.replaceChildren(h('h2', { style: 'margin-top:0' }, 'Messages'),
+    if (route.name === 'you') return box.replaceChildren(h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Message settings'), h('p', { class: 'sub', style: 'margin-top:0' }, 'Messages to you are encrypted to your messaging keys. Add a new key, or retire one that may have leaked.')), keyPanel);
+    box.replaceChildren(h('div', { class: 'row', style: 'justify-content:space-between' }, h('h2', { style: 'margin:0' }, 'Messages'), h('a', { href: '#/you/messages' }, 'Message settings ›')),
       h('p', { class: 'sub' }, 'End-to-end encrypted. On the network a message shows neither who sent it nor who it’s for: only the recipient can tell it’s theirs. Messages travel on a shared chain for each month.'),
       h('div', { class: 'split' }, h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Conversations'),
         convos.size ? [...convos].sort((a, b) => b[1].at(-1).at - a[1].at(-1).at).map(([k, ms]) => h('a', { href: `#/messages/${k}`, class: 'item', style: 'display:block;color:inherit' }, h('b', {}, nameFor(k)), h('div', { class: 'sub' }, ms.at(-1).text.slice(0, 80))))
           : h('div', { class: 'sub' }, 'No messages yet.')),
-        h('div', {}, thread, h('div', { class: 'panel' }, h('div', { class: 'row' }, to), text, h('div', { class: 'row', style: 'margin-top:8px' }, send, st)), keyPanel)));
+        h('div', {}, thread, h('div', { class: 'panel' }, h('div', { class: 'row' }, to), text, h('div', { class: 'row', style: 'margin-top:8px' }, send, st)))));
   })().catch(e => box.replaceChildren(h('div', { class: 'empty' }, 'Messages error: ' + e.message)));
   views.messages.refresh = () => { clearTimeout(views.messages.t); views.messages.t = setTimeout(() => { if (route.name === 'messages' && !document.activeElement?.matches?.('input,textarea')) render(true); }, 1500); };
   return box;
@@ -4175,7 +4179,7 @@ settings.following = settings.following || [];   // people whose public posts sh
 settings.friendLevels = settings.friendLevels || ['close', 'friends', 'acquaintances'];
 const LEVEL_NAMES = { close: 'Close friends', friends: 'Friends', acquaintances: 'Acquaintances' };
 function youTabs(active) {
-  const tabs = [['profile', 'Profile', '#/you'], ['media', 'Media', '#/you/media'], ['channels', 'Channels', '#/you/channels'], ['wallet', 'Wallet', '#/wallet'], ['friends', 'Friends', '#/friends'], ['messages', 'Messages', '#/messages'], ['keys', 'Keys & security', '#/you/keys'], ['settings', 'Settings', '#/you/settings']];
+  const tabs = [['profile', 'Profile', '#/you'], ['media', 'Media', '#/you/media'], ['channels', 'Channels', '#/you/channels'], ['wallet', 'Wallet', '#/wallet'], ['friends', 'Friends settings', '#/you/friends'], ['messages', 'Message settings', '#/you/messages'], ['keys', 'Keys & security', '#/you/keys'], ['settings', 'Settings', '#/you/settings']];
   return h('div', {}, h('div', { class: 'row', style: 'gap:10px;margin-bottom:4px' }, avatar(myProfile().avatar, myProfile().name, 'sm'), h('h2', { style: 'margin:0' }, myProfile().name || settings.name), h('span', { class: 'fp' }, '·' + fp(me.pub))),
     h('div', { class: 'tabs', style: 'flex-wrap:wrap;margin-top:6px' }, tabs.map(([k, l, href]) => h('a', { href, class: k === active ? 'active' : '' }, l))));
 }
@@ -4272,6 +4276,8 @@ views.you = { render() {
   const tab = route.tab;
   if (tab === 'profile') return h('div', {}, youTabs('profile'), personNamePanel(), profileEditor(), profileBody(me.pub));
   if (tab === 'media') return h('div', {}, youTabs('media'), mediaTab());
+  if (tab === 'friends') return h('div', {}, youTabs('friends'), views.friends.render());   // the friends page shows only its settings here
+  if (tab === 'messages') return h('div', {}, youTabs('messages'), views.messages.render());
   const all = views.me.render(true), panels = [...all.children].flatMap(el => el.classList.contains('split') ? [...el.children] : [el]);
   const pick = (titles) => titles.map(t => panels.find(el => el.querySelector('h3')?.textContent === t)).filter(Boolean);
   const sets = { channels: ['Your channels & lists', 'Create a channel or list'], keys: ['Keys & backup', 'Your user ID'], settings: ['Not interested', 'Subscriptions'] };
@@ -4721,6 +4727,7 @@ views.chain = { render() {
           h('button', { class: 'small', onclick: () => copyText(nameLink(nameOf(id))) }, 'Copy link')) : null,
         h('div', { class: 'sub' }, h('span', { class: 'fp' }, 'owner ' + fp(d.owner)), ` · ${d.blockCount} blocks · `, reg ? `registered in main block #${reg.height}` : h('span', { class: 'badge warn' }, 'registration pending'))),
       subBtn, joinBtn,
+      (() => { const who = ownerIdentity(id); return who && who !== me.pub && !isMine(d.owner) ? h('span', { class: 'row', style: 'gap:6px' }, h('span', { class: 'sub' }, 'by'), personLink(who), addFriendControl(who, personName(who) || ''), h('a', { class: 'small', href: `#/messages/${who}` }, '✉')) : null; })(),
       !mine ? h('button', { title: 'Send this channel some of your coins', onclick: async () => {
         const n = coinsToUnits(prompt(`Tip ${p.name} how many coins? You have ${fmtCoin(balanceOf(me.pub))}.`, '1')); if (!n) return;
         try { await E.submitTx({ pay: [{ to: d.owner, amt: n }], memo: 'tip for ' + p.name.slice(0, 60) }, me); toast(`Tipped ${fmtCoin(n)} coins. It confirms in the next main-chain block.`); }
@@ -5363,6 +5370,7 @@ views.watch = {
           return el;
         })(),
         h('div', { class: 'row' }, h('a', { href: `#/c/${id}`, class: 'row', style: 'color:var(--text)' }, avatar(d.profile.avatar, d.profile.name, 'sm'), h('b', {}, d.profile.name)),
+          (() => { const who = ownerIdentity(id); return who && who !== me.pub && !isMine(d.owner) ? h('span', { class: 'row', style: 'gap:4px' }, h('span', { class: 'sub' }, 'by'), personLink(who), addFriendControl(who, personName(who) || '')) : null; })(),
           h('span', { class: 'sub' }, fmtViews(viewsOf(video)) + ' · ' + ago(b.ts) + ' · ' + fmtBytes(v.size)),
           h('span', { class: 'votes' }, upBtn, downBtn), voteStatus,
           h('button', { class: 'small', onclick: () => { const url = location.href; navigator.clipboard?.writeText(url).then(() => toast('Link copied'), () => prompt('Copy link', url)); } }, 'Copy link'),
@@ -6435,7 +6443,7 @@ views.me = { render(all = false) {
 } };
 
 // Wallet, Friends and Messages are part of You: show them with your tabs
-for (const v of ['wallet', 'friends', 'messages']) { const r = views[v].render; views[v].render = function () { const body = r.call(this); return v === 'wallet' && route.key && !myAccounts().includes(route.key) ? body : h('div', {}, youTabs(v), body); }; }
+for (const v of ['wallet']) { const r = views[v].render; views[v].render = function () { const body = r.call(this); return v === 'wallet' && route.key && !myAccounts().includes(route.key) ? body : h('div', {}, youTabs(v), body); }; }
 uiReady = true;
 try { if (!localStorage.getItem('opentube-terms')) $('#terms-banner').classList.remove('hidden'); } catch {}
 $('#terms-ok').onclick = () => { try { localStorage.setItem('opentube-terms', '1'); } catch {} $('#terms-banner').classList.add('hidden'); };
