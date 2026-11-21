@@ -471,8 +471,9 @@ function recorder(chain, title, log) {
   };
 }
 function goLiveSink(log, obsCfg) {
-  let real = null, yt = youtubeOut(log, obsCfg), queued = [], stream = null, chain = null, rec = null, hubPick = null;
+  let real = null, yt = youtubeOut(log, obsCfg), queued = [], stream = null, chain = null, rec = null, hubPick = null, outBlock = null;
   return {
+    get block() { return outBlock; },   // the live block's hash, once it's on the channel
     async init(bytes, mime) {
       const armedOld = obsCfg.owner ? armed?.() : null;   // the older "Go live → pick this computer" flow (owner only)
       if (armedOld) { chain = armedOld.chain; stream = armedOld.b.payload.stream; mime = armedOld.b.payload.mime; }
@@ -480,7 +481,8 @@ function goLiveSink(log, obsCfg) {
         chain = obsCfg.channel; if (!chain || !engine.chains.get(chain)) throw new Error('no channel linked to this computer');
         stream = crypto.randomBytes(32).toString('hex');
         hubPick = pickNodeHub();   // viewers find the stream on the hub its live block names
-        await engine.append(chain, { type: 'live', title: (obsCfg.title || 'Live').slice(0, 140), stream, mime, ...(hubPick.node ? { hub: hubPick.node } : {}) }); myLive.add(stream);
+        const title = obsCfg._absorbedTitle || obsCfg.title || 'Live'; delete obsCfg._absorbedTitle;   // the host's ongoing stream joined: keep its title
+        outBlock = (await engine.append(chain, { type: 'live', title: title.slice(0, 140), stream, mime, ...(hubPick.node ? { hub: hubPick.node } : {}) }))?.hash || null; myLive.add(stream);
         log(`[obs] live on ${engine.derive(chain)?.profile.name || chain.slice(0, 8)}: “${obsCfg.title}”`);
       }
       real = liveSink(chain, stream, mime, hubPick?.url || hubUrlFor(chain, stream)); real.init(bytes); yt?.write(bytes);
@@ -517,9 +519,36 @@ function groupLayout(k) {
   const cols = k <= 1 ? 1 : k <= 4 ? 2 : 3, rows = Math.ceil(k / cols), W = 1280, H = 720, cw = Math.floor(W / cols / 2) * 2, ch = Math.floor(H / rows / 2) * 2;
   return { cols, rows, cw, ch, pos: [...Array(k)].map((_, i) => `${(i % cols) * cw}_${Math.floor(i / cols) * ch}`) };
 }
+// The host was already live on their channel from a browser (not into the group) when someone joined: their stream
+// joins the picture too, and once the group stream is on the channel, that stream points its viewers to it (a liveend
+// with `next`): one stream to watch, everyone side by side.
+function absorbHostLive(hostCfg) {
+  const chain = hostCfg.channel, g = groupOf(hostCfg); if (!chain || !engine.chains.has(chain)) return;
+  const hostUser = Object.entries(obsStore.profiles).find(([, p]) => p === hostCfg)?.[0]; if (!hostUser) return;
+  const d = engine.derive(chain);
+  for (const lb of d?.liveNow || []) {
+    const s = lb.payload.stream;
+    if (lb.payload.group || lb.payload.relay || lb.author === signer.pub || myLive.has(s) || g.absorbed?.has(s)) continue;   // only the owner's own browser streams
+    if (Date.now() - lb.ts > 12 * 3600000) continue;
+    const r = pullIntoGroup(hostCfg, s, hostUser, 'host (browser)', chain, lb.payload.hub || null);
+    if (typeof r === 'string') continue;
+    (g.absorbed ||= new Set()).add(s); log(`[group] the host was already live: “${lb.payload.title}” joins the picture`);
+    if (!g.out) hostCfg._absorbedTitle = lb.payload.title;
+  }
+  if (!g.absorbed?.size || g.pointing) return;
+  g.pointing = true; let tries = 0;
+  const point = async () => {
+    const blk = g.out?.block;
+    if (!blk) { if (++tries < 60) return setTimeout(point, 2000); g.pointing = false; return; }
+    for (const s of g.absorbed) if (!engine.derive(chain)?.liveEnds.has(s)) await engine.append(chain, { type: 'liveend', stream: s, outcome: 'ended', next: blk }).catch(e => log('[group] pointing viewers:', e.message));
+    g.pointing = false;
+  };
+  point();
+}
 function groupStart(hostCfg) {
   const g = groupOf(hostCfg), log = g.log || console.log;
   if (g.ff) return; clearTimeout(g.timer); g.timer = null;
+  if (!g.enc) absorbHostLive(hostCfg);   // first start: bring in the host's ongoing stream
   const list = [...g.inputs.values()].filter(x => !x.ended && x.init).sort((a, b) => a.at - b.at).slice(0, GROUP_MAX); if (!list.length) return;
   const k = list.length, L = groupLayout(k);
   const vf = list.map((x, i) => `[${i}:v]setpts=PTS-STARTPTS,scale=${L.cw}:${L.ch}:force_original_aspect_ratio=decrease,pad=${L.cw}:${L.ch}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v${i}]`).join(';')
@@ -811,6 +840,7 @@ async function control(c) {
       else if (c.cmd === 'group.invite') {
         if (!isHost) return fail('only the host can invite');
         if (!/^[A-Za-z0-9_-]{43}$/.test(a.key || '') || a.key === GRANT.user || a.key === c.user) return fail('not a user ID');
+        if (!hostCfg.tile.on && ffmpegOk) { hostCfg.tile.on = true; saveObs(); }   // inviting someone on camera switches the group stream on
         if (obsStore.users[a.key] && !obsStore.users[a.key].guestOf) { if (!obsStore.users[a.key].can.includes('obs')) { obsStore.users[a.key].can.push('obs'); saveObs(); announceSoon?.(); } log(`[group] ${a.name || a.key.slice(0, 8)} shares this computer: they can join the group from the live page`); }
         else { const hours = Math.min(Math.max(Number(a.hours) || 6, 0.25), 24 * 14);
         obsStore.users[a.key] = { can: ['obs'], name: String(a.name || '').slice(0, 60), guestOf: c.user, until: Date.now() + hours * 3600000 };
@@ -831,8 +861,8 @@ async function control(c) {
         if (!groupKick(hostCfg, x => x.id === a.id)) return fail('not connected');
       }
       else if (c.cmd === 'group.join') {   // a browser stream (host's or a guest's) into the picture: we pull its segments
-        if (!hostCfg.tile.on) return fail('the group stream isn’t on');
         if (!ffmpegOk) return fail('group streams need ffmpeg on this computer');
+        if (!hostCfg.tile.on) { hostCfg.tile.on = true; saveObs(); log('[group] switched on: someone joined on camera'); }   // joining is what a group stream is for
         if (!/^[0-9a-f]{64}$/.test(a.stream || '') || !/^[0-9a-f]{64}$/.test(a.chain || '')) return fail('bad stream');
         let ok = ownsChannel(c.user, a.chain);
         if (!ok && typeof a.channelSig === 'string') { const key = engine.derive(a.chain)?.owner || engine.directory.get(a.chain)?.genesis.author; ok = !!key && await core.verify(key, core.obsChannelPreimage(signer.pub, c.user, a.chain), a.channelSig).catch(() => false); }

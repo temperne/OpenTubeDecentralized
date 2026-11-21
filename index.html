@@ -470,7 +470,7 @@ function validPayload(chain, b, CFG) {
     if (kind !== 'channel' || zeroBits(b.hash) < CFG.commentDifficulty) return false;
     // a computer the owner linked to the channel (a `relay` block) starts and ends live streams by itself (OBS)
     if (p.type === 'live') return relayAllowed(chain, b) && isStr(p.title, LIMITS.title) && p.title.trim().length > 0 && isHex(p.stream, 64) && isStr(p.mime, 80) && p.relay === undefined;
-    if (p.type === 'liveend') return relayAllowed(chain, b) && isHex(p.stream, 64) && ['published', 'discarded', 'ended'].includes(p.outcome) && liveStatsOk(p.stats);
+    if (p.type === 'liveend') return relayAllowed(chain, b) && isHex(p.stream, 64) && ['published', 'discarded', 'ended'].includes(p.outcome) && liveStatsOk(p.stats) && (p.next === undefined || isHex(p.next, 64));
     if (p.type === 'comment') return isHex(p.target, 64) && isStr(p.text, LIMITS.comment) && p.text.trim().length > 0 && isStr(p.name ?? '', LIMITS.name) && permittedAt(chain, b);
     if (p.type === 'hide') return isHex(p.target, 64) && permittedAt(chain, b);
     if (p.type === 'vote') return isHex(p.target, 64) && [1, 0, -1].includes(p.v) && permittedAt(chain, b);
@@ -482,7 +482,7 @@ function validPayload(chain, b, CFG) {
     // A live stream starts. Its media goes through the live hub (see createLiveHub), signed by this key or by `relay`
     // (a computer the owner lets sign for this stream, e.g. for OBS ingest). Chat is comments on this block.
     case 'live': return kind === 'channel' && isStr(p.title, LIMITS.title) && p.title.trim().length > 0 && isHex(p.stream, 64) && isStr(p.mime, 80) && (p.relay === undefined || isKey(p.relay));
-    case 'liveend': return kind === 'channel' && isHex(p.stream, 64) && ['published', 'discarded', 'ended'].includes(p.outcome) && liveStatsOk(p.stats);
+    case 'liveend': return kind === 'channel' && isHex(p.stream, 64) && ['published', 'discarded', 'ended'].includes(p.outcome) && liveStatsOk(p.stats) && (p.next === undefined || isHex(p.next, 64));   // next: it continues as that stream (joined a group stream)
     case 'settings': return kind === 'channel' && isHex(p.target, 64) && ['default', 'anyone', 'approved', 'off'].includes(p.comments);
     case 'post': return isStr(p.text, LIMITS.text) && (p.text.trim().length > 0 || p.media?.length > 0) && (p.image === undefined || isImg(p.image)) && mediaListOk(p.media);
     case 'comment': return isHex(p.target, 64) && isStr(p.text, LIMITS.comment) && p.text.trim().length > 0;
@@ -1616,15 +1616,15 @@ function derive(c) {
     ads: live.filter(b => b.payload.type === 'ad' && byOwner.has(b.hash)).reverse(),
     sponsors: live.filter(b => b.payload.type === 'sponsor' && byOwner.has(b.hash)).reverse(),
     ...(() => {   // live streams: started, not yet ended (and less than a day old)
-      const ends = new Map(), recordings = new Map(), nodeRecs = new Map(), liveStats = new Map();   // liveStats: stream -> its public statistics   // nodeRecs: stream -> a recording a linked computer made (OBS), waiting to be published
+      const ends = new Map(), recordings = new Map(), nodeRecs = new Map(), liveStats = new Map(), liveNext = new Map();   // liveStats: stream -> its public statistics   // nodeRecs: stream -> a recording a linked computer made (OBS), waiting to be published
       for (const b of live) if (byOwner.has(b.hash) || (b.payload.type === 'liveend' && relays.has(b.author))) {
-        if (b.payload.type === 'liveend') { ends.set(b.payload.stream, b.payload.outcome); if (b.payload.stats && !liveStats.has(b.payload.stream)) liveStats.set(b.payload.stream, b.payload.stats); }
+        if (b.payload.type === 'liveend') { ends.set(b.payload.stream, b.payload.outcome); if (b.payload.next) liveNext.set(b.payload.stream, b.payload.next); if (b.payload.stats && !liveStats.has(b.payload.stream)) liveStats.set(b.payload.stream, b.payload.stats); }
         const r = b.payload.type === 'liveend' && b.payload.rec;
         if (r && typeof r === 'object' && isHex(r.infohash, 40) && isStr(r.file, 200) && Number.isSafeInteger(r.size) && r.size > 0 && isStr(r.mime, 80) && isImg(r.thumb ?? '')) nodeRecs.set(b.payload.stream, { ...r, by: b.author, at: b.ts });
         if (b.payload.type === 'video' && b.payload.stream) recordings.set(b.payload.stream, b);
       }
       const streams = live.filter(b => b.payload.type === 'live' && (byOwner.has(b.hash) || relays.has(b.author))).reverse();
-      return { streams, liveEnds: ends, recordings, nodeRecs, liveStats, liveNow: streams.filter(b => !ends.has(b.payload.stream) && Date.now() - b.ts < 24 * 3600000 && !b.payload.group) };   // group: sent into someone's group stream, not shown on its own
+      return { streams, liveEnds: ends, liveNext, recordings, nodeRecs, liveStats, liveNow: streams.filter(b => !ends.has(b.payload.stream) && Date.now() - b.ts < 24 * 3600000 && !b.payload.group) };   // group: sent into someone's group stream, not shown on its own
     })(),
     commentsFor: (target) => visible.filter(b => b.payload.type === 'comment' && b.payload.target === target),
     votes: tallyVotes(visible),
@@ -3332,7 +3332,7 @@ async function startLive(chainId, media, title, how = {}) {
     file = await uniqueFileName(ch, cleanName(title, 'Live') + '.webm');
     fh = await ch.dir.getFileHandle(file, { create: true });
     (ch.meta.lives ||= {})[stream] = { file, title, own: true, started: Date.now() }; saveMeta(ch);
-  } else if (!derive(chainId)?.relays?.has(viaNode.node)) await append(chainId, { type: 'relay', key: viaNode.node, on: true });   // lets it end the stream and offer the recording
+  } else if (viaNode && !derive(chainId)?.relays?.has(viaNode.node)) await append(chainId, { type: 'relay', key: viaNode.node, on: true });   // lets it end the stream and offer the recording
   const sess = { chainId, stream, title, media, file, fh, signer, n: 0, o: 0, kids: new Map(), viewers: null, started: Date.now(), queue: Promise.resolve(), ended: false, block: null, viaNode: viaNode?.node || null };
   if (fh) sess.rec = new (fileStore(fh, false))(1, { length: Number.MAX_SAFE_INTEGER });   // writes each chunk at its offset
   broadcasts.set(chainId, sess);
@@ -5745,7 +5745,10 @@ views.livewatch = {
     box.onkeydown = (e) => { if (e.key === 'Enter') send.click(); };
     // a group stream from one of the host's computers: the host invites people on camera right from the chat, and an
     // invited viewer gets a "Join on camera" banner here
-    const hostNode = () => lb.author !== d.owner ? E.nodes.get(lb.author) : null;
+    // the computer that combines cameras for this stream: the one streaming it, or (a stream from the owner's browser) a
+    // computer linked to the channel that receives streams
+    const hostNode = () => lb.author !== d.owner ? E.nodes.get(lb.author)
+      : [...E.nodes.values()].filter(n => derive(id)?.relays?.has(n.node) && n.roles.includes('obs') && Date.now() - n.at < 120000).sort((a, b) => b.at - a.at)[0] || null;
     const iHost = () => { const n = hostNode(); return !!n && isMine(d.owner) && nodePerms(n).includes('o') && !nodePerms(n).includes('g'); };
     const invited = new Map();   // identity -> 'sending' | 'ok' | error text
     const inviteBtn = (author, name) => {
@@ -5760,17 +5763,59 @@ views.livewatch = {
     };
     const banner = h('div');
     const drawBanner = () => {
+      if (banner.joining) return;   // the camera panel is open, or you're on camera: don't redraw it
       const n = hostNode();
-      const perms = n ? nodePerms(n) : '', hostKey = E.ledger.resolve ? E.ledger.resolve(d.owner) : d.owner;
+      // whose group this is: the channel's owner, as the computer knows them (its owner, or someone it's shared with)
+      const r = n && (E.ledger.resolve ? E.ledger.resolve(d.owner) : d.owner), hostKey = n && (r === n.grant.user || n.info?.users?.[r] !== undefined ? r : n.grant.user);
+      const perms = n ? nodePerms(n) : '';
       const into = !n || isMine(d.owner) ? null : perms.includes('g') ? n.node : perms.includes('o') ? n.node + '|' + hostKey : null;   // invited, or it's shared with you
-      if (!into || [...broadcasts.values()].some(b => b.group === n.node && !b.ended)) return banner.replaceChildren();
+      const onCam = n && [...broadcasts.entries()].find(([, b]) => b.group === n.node && !b.ended);
+      if (onCam) return banner.replaceChildren(h('div', { class: 'panel', style: 'border-color:var(--live, #e11d48);margin:10px 0 0' }, h('div', { class: 'row', style: 'justify-content:space-between' },
+        h('span', {}, '🔴 ', h('b', {}, 'You’re on camera in this stream.')),
+        h('button', { onclick: async (e) => { e.target.disabled = true; await stopLive(onCam[0]); drawBanner(); } }, 'Leave'))));
+      if (!into) return banner.replaceChildren();
       banner.replaceChildren(h('div', { class: 'panel', style: 'border-color:var(--live, #e11d48);margin:10px 0 0' }, h('div', { class: 'row', style: 'justify-content:space-between' },
         h('span', {}, '🎥 ', h('b', {}, perms.includes('g') ? 'You’re invited to join this stream on camera.' : 'You can join this stream on camera (the computer is shared with you).')),
-        h('button', { class: 'primary', onclick: () => {
-          const mineCh = myChannels().filter(c => derive(c)?.kind === 'channel');
-          if (!mineCh.length) { toast('You need a channel to go live from: create one first (it takes a few seconds).'); location.hash = '#/you/channels'; return; }
-          window.pendingInto = into; location.hash = `#/c/${mineCh[0]}/golive`;
-        } }, 'Join on camera'))));
+        h('button', { class: 'primary', onclick: () => openJoin(into) }, 'Join on camera'))));
+    };
+    // Joining on camera, right here: pick a camera and microphone, press Join. Your camera goes into this stream's
+    // picture (side by side), not out as a stream of your own: no title, nothing listed.
+    const openJoin = async (into) => {
+      const mineCh = myChannels().filter(c => derive(c)?.kind === 'channel');
+      if (!mineCh.length) { toast('You need a channel to join on camera (it signs your camera’s video): create one first, it takes a few seconds.'); location.hash = '#/you/channels'; return; }
+      banner.joining = true;
+      const prev = h('video', { muted: true, autoplay: true, playsInline: true, style: 'width:240px;max-width:100%;border-radius:8px;background:#000' });
+      const cam = h('select', { style: 'width:auto' }), mic = h('select', { style: 'width:auto' }), st = h('span', { class: 'sub' });
+      let media = null;
+      const get = async () => {
+        try { media?.getTracks().forEach(t => t.stop()); media = await navigator.mediaDevices.getUserMedia({ video: cam.value ? { deviceId: { exact: cam.value } } : true, audio: mic.value === 'none' ? false : mic.value ? { deviceId: { exact: mic.value } } : true }); prev.srcObject = media; st.textContent = ''; }
+        catch (e) { st.textContent = '✗ ' + (e.name === 'NotAllowedError' ? 'The browser wasn’t allowed to use the camera.' : e.message); }
+      };
+      await get();
+      try { const devs = await navigator.mediaDevices.enumerateDevices();
+        cam.replaceChildren(...devs.filter(x => x.kind === 'videoinput').map((x, i) => h('option', { value: x.deviceId }, x.label || `Camera ${i + 1}`)));
+        mic.replaceChildren(...devs.filter(x => x.kind === 'audioinput').map((x, i) => h('option', { value: x.deviceId }, x.label || `Microphone ${i + 1}`)), h('option', { value: 'none' }, 'No microphone'));
+        const vt = media?.getVideoTracks()[0]?.getSettings().deviceId, at = media?.getAudioTracks()[0]?.getSettings().deviceId; if (vt) cam.value = vt; if (at) mic.value = at;
+      } catch {}
+      cam.onchange = get; mic.onchange = get;
+      const close = () => { media?.getTracks().forEach(t => t.stop()); banner.joining = false; drawBanner(); };
+      const joinBtn = h('button', { class: 'primary', onclick: async () => {
+        if (!media) return get();
+        joinBtn.disabled = true; joinBtn.textContent = 'Joining…';
+        const [gNode, gHost] = into.split('|'), n = E.nodes.get(gNode);
+        try {
+          const sess = await startLive(mineCh[0], media, `On camera with ${d.profile.name}`.slice(0, LIMITS.title), { group: n, groupHost: gHost || null });
+          sess.preview = null; media = null;
+          banner.replaceChildren(h('div', { class: 'panel', style: 'border-color:var(--live, #e11d48);margin:10px 0 0' }, h('div', { class: 'row', style: 'justify-content:space-between' },
+            h('span', {}, '🔴 ', h('b', {}, 'You’re on camera in this stream.'), h('span', { class: 'sub' }, ' Your picture appears next to the others within a few seconds.')),
+            h('button', { onclick: async (e) => { e.target.disabled = true; await stopLive(mineCh[0]); banner.joining = false; drawBanner(); } }, 'Leave'))));
+          banner.joining = false;   // from here the banner shows your on-camera state (also after moving to the combined stream)
+        } catch (e) { st.textContent = '✗ ' + e.message; joinBtn.disabled = false; joinBtn.textContent = 'Join'; }
+      } }, 'Join');
+      banner.replaceChildren(h('div', { class: 'panel', style: 'border-color:var(--live, #e11d48);margin:10px 0 0' },
+        h('div', { class: 'row', style: 'gap:12px;align-items:flex-start;flex-wrap:wrap' }, prev,
+          h('div', { style: 'flex:1;min-width:200px' }, h('b', {}, '🎥 Join on camera'), h('div', { class: 'sub', style: 'margin:4px 0 8px' }, 'You’ll appear side by side with the others in this stream.'),
+            h('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap' }, cam, mic), h('div', { class: 'row', style: 'gap:6px;margin-top:8px' }, joinBtn, h('button', { onclick: close }, 'Cancel'), st)))));
     };
     const liveBadge = h('span', { class: 'badge live' }, 'LIVE');
     // the channel's owner can end the stream from here: whether this browser is sending it, another device or a
@@ -5794,10 +5839,13 @@ views.livewatch = {
     } }, '⏹ End stream');
     const drawChat = () => {
       const dd = derive(id);
+      const nx = dd.liveNext?.get(lb.payload.stream);
+      if (nx && c.has(nx) && route.name === 'livewatch') { toast('This stream continues as a group stream: everyone side by side.'); location.hash = `#/live/${id}/${nx}`; return; }
       if (dd.liveEnds.has(lb.payload.stream) && whoBox.isConnected) {   // it just ended: its public statistics replace the live counts
         const sp = liveStatsPanel(dd.liveStats.get(lb.payload.stream)); if (sp) { whoBox.replaceWith(sp); liveBadge.remove(); watchers.remove(); }
       }
-      const list = dd.commentsFor(block).filter(b => !dd.hidden.has(b.hash)).sort((a, z) => a.ts - z.ts).slice(-200);
+      const before = dd.streams.filter(b => dd.liveNext?.get(b.payload.stream) === block).map(b => b.hash);   // streams that continued as this one: their chat too
+      const list = [block, ...before].flatMap(x => dd.commentsFor(x)).filter(b => !dd.hidden.has(b.hash)).sort((a, z) => a.ts - z.ts).slice(-200);
       const atEnd = chat.scrollTop + chat.clientHeight >= chat.scrollHeight - 30, host = iHost();
       chat.replaceChildren(...(list.length ? list.map(cb => msgRow(cb.author, id, { name: cb.payload.name, text: cb.payload.text, ts: cb.ts,
         extra: isMine(dd.owner) && !isMine(cb.author) ? h('div', {}, h('button', { class: 'small', style: 'margin-top:2px', onclick: () => append(id, { type: 'hide', target: cb.hash }) }, 'Hide'), host ? inviteBtn(cb.author, cb.payload.name) : null) : null })) : [h('div', { class: 'sub' }, 'No messages yet. Say hello!')]));
