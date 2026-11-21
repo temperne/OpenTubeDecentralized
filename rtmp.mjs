@@ -265,7 +265,13 @@ export function startRtmp({ port = 1935, host = '127.0.0.1', onPublish, log = ()
     sock.on('close', bye); sock.on('error', bye);
   });
   server.on('error', (e) => log(`OBS receiver couldn’t listen on ${host}:${port}: ${e.message}`));
-  server.on('error', (e) => { state.error = e.code === 'EADDRINUSE' ? `port ${port} is already in use (another OBS receiver or streaming server?)` : e.message; log('OBS receiver: ' + state.error); });
-  server.listen(port, host, () => { state.listening = true; log(`OBS receiver on rtmp://${host === '0.0.0.0' ? 'this-computer' : 'localhost'}:${port}/live (listening on ${host})`); });
-  return { status: () => ({ port, host, listening: !!state.listening, error: state.error || null, live: state.live > 0, bytes: state.bytes, lastConn: state.lastConn || null }), close: () => server.close() };
+  // Listen on IPv6 and IPv4 together ('::'): on Windows and macOS "localhost" means ::1 first, and OBS only tries the
+  // first address, so an IPv4-only receiver leaves OBS stuck at "Connecting…". Falls back to IPv4 where IPv6 is off.
+  const listen = (h) => { server.removeAllListeners('listening'); server.listen({ port, host: h, ipv6Only: false }); server.once('listening', () => { state.listening = true; state.error = null; state.host = h; log(`OBS receiver on rtmp://${h === '127.0.0.1' || h === '::1' ? 'localhost' : 'this-computer'}:${port}/live (listening on ${h === '::' ? 'all addresses, IPv4 and IPv6' : h === '0.0.0.0' ? 'all IPv4 addresses' : h})`); }); };
+  server.on('error', (e) => {
+    if (host === '::' && ['EAFNOSUPPORT', 'EADDRNOTAVAIL', 'EINVAL'].includes(e.code) && !state.fellBack) { state.fellBack = true; return listen('0.0.0.0'); }
+    state.error = e.code === 'EADDRINUSE' ? `port ${port} is already in use (another OBS receiver or streaming server?)` : e.message; log('OBS receiver: ' + state.error);
+  });
+  listen(host);
+  return { status: () => ({ port, host: state.host || host, listening: !!state.listening, error: state.error || null, live: state.live > 0, bytes: state.bytes, lastConn: state.lastConn || null }), close: () => server.close() };
 }

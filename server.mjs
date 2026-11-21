@@ -37,6 +37,7 @@ const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 // ---- load the exact same blockchain rules the browser runs, straight out of index.html
 const html = fs.readFileSync(path.join(DIR, 'index.html'), 'utf8');
 const coreSrc = /<script id="opentube-core">([\s\S]*?)<\/script>/.exec(html)?.[1];
+const BUILD = crypto.createHash('sha256').update(html).digest('hex').slice(0, 12);   // the same fingerprint browsers compute for the page
 if (!coreSrc) throw new Error('index.html has no opentube-core script');
 new Function(coreSrc)();
 const core = globalThis.OpenTubeCore;
@@ -123,7 +124,7 @@ if (fs.existsSync(blocksFile)) {
   for (const [c, blocks] of byChain) if (c !== engine.MAIN_ID && engine.openChain(c)) await engine.insert(c, blocks, null, false);
 }
 if (fs.existsSync(memFile)) for (const m of JSON.parse(fs.readFileSync(memFile, 'utf8'))) await engine.acceptMembership(m);
-log(`network ${engine.MAIN_ID.slice(0, 16)}… · main height ${engine.main.best.height} · ${engine.directory.size} registered · ${engine.chains.size} chains loaded`);
+log(`OpenTube ${core.VERSION} (build ${BUILD}) · network ${engine.MAIN_ID.slice(0, 16)}… · main height ${engine.main.best.height} · ${engine.directory.size} registered · ${engine.chains.size} chains loaded`);
 setInterval(() => engine.gossip(), 60000);   // repair pass; new blocks are pushed right away
 // The public feed (core: SQUARE): keep this month's chain from the start (older months open as peers mention them).
 const openSquare = () => { for (const kind of ['square', 'mail']) { const id = engine.squareId(core.monthKey(Date.now()), kind); if (id && !engine.chains.has(id)) engine.requestChain(engine.openChain(id)); } };   // and this month's private messages
@@ -277,10 +278,11 @@ if (process.env.RTMP_PORT) {
       return best;
     };
     // OBS needs this computer's stream key; with one, any address may connect (OBS on another computer, or a VPS)
-    const rtmp = startRtmp({ port: Number(process.env.RTMP_PORT), host: process.env.RTMP_HOST || '0.0.0.0', log: (...a) => log('[obs]', ...a),
+    const rtmp = startRtmp({ port: Number(process.env.RTMP_PORT), host: process.env.RTMP_HOST || '::', log: (...a) => log('[obs]', ...a),
       onPublish: (key) => {
-        const m = /^(.*?)(?:-([2-4]))?$/.exec(String(key || '')), slot = Number(m[2] || 1);
-        if (m[1] !== obsCfg.key) return 'Wrong stream key. Copy it from Go live (or Devices) on the site.';
+        key = String(key || '').trim();
+        const slot = key === obsCfg.key ? 1 : [2, 3, 4].find(i => key === obsCfg.key + '-' + i) || 0;   // the key itself, or key-2…key-4 for tiles
+        if (!slot) return 'Wrong stream key. Copy it from Go live (or Devices) on the site.';
         if (obsCfg.tile.on) { if (!ffmpegOk) return 'Tiles need ffmpeg on this computer.'; if (slot > obsCfg.tile.n) return `Only ${obsCfg.tile.n} tiles are set up.`; return tileSlot(slot, log); }
         if (slot > 1) return 'Tiles are off on this computer: use the main stream key.';
         if (!armed() && !(obsCfg.channel && engine.derive(obsCfg.channel)?.relays.has(signer.pub))) return 'Not linked to a channel yet. On the site: Go live → OBS → pick this computer and link it to your channel.';
@@ -410,7 +412,7 @@ async function control(c) {
         data = { test: pub ? await rtmpProbe(pub, port) : { ok: false, error: 'couldn’t find this computer’s public address' }, publicIp: pub };
         return signed({ v: 1, kind: 'nodectlr', node: signer.pub, re: c.nonce, at: Date.now(), ok: true, data });
       }
-      data = { version: 2, key: obsCfg.key, port: Number(process.env.RTMP_PORT) || null, ips, publicIp: await publicIp(), listen: process.env.RTMP_HOST || '0.0.0.0', lastConn: globalThis.openTubeRtmp?.lastConn?.() || null, publicHost: process.env.PUBLIC_URL ? new URL(process.env.PUBLIC_URL).hostname : null, channel: obsCfg.channel, title: obsCfg.title,
+      data = { version: { name: core.VERSION, build: BUILD }, key: obsCfg.key, port: Number(process.env.RTMP_PORT) || null, ips, publicIp: await publicIp(), listen: globalThis.openTubeRtmp?.status?.().host || process.env.RTMP_HOST || '::', lastConn: globalThis.openTubeRtmp?.lastConn?.() || null, publicHost: process.env.PUBLIC_URL ? new URL(process.env.PUBLIC_URL).hostname : null, channel: obsCfg.channel, title: obsCfg.title,
         linked: !!(obsCfg.channel && engine.derive(obsCfg.channel)?.relays.has(signer.pub)), youtube: { on: obsCfg.youtube.on, set: !!obsCfg.youtube.key }, tile: obsCfg.tile, ffmpeg: ffmpegOk, node: signer.pub, live: globalThis.openTubeRtmp?.status?.() || null };
     }
     else if (c.cmd === 'status') data = { height: engine.main.best.height, peers: peers.size, chains: engine.chains.size, host: globalThis.openTubeHost?.status() || null, obs: globalThis.openTubeRtmp?.status?.() || null };
@@ -490,7 +492,7 @@ else if (GRANT) {
   const announce = async () => {
     let host = globalThis.openTubeHost?.status() || null;
     if (!host) try { host = JSON.parse(fs.readFileSync(process.env.HOST_STATUS_FILE, 'utf8')); if (Date.now() - host.at > 120000) host = { ...host, stale: true }; } catch {}
-    const info = { peerId: nodePeerId(signer.pub), name: (process.env.NODE_LABEL || os.hostname()).slice(0, 60), os: `${os.platform()} ${os.arch()}`, node: process.version, height: engine.main.best.height,
+    const info = { version: { name: core.VERSION, build: BUILD }, peerId: nodePeerId(signer.pub), name: (process.env.NODE_LABEL || os.hostname()).slice(0, 60), os: `${os.platform()} ${os.arch()}`, node: process.version, height: engine.main.best.height,
       peers: peers.size, chains: engine.chains.size, site: process.env.NODE_SITE || null, host, obs: globalThis.openTubeRtmp?.status?.() || null };
     try { await engine.publishNodeInfo({ grant: GRANT, roles, addrs: addrs(), info }); } catch (e) { log('announce failed:', e.message); }
   };
@@ -670,7 +672,7 @@ function handle(req, res) {
   if (url.pathname.startsWith('/ingest/') && (req.method === 'POST' || req.method === 'PUT')) return ingest(req, res, url.pathname.slice(8));
   if (url.pathname === '/status') {
     res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
-    return res.end(JSON.stringify({ network: engine.MAIN_ID, height: engine.main.best.height, tip: engine.main.best.hash, registered: engine.directory.size, pending: engine.mempool.size, chains: engine.chains.size, peers: peers.size, mining: !!engine.miner, node: signer.pub, now: Date.now(), ranker: RANKER_ID, tracker: tracker.stats(), live: liveHub.stats(), liveStreams: liveHub.live().slice(0, 50), ingest: true, memberships: engine.memberships.size }));
+    return res.end(JSON.stringify({ version: core.VERSION, build: BUILD, network: engine.MAIN_ID, height: engine.main.best.height, tip: engine.main.best.hash, registered: engine.directory.size, pending: engine.mempool.size, chains: engine.chains.size, peers: peers.size, mining: !!engine.miner, node: signer.pub, now: Date.now(), ranker: RANKER_ID, tracker: tracker.stats(), live: liveHub.stats(), liveStreams: liveHub.live().slice(0, 50), ingest: true, memberships: engine.memberships.size }));
   }
   res.writeHead(404); res.end('not found');
 }

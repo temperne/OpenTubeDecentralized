@@ -6,7 +6,8 @@
 //   node     a full node that syncs with the site and shows up under "Your nodes" on your My node page
 //   host     keeps your joined and own channels' videos in a folder and shares them with viewers (WebTorrent,
 //            installed into ~/.opentube on first run; --browser-host uses headless Chromium instead)
-//   obs      an OBS receiver: OBS → Settings → Stream → Custom, server rtmp://localhost/live, any stream key,
+//   obs      an OBS receiver: OBS → Settings → Stream → Custom, server rtmp://127.0.0.1/live (or this computer's address),
+//            stream key from the site (Devices → 🎥 OBS & streaming),
 //            then pick this computer under Go live on the site
 //
 // Options (after `--` in the command):
@@ -122,5 +123,5 @@ if (want.host && (args['browser-host'] || !want.node)) {
 log(`OpenTube is running for user ${grant.user.slice(0, 8)}…`);
 if (want.node) log(`  node:  http://localhost:${port}  (syncs with ${site.origin}; see it under My node → Your nodes)`);
 if (want.host) log(`  host:  videos in ${VIDEOS}`);
-if (want.obs) log('  OBS:   Settings → Stream → Service “Custom…”, Server rtmp://localhost/live, any stream key. Then Go live on the site and pick this computer.');
+if (want.obs) log('  OBS:   Settings → Stream → Service “Custom…”, Server rtmp://127.0.0.1/live (from another computer: this one’s address; allow TCP port 1935), Stream Key: copy it on the site under Devices → 🎥 OBS & streaming.');
 log('Keep this window open. Ctrl+C stops everything.');

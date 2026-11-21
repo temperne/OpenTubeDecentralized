@@ -2004,7 +2004,8 @@ async function createEngine(o) {
   });
 }
 
-globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, ORG_TYPES, LISTING_TYPES, XCHG, noteUnlock, mediaRefShape, placeShape, domainOf, MAIL, ORG, orgRoles, orderPreimage, courtPreimage, bindPreimage, retirePreimage, rekeyPreimage, SQUARE, SEAL, monthKey, squareMonths, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
+const VERSION = '2026.11.21';   // the release name; the build fingerprint is a hash of index.html (see pageBuild / BUILD in server.mjs)
+globalThis.OpenTubeCore = { VERSION, MAIN_GENESIS, LIMITS, ORG_TYPES, LISTING_TYPES, XCHG, noteUnlock, mediaRefShape, placeShape, domainOf, MAIL, ORG, orgRoles, orderPreimage, courtPreimage, bindPreimage, retirePreimage, rekeyPreimage, SQUARE, SEAL, monthKey, squareMonths, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
 })();
 </script>
 
@@ -5118,7 +5119,7 @@ function liveStudio(chainId) {
       const node = myNodes().find(n => n.node === sess.node), name = node?.info?.name || 'your computer';
       return [h('h3', { style: 'margin-top:0' }, h('span', { class: 'badge live' }, 'LIVE'), ' ', sess.title, h('span', { class: 'sub' }, ` · OBS on ${name}`)),
         h('p', { class: 'sub', style: 'margin-top:0' }, `In OBS on ${name}: Settings → Stream:`),
-        row('Service', 'Custom…'), h('div', { class: 'row', style: 'gap:8px' }, h('span', { style: 'min-width:150px' }, 'Server'), h('code', { class: 'mono', style: 'flex:1' }, 'rtmp://localhost/live'), h('button', { class: 'small', onclick: () => copyText('rtmp://localhost/live', 'Server') }, 'Copy')),
+        row('Service', 'Custom…'), h('div', { class: 'row', style: 'gap:8px' }, h('span', { style: 'min-width:150px' }, 'Server'), h('code', { class: 'mono', style: 'flex:1' }, 'rtmp://127.0.0.1/live'), h('button', { class: 'small', onclick: () => copyText('rtmp://127.0.0.1/live', 'Server') }, 'Copy')),
         row('Stream Key', 'anything, e.g. opentube'),
         h('p', { class: 'sub' }, 'Settings → Output: an H.264 video encoder (x264 or your GPU’s H.264, not HEVC/AV1), keyframe interval 2 s, AAC audio. Then click Start Streaming. Stop Streaming ends it.'),
         video, state];
@@ -6513,7 +6514,7 @@ function obsPanel(n, { chainId = null } = {}) {
   const draw = () => {
     if (!data) return box.replaceChildren(h('b', {}, `OBS on ${n.info?.name || 'this computer'}`), ' ', st);
     if (!data.port) return box.replaceChildren(h('b', {}, 'OBS'), h('p', { class: 'sub' }, 'This computer isn’t receiving OBS (it was started with --no-obs). Start it again without that option.'));
-    const hosts = [...new Set([data.publicHost, data.publicIp, ...data.ips, 'localhost'].filter(Boolean))];
+    const hosts = [...new Set([data.publicHost, data.publicIp, ...data.ips, '127.0.0.1'].filter(Boolean))];   // 127.0.0.1, not "localhost" (which can mean IPv6 first)
     const servers = hosts.map(hh => `rtmp://${hh}${data.port === 1935 ? '' : ':' + data.port}/live`);
     const chans = myChannels(), ch = h('select', { style: 'width:auto' }, h('option', { value: '' }, 'Choose the channel it goes live on…'), chans.map(id => h('option', { value: id, selected: (data.channel || chainId) === id }, channelTitle(id))));
     const title = h('input', { type: 'text', value: data.title || 'Live', maxLength: 140, style: 'flex:1' });
@@ -6521,11 +6522,11 @@ function obsPanel(n, { chainId = null } = {}) {
     const tileSel = h('select', { style: 'width:auto' }, [[0, 'Off: one stream'], [2, '2 streams side by side'], [3, '3 streams (2×2)'], [4, '4 streams (2×2)']].map(([v, l]) => h('option', { value: v, selected: (data.tile.on ? data.tile.n : 0) === v }, l)));
     const selected = ch.value, linked = selected && derive(selected)?.relays?.has(n.node);
     const row = (label, ...v) => h('div', { class: 'row', style: 'gap:8px;margin-top:6px' }, h('span', { style: 'min-width:120px' }, label), ...v);
-    box.replaceChildren(h('div', { class: 'row', style: 'justify-content:space-between' }, h('b', {}, `OBS on ${n.info?.name || 'this computer'}`), st),
+    box.replaceChildren(h('div', { class: 'row', style: 'justify-content:space-between' }, h('span', {}, h('b', {}, `OBS on ${n.info?.name || 'this computer'}`), ' ', versionBadge(data.version)), st),
       h('p', { class: 'sub', style: 'margin:4px 0' }, 'In OBS: Settings → Stream → Service “Custom…”, then paste the server and the stream key. Use an H.264 encoder, AAC audio, keyframe interval 2 s. Start Streaming goes live on the channel below by itself.'),
       row('Server', h('div', { style: 'flex:1' }, servers.map(u => h('div', { class: 'row', style: 'gap:6px' }, h('code', { class: 'mono', style: 'flex:1' }, u), h('button', { class: 'small', onclick: () => copyText(u, 'Server') }, 'Copy'))))),
-      h('div', { class: 'sub', style: 'margin-left:128px' }, 'Use the address OBS can reach: localhost if OBS runs on that computer; its public address (first) from anywhere else; a 192.168… / 10… address only from the same home network. A server or VPS must allow incoming TCP port ' + data.port + ' (its firewall and the provider’s security settings).'),
-      row('Status', h('span', { class: 'sub', style: 'flex:1' }, data.live?.error ? '⚠ ' + data.live.error : data.live?.listening === false ? '⚠ not listening' : `listening on ${data.listen}:${data.port}`,
+      h('div', { class: 'sub', style: 'margin-left:128px' }, 'Use the address OBS can reach: 127.0.0.1 if OBS runs on that computer; its public address (first) from anywhere else; a 192.168… / 10… address only from the same home network. A server or VPS must allow incoming TCP port ' + data.port + ' (its firewall and the provider’s security settings).'),
+      row('Status', h('span', { class: 'sub', style: 'flex:1' }, data.live?.error ? '⚠ ' + data.live.error : data.live?.listening === false ? '⚠ not listening' : `listening on ${data.listen === '::' ? 'all addresses (IPv4 + IPv6)' : data.listen}, port ${data.port}`,
         data.lastConn ? ` · last OBS connection ${ago(data.lastConn.at)} from ${data.lastConn.from}: ${data.lastConn.stage}` : ' · no OBS connection has reached this computer yet'),
         h('button', { class: 'small', onclick: () => run('obs', { test: true }) }, 'Test from the internet'), h('button', { class: 'small', onclick: () => run('obs') }, 'Refresh')),
       testResult ? h('div', { class: 'sub', style: 'margin-left:128px' }, testResult.test.ok ? `✅ Reachable: rtmp://${testResult.test.host}:${testResult.test.port} answers like OBS expects (${testResult.test.ms} ms).` : `❌ ${testResult.test.host ? testResult.test.host + ':' + testResult.test.port + ' — ' : ''}${testResult.test.error}`) : null,
@@ -6591,6 +6592,15 @@ function fileManager(n) {
   draw(); run('files');
   return box;
 }
+// This page's build: a hash of the page itself. A node reports the same for the index.html it runs.
+let pageBuild = null;
+(async () => { try { if (!/^https?:$/.test(location.protocol)) return; const t = await (await fetch(location.pathname, { cache: 'no-store' })).text(); pageBuild = (await globalThis.OpenTubeCore.sha256hex(t)).slice(0, 12); scheduleRender(); } catch {} })();
+function versionBadge(v) {   // a node's version compared with this page's
+  if (!v?.build) return h('span', { class: 'badge warn', title: 'This computer runs an OpenTube from before versions were reported. Stop it and run your command again to update.' }, 'old version: restart it to update');
+  const same = pageBuild && v.build === pageBuild;
+  return h('span', { class: 'badge' + (same ? ' ok' : pageBuild ? ' warn' : ''), title: `node ${v.name} · build ${v.build}${pageBuild ? ' · this page ' + globalThis.OpenTubeCore.VERSION + ' · build ' + pageBuild : ''}` },
+    same ? `v${v.name} · up to date` : pageBuild ? `v${v.name} (${v.build.slice(0, 7)}) · differs from this page: restart it to update` : `v${v.name} (${v.build.slice(0, 7)})`);
+}
 function nodeRow(n) {
   const age = Date.now() - n.at, online = age < 90000, i = n.info || {};
   const test = h('span', { class: 'sub' });
@@ -6609,9 +6619,9 @@ function nodeRow(n) {
       h('div', { class: 'row' }, h('button', { class: 'small', onclick: check }, 'Test connection'),
         n.roles.includes('obs') ? h('button', { class: 'small', onclick: (e) => { const row = e.target.closest('.item'), k = 'obs:' + n.node; if (openManagers.has(k)) { openManagers.get(k).remove(); openManagers.delete(k); return; } const p_ = obsPanel(n); openManagers.set(k, p_); row.append(p_); } }, '🎥 OBS & streaming') : null,
         n.roles.includes('host') ? h('button', { class: 'small', onclick: (e) => { const row = e.target.closest('.item'); if (openManagers.has(n.node)) { openManagers.get(n.node).remove(); openManagers.delete(n.node); return; } const fm = fileManager(n); openManagers.set(n.node, fm); row.append(fm); } }, openManagers.has(n.node) ? 'Close files' : 'Manage files') : null)),
-    h('div', { class: 'sub' }, [i.os, i.node && 'Node ' + i.node, i.height != null && `main #${i.height}`, i.peers != null && `${i.peers} peer(s)`, i.chains != null && `${i.chains} chains`].filter(Boolean).join(' · ')),
+    h('div', { class: 'sub' }, [i.os, i.node && 'Node ' + i.node, i.height != null && `main #${i.height}`, i.peers != null && `${i.peers} peer(s)`, i.chains != null && `${i.chains} chains`].filter(Boolean).join(' · '), ' ', versionBadge(i.version)),
     i.host ? h('div', { class: 'sub' }, `Hosting ${i.host.hosting ?? 0} videos (${fmtBytes(i.host.hostedBytes || 0)}) for ${i.host.channels ?? 0} joined channels in ${i.host.videoDir || 'its folder'}` + (i.host.downloading ? ` · downloading ${i.host.downloading}` : '') + (i.host.stale ? ' · host not reporting' : '')) : null,
-    i.obs ? h('div', { class: 'sub' }, i.obs.live ? `OBS: streaming now (${fmtBytes(i.obs.bytes || 0)})` : i.obs.armed ? 'OBS: ready, waiting for Start Streaming' : `OBS: listening on rtmp://localhost:${i.obs.port}/live`) : null,
+    i.obs ? h('div', { class: 'sub' }, i.obs.live ? `OBS: streaming now (${fmtBytes(i.obs.bytes || 0)})` : i.obs.armed ? 'OBS: ready, waiting for Start Streaming' : `OBS: listening on port ${i.obs.port} (stream key and server under 🎥 OBS & streaming)`) : null,
     h('div', { class: 'sub mono' }, n.addrs.join('  ')), test, openManagers.get('obs:' + n.node) || null, openManagers.get(n.node) || null);
 }
 function folderPanel() {
