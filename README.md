@@ -409,6 +409,16 @@ To upload or join, you choose a folder once (*My node → Video folder*). OpenTu
 - **Headless hosts** (`headless.mjs`) use the folder given on the command line: Node does the file access and hands it to the page, so the files are real files on that machine. `?folder=browser` uses the browser's private storage with the same layout, for testing.
 - Videos stored inside the browser by older versions keep being shared, and they move into the folder when you choose one.
 
+## Where your copy of the network lives
+
+With a video folder on your disk, your copy of the blockchains lives there too, in `.opentube/chains/<chain id>.jsonl` (one file per chain, appended in batches), next to your videos and your private media in **My media**.
+
+- When you connect a folder, what the browser already had is copied there once.
+- After that, the browser loads from the folder on each start.
+- Browser storage then only caches the chains you use: the main chain, your subscriptions and your own chains, your friends' pages, the organizations you follow, and this month's and last month's public posts and messages.
+
+Without a folder (Firefox, phones), the browser keeps the same set, and lets other chains stay only until it holds 50,000 blocks; anything dropped is fetched from the network again when you open it.
+
 ## One source of rules
 
 The blockchain rules live in the `<script id="opentube-core">` block of `index.html`. `server.mjs` extracts and runs that exact block, so browser and server nodes always validate identically. If you change anything in `MAIN_GENESIS`, you start a different network.

@@ -2190,7 +2190,7 @@ engine = await createEngine({
   keyFor: (pub) => ownedSigners.get(pub) || null,
   mine,
   send: (m, to) => net.send(m, to),
-  persist: (chainId, b) => idb('blocks', 'readwrite', s => s.put({ hash: b.hash, chainId, block: b })).catch(() => {}),
+  persist: (chainId, b) => { idb('blocks', 'readwrite', s => s.put({ hash: b.hash, chainId, block: b })).catch(() => {}); chainDisk?.queue(chainId, b); },
   onBlock: (chain, b) => { if (subs[chain.id] === 'join' && b.payload.type === 'video' && b.author === chain.owner && E.postPaid(b)) hostVideo(chain.id, b.payload); if (b.author === chain.owner) liveHooks?.onBlock(chain.id, b); },
   onChange: () => scheduleRender(),
   onMembership: (m) => { if (m.author === me.pub) kv.set('membership', m); },
@@ -2642,6 +2642,71 @@ async function migrateLegacy() {
   }
 }
 
+// ---- chain data in the video folder. With a folder on your disk, every chain's blocks are also written to
+// <folder>/.opentube/chains/<chain id>.jsonl (appended in batches) and read back from there, so your node's copy of the
+// network lives with your videos. Browser storage then only caches the chains you use; without a folder it keeps
+// those plus the rest up to a limit (Firefox and phones: a more limited arrangement).
+var chainDisk = null;
+function startChainDisk(root) {
+  const pending = new Map(); let dirP = null;
+  const dir = () => dirP ||= root.getDirectoryHandle('.opentube', { create: true }).then(d => d.getDirectoryHandle('chains', { create: true }));
+  async function flush() {
+    if (!pending.size) return;
+    const batch = [...pending]; pending.clear();
+    const d = await dir();
+    for (const [id, blocks] of batch) {
+      try {
+        const fh = await d.getFileHandle(id + '.jsonl', { create: true }), size = (await fh.getFile()).size;
+        const w = await fh.createWritable({ keepExistingData: true }); await w.seek(size);
+        await w.write(blocks.map(b => JSON.stringify(b)).join('\n') + '\n'); await w.close();
+      } catch (e) { console.warn('chain file', id.slice(0, 8), e.message); }
+    }
+  }
+  const iv = setInterval(() => flush().catch(() => {}), 5000);
+  addEventListener('pagehide', () => flush());
+  return {
+    queue(id, b) { (pending.get(id) || pending.set(id, []).get(id)).push(b); },
+    flush, stop() { clearInterval(iv); },
+    async load() {   // read every chain file: the main chain first (other chains' genesis blocks come from it)
+      const d = await dir(), files = [];
+      for await (const [name, h_] of d.entries()) if (name.endsWith('.jsonl') && h_.kind === 'file') files.push([name.slice(0, -6), h_]);
+      files.sort((a, b) => (b[0] === MAIN_ID) - (a[0] === MAIN_ID));
+      let n = 0;
+      for (const [id, fh] of files) {
+        if (!isHex(id, 64)) continue;
+        const blocks = []; for (const line of (await (await fh.getFile()).text()).split('\n')) { if (!line) continue; try { blocks.push(JSON.parse(line)); } catch {} }
+        if (id === MAIN_ID || openChain(id)) { await E.insert(id, blocks, null, false); n += blocks.length; }
+      }
+      return n;
+    },
+    async exportFrom(rows) {   // the first time: copy what browser storage already has
+      const d = await dir(), byChain = new Map(); for (const r of rows) (byChain.get(r.chainId) || byChain.set(r.chainId, []).get(r.chainId)).push(r.block);
+      for (const [id, blocks] of byChain) { try { await d.getFileHandle(id + '.jsonl'); continue; } catch {} pending.set(id, blocks); }
+      await flush();
+    }
+  };
+}
+const chainsInUse = () => new Set([MAIN_ID, ...Object.keys(subs), ...[...chains.values()].filter(c => c !== main && isMine(c.owner)).map(c => c.id),
+  ...settings.friends.map(f => circleOf(f.key)).filter(Boolean), ...Object.keys(settings.orgs || {}),
+  ...[monthKey(Date.now()), prevMonth(monthKey(Date.now()))].flatMap(m => [E.squareId(m), E.squareId(m, 'mail')]).filter(Boolean)]);
+async function trimBrowserChains(limitBlocks) {   // keep the chains you use; drop the rest from browser storage (they're in the folder, or on the network)
+  const rows = await idb('blocks', 'readonly', s => s.getAll());
+  if (limitBlocks && rows.length <= limitBlocks) return 0;
+  const keep = chainsInUse(); let n = 0;
+  await idb('blocks', 'readwrite', st => { for (const r of rows) if (!keep.has(r.chainId)) { st.delete(r.hash); n++; } });
+  return n;
+}
+async function folderChains() {
+  if (folder.kind !== 'disk' || !folder.root || chainDisk) return;
+  chainDisk = startChainDisk(folder.root);
+  try {
+    const n = await chainDisk.load();
+    if (!(await kv.get('chainsExported'))) { await chainDisk.exportFrom(await idb('blocks', 'readonly', s => s.getAll())); await kv.set('chainsExported', true); }
+    const trimmed = await trimBrowserChains(0);
+    E.logEvent('storage', `chain data: ${n} block(s) read from your video folder${trimmed ? `; ${trimmed} cached block(s) of chains you don’t use removed from browser storage` : ''}`);
+  } catch (e) { console.warn('chain data in folder', e); }
+}
+setTimeout(() => { if (!chainDisk) trimBrowserChains(50000).then(n => n && E.logEvent('storage', `browser storage: kept the chains you use, dropped ${n} other cached block(s)`)).catch(() => {}); }, 60000);
 async function folderReady() {
   folder.state = 'ready'; folder.error = '';
   await scanFolder();
@@ -2650,6 +2715,7 @@ async function folderReady() {
     for (const [ih, e] of Object.entries(ch.meta.videos)) if (e.complete || subs[chainId] === 'join') shareFromFolder(chainId, ih);
   for (const id of joinedList()) hostJoined(id);
   setTimeout(() => liveHooks && liveForJoined(), 3000);
+  folderChains();   // chain data lives in the folder too
   scheduleRender();
 }
 async function initFolder() {
@@ -6029,7 +6095,7 @@ function folderPanel() {
   return h('div', { class: 'panel', style: folder.state === 'ready' ? '' : 'border-color:var(--warn)' },
     h('div', { class: 'row', style: 'justify-content:space-between' }, h('h3', { style: 'margin:0' }, 'Video folder'),
       folder.state === 'ready' ? h('span', { class: 'badge ok' }, folder.kind === 'browser' ? 'browser storage' : 'connected') : h('span', { class: 'badge warn' }, { none: 'not chosen', 'needs-permission': 'needs permission', unsupported: 'not available here' }[folder.state])),
-    h('p', { class: 'sub' }, 'Uploads and joined channels are kept as real files in this folder, one subfolder per channel (with a channel.json saying which channel it is). Reopening the page shares them again right away. Your own uploads are never deleted; other channels are trimmed to the storage limit below.'),
+    h('p', { class: 'sub' }, 'Uploads and joined channels are kept as real files in this folder, one subfolder per channel (with a channel.json saying which channel it is). Reopening the page shares them again right away. Your own uploads are never deleted; other channels are trimmed to the storage limit below. Your copy of the blockchains is kept here too (.opentube/chains), and your private pictures and videos in “My media”.'),
     folder.state === 'ready'
       ? [h('div', { class: 'row' }, h('span', {}, folder.kind === 'browser' ? 'The browser’s private storage (mirror/test mode)' : h('b', {}, folder.root.name + '/')),
           folder.kind === 'disk' ? h('button', { class: 'small', onclick: chooseFolder }, 'Change folder') : null),
