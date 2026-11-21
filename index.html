@@ -5082,7 +5082,7 @@ function liveStudio(chainId) {
       try { await startObsLive(chainId, obsTitle.value.trim()); stopPreview(); ui(); } catch (e) { obsStatus.textContent = e.message; obsGo.disabled = false; }
     } }, 'Get a stream key');
     if (!diag.home && !box.probed) { box.probed = true; probeHome().then(() => { if (diag.home?.ingest && !broadcasts.get(chainId) && !title.value && !obsTitle.value) ui(); }); }
-    const comps = myNodes().filter(n => n.roles.includes('obs') && Date.now() - n.at < 120000);
+    const comps = usableNodes('o').filter(n => n.roles.includes('obs') && Date.now() - n.at < 120000);
     const nodeSel = h('select', {}, comps.map(n => h('option', { value: n.node }, (n.info?.name || n.grant.label || 'computer') + (n.info?.obs?.live ? ' (busy)' : ''))));
     const nodeTitle = h('input', { type: 'text', placeholder: 'Stream title', maxLength: LIMITS.title });
     const nodeStatus = h('span', { class: 'sub' });
@@ -5116,7 +5116,7 @@ function liveStudio(chainId) {
     tick(); timer = setInterval(() => { if (!box.isConnected) return clearInterval(timer); tick(); }, 1000);
     const row = (label, value) => h('div', { class: 'row', style: 'gap:8px' }, h('span', { style: 'min-width:150px' }, label), h('code', { class: 'mono', style: 'flex:1;word-break:break-all' }, value));
     if (sess.rtmp) {
-      const node = myNodes().find(n => n.node === sess.node), name = node?.info?.name || 'your computer';
+      const node = usableNodes('o').find(n => n.node === sess.node), name = node?.info?.name || 'your computer';
       return [h('h3', { style: 'margin-top:0' }, h('span', { class: 'badge live' }, 'LIVE'), ' ', sess.title, h('span', { class: 'sub' }, ` · OBS on ${name}`)),
         h('p', { class: 'sub', style: 'margin-top:0' }, `In OBS on ${name}: Settings → Stream:`),
         row('Service', 'Custom…'), h('div', { class: 'row', style: 'gap:8px' }, h('span', { style: 'min-width:150px' }, 'Server'), h('code', { class: 'mono', style: 'flex:1' }, 'rtmp://127.0.0.1/live'), h('button', { class: 'small', onclick: () => copyText('rtmp://127.0.0.1/live', 'Server') }, 'Copy')),
@@ -6447,6 +6447,45 @@ views.wallet.refresh = () => { if (!document.activeElement || !/INPUT|TEXTAREA|S
 // ---- your computers: the one-command node, and the list of your nodes
 const NODE_LOADER = (site) => `node -e "const o=require('os'),f=require('fs'),p=require('path'),u=require('url');const d=p.join(o.homedir(),'.opentube');f.mkdirSync(d,{recursive:true});fetch('${site}/opentube.mjs').then(r=>r.text()).then(t=>{f.writeFileSync(p.join(d,'opentube.mjs'),t);return import(u.pathToFileURL(p.join(d,'opentube.mjs')).href)}).catch(e=>console.error(e.message))"`;
 const myNodes = () => [...E.nodes.values()].filter(n => n.grant.user === me.pub).sort((a, b) => b.at - a.at);
+// computers other people let you use (their owner added you under People on their Devices page)
+const nodePerms = (n) => n.grant.user === me.pub ? 'ohm' : (typeof n.info?.users?.[me.pub] === 'string' ? n.info.users[me.pub] : '');
+const sharedNodes = () => [...E.nodes.values()].filter(n => n.grant.user !== me.pub && nodePerms(n)).sort((a, b) => b.at - a.at);
+const usableNodes = (what) => [...myNodes(), ...sharedNodes()].filter(n => nodePerms(n).includes(what));
+// The owner chooses who else may use a computer: stream through its OBS (each person gets their own stream key, so the
+// computer knows who is streaming and goes live on their channel), host their joined channels, manage its files.
+const PERMS = [['obs', '🎥 Stream with OBS'], ['host', '📦 Host their channels'], ['manage', '🗂 Manage files']];
+function peoplePanel(n) {
+  const box = h('div', { class: 'panel', style: 'margin-top:8px;background:var(--panel-2)' }), st = h('span', { class: 'sub' });
+  let users = null;
+  const run = async (cmd, args) => { st.textContent = 'asking the computer…'; try { users = (await nodeCtl(n, cmd, args)).data.users; st.textContent = cmd === 'users.set' ? '✓ saved' : ''; draw(); }
+    catch (e) { st.textContent = /unknown command|bad command/.test(e.message) ? '✗ This computer runs an older OpenTube. On it, stop OpenTube (Ctrl+C) and run your command again: it updates itself on start.' : '✗ ' + e.message; draw(); } };
+  const who = h('input', { type: 'text', placeholder: 'Their @@name or user ID', style: 'flex:1;min-width:200px' });
+  const checks = Object.fromEntries(PERMS.map(([k]) => [k, h('input', { type: 'checkbox', checked: k !== 'manage' })]));
+  const resolve = (v) => { v = v.trim(); if (/^[A-Za-z0-9_-]{43}$/.test(v)) return E.ledger.resolve ? E.ledger.resolve(v) : v;
+    const id = resolveName(v.startsWith('@@') ? v : '@@' + v.replace(/^@+/, '')); return id ? E.ledger.resolve(genesisFor(id).author) : null; };
+  const draw = () => {
+    const rows = users ? Object.entries(users).map(([k, u]) => {
+      const cb = Object.fromEntries(PERMS.map(([p]) => [p, h('input', { type: 'checkbox', checked: u.can.includes(p) })]));
+      const save = () => run('users.set', { key: k, name: u.name, can: PERMS.map(([p]) => p).filter(p => cb[p].checked) });
+      for (const p of Object.values(cb)) p.onchange = save;
+      return h('div', { class: 'row', style: 'gap:10px;margin-top:6px;flex-wrap:wrap' }, h('a', { href: '#/u/' + k, style: 'min-width:140px;font-weight:600' }, u.name || personName(k) || k.slice(0, 10) + '…'),
+        ...PERMS.map(([p, l]) => h('label', { style: 'display:flex;gap:4px;align-items:center;font-weight:400;margin:0' }, cb[p], l)),
+        h('button', { class: 'small', onclick: () => { if (confirm('Stop sharing this computer with them? Their stream key stops working.')) run('users.set', { key: k, can: [] }); } }, 'Remove'));
+    }) : [];
+    box.replaceChildren(h('div', { class: 'row', style: 'justify-content:space-between' }, h('b', {}, `People who can use ${n.info?.name || 'this computer'}`), st),
+      h('p', { class: 'sub', style: 'margin:4px 0' }, 'Add someone and it shows up on their Devices page. Each person gets their own OBS stream key, so this computer knows who is streaming and goes live on their channel. Hosting keeps their joined channels on this computer too (it counts toward its storage limit). You stay the owner: only you can add or remove people.'),
+      h('div', {}, users === null ? h('div', { class: 'sub' }, 'Loading…') : rows.length ? rows : h('div', { class: 'sub' }, 'Only you, so far.')),
+      h('div', { class: 'row', style: 'gap:8px;margin-top:10px;flex-wrap:wrap' }, who, ...PERMS.map(([p, l]) => h('label', { style: 'display:flex;gap:4px;align-items:center;font-weight:400;margin:0' }, checks[p], l)),
+        h('button', { class: 'primary small', onclick: () => {
+          const key = resolve(who.value); if (!key) return toast('No one is called that. Paste their user ID (they find it under You → Devices → Your user ID).');
+          if (key === me.pub) return toast('That’s you: you already own it.');
+          const can = PERMS.map(([p]) => p).filter(p => checks[p].checked); if (!can.length) return toast('Choose at least one thing they may do');
+          run('users.set', { key, can, name: personName(key) || (who.value.trim().startsWith('@') || !/^[A-Za-z0-9_-]{43}$/.test(who.value.trim()) ? '@@' + who.value.trim().replace(/^@+/, '') : '') }); who.value = '';
+        } }, 'Add')));
+  };
+  draw(); run('users');
+  return box;
+}
 function nodesPanel() {
   const box = h('div', { class: 'panel' });
   const label = h('input', { type: 'text', placeholder: 'Name for this computer (optional)', maxLength: 60 });
@@ -6470,7 +6509,9 @@ function nodesPanel() {
   const list = h('div');
   const draw = () => {
     const nodes = myNodes();
-    list.replaceChildren(...(nodes.length ? nodes.map(nodeRow) : [h('div', { class: 'sub' }, 'None yet. Run the command on a computer and it appears here within a minute.')]));
+    const shared = sharedNodes();
+    list.replaceChildren(...(nodes.length ? nodes.map(nodeRow) : [h('div', { class: 'sub' }, 'None yet. Run the command on a computer and it appears here within a minute.')]),
+      ...(shared.length ? [h('h4', { style: 'margin:14px 0 4px' }, 'Shared with you'), h('div', { class: 'sub' }, 'Computers other people let you use. Your OBS stream key on each is yours alone.'), ...shared.map(nodeRow)] : []));
   };
   draw(); box.refresh = draw;
   box.append(h('h3', { style: 'margin-top:0' }, 'Your computers'),
@@ -6507,7 +6548,7 @@ const openManagers = new Map();   // node key -> its open file manager (kept whi
 function obsPanel(n, { chainId = null } = {}) {
   const box = h('div', { class: 'panel', style: 'margin-top:8px;background:var(--panel-2)' }), st = h('span', { class: 'sub' });
   let data = null;
-  let testResult = null;
+  let testResult = null, pick = null;
   const run = async (cmd, args) => { st.textContent = 'asking the computer…'; try { const r = await nodeCtl(n, cmd, args); if (args?.test) testResult = r.data; else data = r.data; st.textContent = ''; draw(); }
     catch (e) { st.textContent = /unknown command|bad command/.test(e.message) ? '✗ This computer runs an older OpenTube. On it, stop OpenTube (Ctrl+C) and run your command again: it updates itself on start.' : '✗ ' + e.message; draw(); } };
   const mask = (v) => h('span', { class: 'row', style: 'gap:6px;flex:1' }, (() => { const i = h('input', { type: 'password', readOnly: true, value: v, class: 'mono', style: 'flex:1' }); return [i, h('button', { class: 'small', type: 'button', onclick: (e) => { i.type = i.type === 'password' ? 'text' : 'password'; e.target.textContent = i.type === 'password' ? 'Show' : 'Hide'; } }, 'Show'), h('button', { class: 'small', type: 'button', onclick: () => copyText(v, 'Stream key') }, 'Copy')]; })());
@@ -6520,6 +6561,8 @@ function obsPanel(n, { chainId = null } = {}) {
     const title = h('input', { type: 'text', value: data.title || 'Live', maxLength: 140, style: 'flex:1' });
     const ytKey = h('input', { type: 'password', placeholder: data.youtube.set ? '•••••••• (saved; type to replace)' : 'YouTube stream key', style: 'flex:1' }), ytOn = h('input', { type: 'checkbox', checked: data.youtube.on });
     const tileSel = h('select', { style: 'width:auto' }, [[0, 'Off: one stream'], [2, '2 streams side by side'], [3, '3 streams (2×2)'], [4, '4 streams (2×2)']].map(([v, l]) => h('option', { value: v, selected: (data.tile.on ? data.tile.n : 0) === v }, l)));
+    ch.onchange = () => { pick = ch.value; data.title = title.value; draw(); };   // show Link for the channel just chosen
+    if (pick) ch.value = pick;
     const selected = ch.value, linked = selected && derive(selected)?.relays?.has(n.node);
     const row = (label, ...v) => h('div', { class: 'row', style: 'gap:8px;margin-top:6px' }, h('span', { style: 'min-width:120px' }, label), ...v);
     box.replaceChildren(h('div', { class: 'row', style: 'justify-content:space-between' }, h('span', {}, h('b', {}, `OBS on ${n.info?.name || 'this computer'}`), ' ', versionBadge(data.version)), st),
@@ -6538,7 +6581,6 @@ function obsPanel(n, { chainId = null } = {}) {
       row('Tiles', tileSel, h('button', { class: 'small', onclick: () => { const v = Number(tileSel.value); run('obs.set', { tile: { on: v > 1, ...(v > 1 ? { n: v } : {}) } }); } }, 'Save')),
       data.tile.on ? h('div', { class: 'sub', style: 'margin-left:128px' }, `Group stream: each person streams to the same server with their own key: `, [...Array(data.tile.n)].map((_, i) => h('code', { class: 'mono', style: 'margin-right:8px' }, i ? `…key-${i + 1}` : 'the key')), `. The picture is combined into tiles and goes live as one stream.`) : null,
       data.live?.live ? h('div', { style: 'margin-top:6px' }, h('span', { class: 'badge live' }, 'LIVE'), ' receiving from OBS') : null);
-    ch.onchange = draw;
   };
   draw(); run('obs');
   return box;
@@ -6602,7 +6644,8 @@ function versionBadge(v) {   // a node's version compared with this page's
     same ? `v${v.name} · up to date` : pageBuild ? `v${v.name} (${v.build.slice(0, 7)}) · differs from this page: restart it to update` : `v${v.name} (${v.build.slice(0, 7)})`);
 }
 function nodeRow(n) {
-  const age = Date.now() - n.at, online = age < 90000, i = n.info || {};
+  const age = Date.now() - n.at, online = age < 90000, i = n.info || {}, owner = n.grant.user === me.pub, perms = nodePerms(n);
+  const toggle = (k, make) => (e) => { const row = e.target.closest('.item'); if (openManagers.has(k)) { openManagers.get(k).remove(); openManagers.delete(k); return; } const p_ = make(); openManagers.set(k, p_); row.append(p_); };
   const test = h('span', { class: 'sub' });
   const check = async () => {
     test.textContent = 'testing…';
@@ -6615,14 +6658,18 @@ function nodeRow(n) {
   };
   return h('div', { class: 'item' },
     h('div', { class: 'row', style: 'justify-content:space-between' },
-      h('div', {}, h('span', { class: 'dot' + (online ? ' on' : '') }), ' ', h('b', {}, i.name || n.grant.label || 'computer'), h('span', { class: 'sub' }, ` · ${n.roles.map(r => ({ node: 'full node', host: 'host', obs: 'OBS receiver' })[r] || r).join(' · ')} · ${online ? 'online' : 'last seen ' + ago(n.at)}`)),
+      h('div', {}, h('span', { class: 'dot' + (online ? ' on' : '') }), ' ', h('b', {}, i.name || n.grant.label || 'computer'),
+        owner ? null : h('span', { class: 'sub' }, ' · shared with you by ', h('a', { href: '#/u/' + n.grant.user }, personName(n.grant.user) || n.grant.user.slice(0, 8) + '…')),
+        owner && i.users && Object.keys(i.users).length ? h('span', { class: 'sub' }, ` · shared with ${Object.keys(i.users).length}`) : null,
+        h('span', { class: 'sub' }, ` · ${n.roles.map(r => ({ node: 'full node', host: 'host', obs: 'OBS receiver' })[r] || r).join(' · ')} · ${online ? 'online' : 'last seen ' + ago(n.at)}`)),
       h('div', { class: 'row' }, h('button', { class: 'small', onclick: check }, 'Test connection'),
-        n.roles.includes('obs') ? h('button', { class: 'small', onclick: (e) => { const row = e.target.closest('.item'), k = 'obs:' + n.node; if (openManagers.has(k)) { openManagers.get(k).remove(); openManagers.delete(k); return; } const p_ = obsPanel(n); openManagers.set(k, p_); row.append(p_); } }, '🎥 OBS & streaming') : null,
-        n.roles.includes('host') ? h('button', { class: 'small', onclick: (e) => { const row = e.target.closest('.item'); if (openManagers.has(n.node)) { openManagers.get(n.node).remove(); openManagers.delete(n.node); return; } const fm = fileManager(n); openManagers.set(n.node, fm); row.append(fm); } }, openManagers.has(n.node) ? 'Close files' : 'Manage files') : null)),
+        n.roles.includes('obs') && perms.includes('o') ? h('button', { class: 'small', onclick: toggle('obs:' + n.node, () => obsPanel(n)) }, '🎥 OBS & streaming') : null,
+        owner ? h('button', { class: 'small', onclick: toggle('people:' + n.node, () => peoplePanel(n)) }, '👥 People') : null,
+        n.roles.includes('host') && perms.includes('m') ? h('button', { class: 'small', onclick: (e) => { const row = e.target.closest('.item'); if (openManagers.has(n.node)) { openManagers.get(n.node).remove(); openManagers.delete(n.node); return; } const fm = fileManager(n); openManagers.set(n.node, fm); row.append(fm); } }, openManagers.has(n.node) ? 'Close files' : 'Manage files') : null)),
     h('div', { class: 'sub' }, [i.os, i.node && 'Node ' + i.node, i.height != null && `main #${i.height}`, i.peers != null && `${i.peers} peer(s)`, i.chains != null && `${i.chains} chains`].filter(Boolean).join(' · '), ' ', versionBadge(i.version)),
     i.host ? h('div', { class: 'sub' }, `Hosting ${i.host.hosting ?? 0} videos (${fmtBytes(i.host.hostedBytes || 0)}) for ${i.host.channels ?? 0} joined channels in ${i.host.videoDir || 'its folder'}` + (i.host.downloading ? ` · downloading ${i.host.downloading}` : '') + (i.host.stale ? ' · host not reporting' : '')) : null,
     i.obs ? h('div', { class: 'sub' }, i.obs.live ? `OBS: streaming now (${fmtBytes(i.obs.bytes || 0)})` : i.obs.armed ? 'OBS: ready, waiting for Start Streaming' : `OBS: listening on port ${i.obs.port} (stream key and server under 🎥 OBS & streaming)`) : null,
-    h('div', { class: 'sub mono' }, n.addrs.join('  ')), test, openManagers.get('obs:' + n.node) || null, openManagers.get(n.node) || null);
+    h('div', { class: 'sub mono' }, n.addrs.join('  ')), test, openManagers.get('obs:' + n.node) || null, openManagers.get('people:' + n.node) || null, openManagers.get(n.node) || null);
 }
 function folderPanel() {
   const chans = [...folder.channels.entries()].map(([id, ch]) => {

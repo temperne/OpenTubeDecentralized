@@ -25,7 +25,7 @@ export async function publicTrackers() {
 }
 const MIN_COPIES = 2;   // other proven copies a video needs before trimming may remove ours
 
-export async function startHost({ engine, nodeKey, user, videoDir, site, capGB = 5, tabs = null, log = console.log }) {
+export async function startHost({ engine, nodeKey, user, users = () => [], videoDir, site, capGB = 5, tabs = null, log = console.log }) {
   const { default: WebTorrent } = await import('webtorrent');
   // DHT and TCP/UDP trackers too: ordinary BitTorrent apps can share these videos with this node, and it bridges them to browsers.
   const { createHash } = await import('node:crypto');
@@ -128,7 +128,12 @@ export async function startHost({ engine, nodeKey, user, videoDir, site, capGB =
     for (const [ih, e] of removable) { if (total <= cap()) break; total -= e.size || 0; remove(ih, `over the ${cap() / 1e9} GB limit for ${f.name}; ${copies(ih).others} other copies exist`); }
     f.overCap = total > cap();   // what's left is pinned or rare: kept, and shown to the owner
   }
-  const membership = () => engine.memberships.get(user);
+  // the owner's joined and own channels, plus those of the people the owner shared this computer with (for hosting)
+  const membership = () => {
+    const all = [user, ...users()].map(u => { const m = engine.memberships.get(u); if (!m) engine.requestMembership?.(u); return m; }).filter(Boolean);
+    if (!all.length) return null;
+    return { joined: [...new Set(all.flatMap(m => m.joined || []))], own: [...new Set(all.flatMap(m => m.own || []))], at: Math.max(...all.map(m => m.at || 0)) };
+  };
   const ownChannels = () => new Set(membership()?.own || []);
   const wanted = () => new Set([...(membership()?.joined || []), ...ov.channels, ...ov.videos.map(v => v.chain)].filter(c => !ov.unchannels.includes(c)));
   function follow() {

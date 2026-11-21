@@ -487,6 +487,16 @@ These overrides live in `<video folder>/.opentube-node.json`. When a channel is 
 
 Commands are signed by your personal key, and the node obeys only the user in its grant. It refuses stale or repeated commands, and its answers are signed by the node. The page first connects **directly** to the node's addresses. That works for a public node with HTTPS, or a node on the same computer (localhost); a secure page can't open plain `ws://` to other IP addresses, and home computers sit behind routers. Otherwise the same signed command is passed node to node over the mesh, addressed to the node's key, and the answer comes back the same way.
 
+### Letting other people use your computer
+
+On Devices, each of your computers has a **👥 People** button. Add someone by their `@@name` or user ID, and choose what they may do:
+
+- **🎥 Stream with OBS:** they get **their own stream key** on that computer. When OBS connects, the computer looks up whose key it is and goes live on *that person's* channel, linked by them with their own `relay` block. A person can only use a channel that is theirs (its key is theirs, or bound to their identity). YouTube forwarding and tiles are set per person too.
+- **📦 Host their channels:** the computer also hosts the channels they joined, within its storage limit.
+- **🗂 Manage files:** they can use *Manage files* on that computer.
+
+The computer then shows up on their Devices page under **Shared with you**, with only the buttons they're allowed. You stay the owner: only you can add or remove people. Removing someone stops their stream key at once. The list lives in the computer's `obs.json`, and the computer announces who it's shared with in its signed status, so their browser finds it.
+
 ## Storage proofs (proving a node really has the files)
 
 A torrent's metadata lists a hash for every piece of the video. Every couple of minutes, each hosting node does the following:

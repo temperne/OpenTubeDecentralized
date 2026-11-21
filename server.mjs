@@ -169,9 +169,23 @@ function liveSink(chain, stream, mime) {
 // OBS settings for this computer (set from the owner's console): the stream key OBS must use, the channel it goes live
 // on (the owner links this computer to the channel with a `relay` block), the title, YouTube forwarding, and tiles.
 const obsFile = path.join(DATA, 'obs.json');
-const obsCfg = Object.assign({ key: null, channel: null, title: 'Live', youtube: { key: '', on: false }, tile: { on: false, n: 4 } }, (() => { try { return JSON.parse(fs.readFileSync(obsFile, 'utf8')); } catch { return {}; } })());
-if (!obsCfg.key) obsCfg.key = 'ot-' + crypto.randomBytes(12).toString('base64url');
-const saveObs = () => fs.writeFileSync(obsFile, JSON.stringify(obsCfg, null, 2), { mode: 0o600 });
+// One OBS profile per person who uses this computer (the owner, and people the owner shared it with): their own stream
+// key, so the computer knows who is streaming and goes live on that person's channel.
+const newStreamKey = () => 'ot-' + crypto.randomBytes(12).toString('base64url');
+const obsStore = (() => { try { return JSON.parse(fs.readFileSync(obsFile, 'utf8')); } catch { return {}; } })();
+if (!obsStore.profiles) { const { profiles, users, ...legacy } = obsStore; obsStore.profiles = legacy.key ? { [GRANT?.user || 'owner']: legacy } : {}; for (const k of Object.keys(legacy)) delete obsStore[k]; }
+obsStore.users ||= {};   // user key -> { can: ['obs', 'host', 'manage'], name }
+const saveObs = () => fs.writeFileSync(obsFile, JSON.stringify(obsStore, null, 2), { mode: 0o600 });
+function profileOf(user) {
+  const p = obsStore.profiles[user] ||= {};
+  Object.assign(p, { key: p.key || newStreamKey(), channel: p.channel ?? null, title: p.title || 'Live', youtube: p.youtube || { key: '', on: false }, tile: p.tile || { on: false, n: 4 } });
+  return p;
+}
+const nodeUsers = () => obsStore.users;
+// a channel someone may go live on from here: theirs (its key is theirs, or bound to their identity)
+const ownsChannel = (user, ch) => { const d = ch && engine.derive(ch); return !!d && (d.owner === user || engine.ledger.resolve(d.owner) === engine.ledger.resolve(user)); };
+const may = (user, what) => user === GRANT?.user || !!obsStore.users[user]?.can?.includes(what);
+if (GRANT) profileOf(GRANT.user);
 saveObs();
 // fMP4 splitting (ffmpeg output): ftyp+moov is the header, then moof+mdat pairs
 function mp4Boxes(onInit, onFrag) {
@@ -205,7 +219,7 @@ function rtmpProbe(host, port) {   // TCP connect + RTMP C0/C1; an RTMP server a
   });
 }
 const ffmpegOk = (() => { try { return !spawnSync('ffmpeg', ['-version']).error; } catch { return false; } })();
-function youtubeOut(log) {   // forward the stream (fMP4, H.264 + AAC) to YouTube, unchanged
+function youtubeOut(log, obsCfg) {   // forward the stream (fMP4, H.264 + AAC) to YouTube, unchanged
   if (!obsCfg.youtube.on || !obsCfg.youtube.key || !ffmpegOk) return null;
   const ff = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'mp4', '-i', 'pipe:0', '-c', 'copy', '-f', 'flv', 'rtmp://a.rtmp.youtube.com/live2/' + obsCfg.youtube.key], { stdio: ['pipe', 'ignore', 'pipe'] });
   ff.stderr.on('data', d => log('[youtube]', String(d).trim().slice(0, 200))); ff.stdin.on('error', () => {});
@@ -213,11 +227,11 @@ function youtubeOut(log) {   // forward the stream (fMP4, H.264 + AAC) to YouTub
   return { write: (b) => { try { ff.stdin.write(b); } catch {} }, end: () => { try { ff.stdin.end(); } catch {} } };
 }
 // Go live on the linked channel: writes the live block (as the channel's relay), then feeds the mesh/hub and YouTube.
-function goLiveSink(log) {
-  let real = null, yt = youtubeOut(log), queued = [], stream = null, chain = null;
+function goLiveSink(log, obsCfg) {
+  let real = null, yt = youtubeOut(log, obsCfg), queued = [], stream = null, chain = null;
   return {
     async init(bytes, mime) {
-      const armedOld = armed?.();
+      const armedOld = obsCfg.owner ? armed?.() : null;   // the older "Go live → pick this computer" flow (owner only)
       if (armedOld) { chain = armedOld.chain; stream = armedOld.b.payload.stream; mime = armedOld.b.payload.mime; }
       else {
         chain = obsCfg.channel; if (!chain || !engine.chains.get(chain)) throw new Error('no channel linked to this computer');
@@ -234,8 +248,8 @@ function goLiveSink(log) {
 }
 // Tiles: several OBS streams (keys <key>, <key>-2, <key>-3, <key>-4) combined by ffmpeg into one picture (2 → side by
 // side, 3-4 → 2×2), audio mixed. It starts when every slot has connected, or 20 s after the first with those present.
-const tiles = { slots: new Map(), ff: null, timer: null };
-function tileSlot(n, log) {
+function tileSlot(n, log, obsCfg) {
+  const tiles = obsCfg._tiles ||= { slots: new Map(), ff: null, timer: null };   // each person's group stream is their own
   const slot = { n, chunks: [], pipe: null, ended: false };
   tiles.slots.set(n, slot);
   const startTiles = () => {
@@ -250,7 +264,7 @@ function tileSlot(n, log) {
       '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', 'pipe:1'];
     const ff = tiles.ff = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe', ...list.map(() => 'pipe')] });
     ff.stderr.on('data', d => log('[tiles]', String(d).trim().slice(0, 200)));
-    const out = goLiveSink(log); let first = true;
+    const out = goLiveSink(log, obsCfg); let first = true;
     ff.stdout.on('data', mp4Boxes((init) => out.init(init, 'video/mp4; codecs="avc1.640028,mp4a.40.2"').catch(e => log('[tiles]', e.message)), (frag) => out.fragment(frag, first ? (first = false, true) : false)));
     ff.on('exit', () => { out.end(); tiles.ff = null; tiles.slots.clear(); log('[tiles] ended'); });
     list.forEach((s, i) => { s.pipe = ff.stdio[3 + i]; s.pipe.on('error', () => {}); for (const c of s.chunks) s.pipe.write(c); s.chunks = []; });
@@ -264,7 +278,7 @@ function tileSlot(n, log) {
     end() { slot.ended = true; try { slot.pipe?.end(); } catch {} if ([...tiles.slots.values()].every(s => s.ended)) { tiles.ff?.kill('SIGTERM'); tiles.slots.clear(); clearTimeout(tiles.timer); tiles.timer = null; } }
   };
 }
-var armed = null;
+var armed = null, announceSoon = null;
 if (process.env.RTMP_PORT) {
   try {
     const { startRtmp } = await import('./rtmp.mjs');
@@ -281,14 +295,18 @@ if (process.env.RTMP_PORT) {
     const rtmp = startRtmp({ port: Number(process.env.RTMP_PORT), host: process.env.RTMP_HOST || '::', log: (...a) => log('[obs]', ...a),
       onPublish: (key) => {
         key = String(key || '').trim();
-        const slot = key === obsCfg.key ? 1 : [2, 3, 4].find(i => key === obsCfg.key + '-' + i) || 0;   // the key itself, or key-2…key-4 for tiles
+        let user = null, slot = 0;   // whose key is it? the key itself, or key-2…key-4 for tiles
+        for (const [u, pr] of Object.entries(obsStore.profiles)) { if (!may(u, 'obs')) continue; const s_ = key === pr.key ? 1 : [2, 3, 4].find(i => key === pr.key + '-' + i) || 0; if (s_) { user = u; slot = s_; break; } }
         if (!slot) return 'Wrong stream key. Copy it from Go live (or Devices) on the site.';
-        if (obsCfg.tile.on) { if (!ffmpegOk) return 'Tiles need ffmpeg on this computer.'; if (slot > obsCfg.tile.n) return `Only ${obsCfg.tile.n} tiles are set up.`; return tileSlot(slot, log); }
+        const obsCfg = Object.assign(profileOf(user), { owner: user === GRANT?.user });
+        log(`[obs] stream from ${obsStore.users[user]?.name || (obsCfg.owner ? 'the owner' : user.slice(0, 8))}`);
+        if (obsCfg.tile.on) { if (!ffmpegOk) return 'Tiles need ffmpeg on this computer.'; if (slot > obsCfg.tile.n) return `Only ${obsCfg.tile.n} tiles are set up.`; return tileSlot(slot, log, obsCfg); }
         if (slot > 1) return 'Tiles are off on this computer: use the main stream key.';
-        if (!armed() && !(obsCfg.channel && engine.derive(obsCfg.channel)?.relays.has(signer.pub))) return 'Not linked to a channel yet. On the site: Go live → OBS → pick this computer and link it to your channel.';
-        return goLiveSink(log);
+        if (obsCfg.channel && !obsCfg.owner && !ownsChannel(user, obsCfg.channel)) return 'That channel isn’t yours.';
+        if (!(obsCfg.owner && armed()) && !(obsCfg.channel && engine.derive(obsCfg.channel)?.relays.has(signer.pub))) return 'Not linked to a channel yet. On the site: Go live → OBS → pick this computer and link it to your channel.';
+        return goLiveSink(log, obsCfg);
       } });
-    globalThis.openTubeRtmp = { lastConn: () => rtmp.status().lastConn || null, status: () => ({ ...rtmp.status(), armed: !!armed(), port: Number(process.env.RTMP_PORT), channel: obsCfg.channel, tiles: obsCfg.tile.on ? obsCfg.tile.n : 0, youtube: obsCfg.youtube.on && !!obsCfg.youtube.key }) };
+    globalThis.openTubeRtmp = { lastConn: () => rtmp.status().lastConn || null, status: () => ({ ...rtmp.status(), armed: !!armed(), port: Number(process.env.RTMP_PORT) }) };
   } catch (e) { log('OBS receiver unavailable:', e.message); }
 }
 
@@ -297,7 +315,7 @@ if (process.env.RTMP_PORT) {
 if (process.env.VIDEO_DIR && process.env.HOST_USER) {
   try {
     const { startHost } = await import('./host.mjs');
-    globalThis.openTubeHost = await startHost({ engine, nodeKey: signer.pub, tabs: pieceTabs(), user: process.env.HOST_USER, videoDir: path.resolve(process.env.VIDEO_DIR), site: process.env.NODE_SITE || `http://localhost:${PORT}`, capGB: Number(process.env.CAP_GB) || 5, log });
+    globalThis.openTubeHost = await startHost({ engine, nodeKey: signer.pub, tabs: pieceTabs(), users: () => Object.entries(obsStore.users).filter(([, u]) => u.can.includes('host')).map(([k]) => k), user: process.env.HOST_USER, videoDir: path.resolve(process.env.VIDEO_DIR), site: process.env.NODE_SITE || `http://localhost:${PORT}`, capGB: Number(process.env.CAP_GB) || 5, log });
   } catch (e) { log('video hosting unavailable:', e.message, '(npm install webtorrent next to server.mjs)'); }
 }
 
@@ -388,17 +406,32 @@ async function signed(x) { x.sig = await signer.sign(core.ctlPreimage(x)); retur
 async function control(c) {
   const fail = (error) => signed({ v: 1, kind: 'nodectlr', node: signer.pub, re: c.nonce, at: Date.now(), ok: false, error });
   if (c.v !== 1 || c.node !== signer.pub || typeof c.nonce !== 'string' || c.nonce.length > 40 || typeof c.cmd !== 'string') return fail('bad command');
-  if (!GRANT || c.user !== GRANT.user) return fail('this node belongs to someone else');
+  if (!GRANT || (c.user !== GRANT.user && !obsStore.users[c.user])) return fail('this computer isn’t yours, and it isn’t shared with you');
   if (Math.abs(Date.now() - c.at) > 2 * 60000 || ctlSeen.has(c.nonce)) return fail('stale or repeated command');
   if (!(await core.verify(c.user, core.ctlPreimage(c), c.sig))) return fail('bad signature');
   ctlSeen.set(c.nonce, Date.now()); for (const [k, at] of ctlSeen) if (Date.now() - at > 5 * 60000) ctlSeen.delete(k);
   try {
     let data;
-    if (c.cmd === 'obs' || c.cmd === 'obs.set' || c.cmd === 'obs.rotate') {   // OBS settings (the key is only ever sent to the owner)
+    const owner = c.user === GRANT.user;
+    if (c.cmd === 'users' || c.cmd === 'users.set') {   // the owner shares this computer: who may use OBS, hosting, management
+      if (!owner) return fail('only the owner can share this computer');
       const a = c.args || {};
-      if (c.cmd === 'obs.rotate') obsCfg.key = 'ot-' + crypto.randomBytes(12).toString('base64url');
+      if (c.cmd === 'users.set') {
+        if (!/^[A-Za-z0-9_-]{43}$/.test(a.key || '') || a.key === GRANT.user) return fail('not a user ID');
+        const can = (Array.isArray(a.can) ? a.can : []).filter(x => ['obs', 'host', 'manage'].includes(x));
+        if (!can.length) { delete obsStore.users[a.key]; delete obsStore.profiles[a.key]; } else obsStore.users[a.key] = { can, name: String(a.name || '').slice(0, 60) };
+        saveObs(); globalThis.openTubeHost?.follow?.(); announceSoon?.();
+      }
+      data = { users: obsStore.users };
+      log(`[control] ${c.cmd}: shared with ${Object.keys(obsStore.users).length} people`);
+      return signed({ v: 1, kind: 'nodectlr', node: signer.pub, re: c.nonce, at: Date.now(), ok: true, data });
+    }
+    if (c.cmd === 'obs' || c.cmd === 'obs.set' || c.cmd === 'obs.rotate') {   // OBS settings: each person's own (the key is sent only to them)
+      if (!may(c.user, 'obs')) return fail('you may not stream through this computer');
+      const a = c.args || {}, obsCfg = profileOf(c.user);
+      if (c.cmd === 'obs.rotate') obsCfg.key = newStreamKey();
       if (c.cmd === 'obs.set') {
-        if (a.channel !== undefined) obsCfg.channel = /^[0-9a-f]{64}$/.test(a.channel) ? a.channel : null;
+        if (a.channel !== undefined) { if (a.channel && !ownsChannel(c.user, a.channel)) return fail('that channel isn’t yours'); obsCfg.channel = /^[0-9a-f]{64}$/.test(a.channel) ? a.channel : null; }
         if (typeof a.title === 'string') obsCfg.title = a.title.slice(0, 140) || 'Live';
         if (a.youtube) { if (typeof a.youtube.key === 'string') obsCfg.youtube.key = a.youtube.key.trim().slice(0, 200); if (typeof a.youtube.on === 'boolean') obsCfg.youtube.on = a.youtube.on; }
         if (a.tile) { if (typeof a.tile.on === 'boolean') obsCfg.tile.on = a.tile.on; if ([2, 3, 4].includes(a.tile.n)) obsCfg.tile.n = a.tile.n; }
@@ -416,9 +449,10 @@ async function control(c) {
         linked: !!(obsCfg.channel && engine.derive(obsCfg.channel)?.relays.has(signer.pub)), youtube: { on: obsCfg.youtube.on, set: !!obsCfg.youtube.key }, tile: obsCfg.tile, ffmpeg: ffmpegOk, node: signer.pub, live: globalThis.openTubeRtmp?.status?.() || null };
     }
     else if (c.cmd === 'status') data = { height: engine.main.best.height, peers: peers.size, chains: engine.chains.size, host: globalThis.openTubeHost?.status() || null, obs: globalThis.openTubeRtmp?.status?.() || null };
+    else if (!owner && !may(c.user, 'manage')) return fail('you may not manage this computer’s files');
     else if (!globalThis.openTubeHost) return fail('video hosting is off on this node (started with --no-host?)');
     else data = globalThis.openTubeHost.command(c.cmd, c.args || {});
-    log(`[control] ${c.cmd} from the owner's console`);
+    log(`[control] ${c.cmd} from ${owner ? 'the owner' : obsStore.users[c.user]?.name || c.user.slice(0, 8)}'s console`);
     return signed({ v: 1, kind: 'nodectlr', node: signer.pub, re: c.nonce, at: Date.now(), ok: true, data });
   } catch (e) { return fail(e.message); }
 }
@@ -492,12 +526,13 @@ else if (GRANT) {
   const announce = async () => {
     let host = globalThis.openTubeHost?.status() || null;
     if (!host) try { host = JSON.parse(fs.readFileSync(process.env.HOST_STATUS_FILE, 'utf8')); if (Date.now() - host.at > 120000) host = { ...host, stale: true }; } catch {}
-    const info = { version: { name: core.VERSION, build: BUILD }, peerId: nodePeerId(signer.pub), name: (process.env.NODE_LABEL || os.hostname()).slice(0, 60), os: `${os.platform()} ${os.arch()}`, node: process.version, height: engine.main.best.height,
+    const info = { users: Object.fromEntries(Object.entries(obsStore.users).slice(0, 20).map(([k, u]) => [k, u.can.map(x => x[0]).join('')])),   // who may use it: o(bs) h(ost) m(anage)
+      version: { name: core.VERSION, build: BUILD }, peerId: nodePeerId(signer.pub), name: (process.env.NODE_LABEL || os.hostname()).slice(0, 60), os: `${os.platform()} ${os.arch()}`, node: process.version, height: engine.main.best.height,
       peers: peers.size, chains: engine.chains.size, site: process.env.NODE_SITE || null, host, obs: globalThis.openTubeRtmp?.status?.() || null };
     try { await engine.publishNodeInfo({ grant: GRANT, roles, addrs: addrs(), info }); } catch (e) { log('announce failed:', e.message); }
   };
   log(`this node belongs to user ${GRANT.user.slice(0, 8)}… (${roles.join(', ')}); it will show up on their My node page`);
-  setTimeout(announce, 4000); setInterval(announce, 30000);
+  setTimeout(announce, 4000); setInterval(announce, 30000); announceSoon = () => setTimeout(announce, 500);
 }
 
 const RANKS = process.env.RANKER !== '0';   // RANKER=0: no ranking list (personal nodes started by opentube.mjs)
