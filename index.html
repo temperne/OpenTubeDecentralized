@@ -1501,13 +1501,15 @@ function derive(c) {
     ads: live.filter(b => b.payload.type === 'ad' && byOwner.has(b.hash)).reverse(),
     sponsors: live.filter(b => b.payload.type === 'sponsor' && byOwner.has(b.hash)).reverse(),
     ...(() => {   // live streams: started, not yet ended (and less than a day old)
-      const ends = new Map(), recordings = new Map();
+      const ends = new Map(), recordings = new Map(), nodeRecs = new Map();   // nodeRecs: stream -> a recording a linked computer made (OBS), waiting to be published
       for (const b of live) if (byOwner.has(b.hash) || (b.payload.type === 'liveend' && relays.has(b.author))) {
         if (b.payload.type === 'liveend') ends.set(b.payload.stream, b.payload.outcome);
+        const r = b.payload.type === 'liveend' && b.payload.rec;
+        if (r && typeof r === 'object' && isHex(r.infohash, 40) && isStr(r.file, 200) && Number.isSafeInteger(r.size) && r.size > 0 && isStr(r.mime, 80) && isImg(r.thumb ?? '')) nodeRecs.set(b.payload.stream, { ...r, by: b.author, at: b.ts });
         if (b.payload.type === 'video' && b.payload.stream) recordings.set(b.payload.stream, b);
       }
       const streams = live.filter(b => b.payload.type === 'live' && (byOwner.has(b.hash) || relays.has(b.author))).reverse();
-      return { streams, liveEnds: ends, recordings, liveNow: streams.filter(b => !ends.has(b.payload.stream) && Date.now() - b.ts < 24 * 3600000) };
+      return { streams, liveEnds: ends, recordings, nodeRecs, liveNow: streams.filter(b => !ends.has(b.payload.stream) && Date.now() - b.ts < 24 * 3600000) };
     })(),
     commentsFor: (target) => visible.filter(b => b.payload.type === 'comment' && b.payload.target === target),
     votes: tallyVotes(visible),
@@ -5034,6 +5036,8 @@ function liveStudio(chainId) {
     const pending = Object.entries(ch?.meta.lives || {}).find(([s, r]) => r.own && !(sess && !sess.ended && sess.stream === s));
     if (sess && !sess.ended) return box.replaceChildren(...(sess.obs ? obsAir(sess) : onAir(sess)));
     if (pending) return box.replaceChildren(...decide(pending[0], pending[1], sess));
+    const nrec = nodeRecordings(chainId)[0];
+    if (nrec) return box.replaceChildren(nodeRecordingPanel(chainId, nrec, ui));
     box.replaceChildren(...setup());
   };
   function setup() {
@@ -5175,6 +5179,38 @@ function liveStudio(chainId) {
   ui();
   return box;
 }
+// Recordings your computers made of OBS streams (they're in that computer's video folder, shared over BitTorrent):
+// publish one as a video on the channel, or discard it (the computer deletes it).
+function nodeRecordings(chainId) {
+  const d = derive(chainId); if (!d?.nodeRecs || !isMine(d.owner)) return [];
+  return [...d.nodeRecs].filter(([stream]) => d.liveEnds.get(stream) === 'ended' && !d.recordings.has(stream))
+    .map(([stream, r]) => ({ stream, ...r, title: d.streams.find(b => b.payload.stream === stream)?.payload.title || 'Live' })).sort((a, b) => b.at - a.at);
+}
+function nodeRecordingPanel(chainId, r, done = () => scheduleRender()) {
+  const d = derive(chainId), comp = E.nodes.get(r.by), title = h('input', { type: 'text', value: r.title, maxLength: LIMITS.title });
+  const desc = h('textarea', { placeholder: 'Description', maxLength: LIMITS.text }), status = h('span', { class: 'sub' });
+  const box = h('div', { class: 'panel' });
+  const act = (publish) => async () => {
+    if (!publish && !confirm('Delete this recording? The computer deletes its copy.')) return;
+    for (const b of box.querySelectorAll('button')) b.disabled = true;
+    status.textContent = publish ? 'Publishing…' : 'Discarding…';
+    try {
+      if (publish) {
+        const vb = await append(chainId, { type: 'video', title: (title.value.trim() || r.title).slice(0, LIMITS.title), desc: desc.value.trim().slice(0, LIMITS.text), infohash: r.infohash, file: r.file, size: r.size, mime: r.mime, thumb: r.thumb || '', stream: r.stream });
+        try { await payPost(chainId, vb, r.size); } catch (e) { toast(`Recording posted, but not published yet: ${e.message}. Pay from your channel's Videos tab.`); }
+        await append(chainId, { type: 'liveend', stream: r.stream, outcome: 'published' });
+        toast('Recording published as a video.');
+      } else { await append(chainId, { type: 'liveend', stream: r.stream, outcome: 'discarded' }); toast('Recording discarded.'); }
+      done();
+    } catch (e) { status.textContent = 'Failed: ' + e.message; for (const b of box.querySelectorAll('button')) b.disabled = false; }
+  };
+  box.append(h('div', { class: 'row', style: 'gap:12px;align-items:flex-start' }, r.thumb ? h('img', { src: r.thumb, style: 'width:160px;border-radius:6px' }) : null,
+    h('div', { style: 'flex:1' }, h('h3', { style: 'margin-top:0' }, '📼 Recording ready: ' + r.title),
+      h('p', { class: 'sub', style: 'margin-top:0' }, `${comp?.info?.name || 'Your computer'} recorded this stream (${fmtBytes(r.size)}, ${ago(r.at)}) and is sharing it. Publish it as a video on ${d.profile.name}, or discard it.`))),
+    h('label', {}, 'Title'), title, h('label', {}, 'Description'), desc,
+    h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'primary', onclick: act(true) }, 'Publish recording'), h('button', { onclick: act(false) }, 'Discard'), status));
+  return box;
+}
 function liveBanner(chainId, lb) {
   return h('a', { class: 'panel live-banner', href: `#/live/${chainId}/${lb.hash}` }, h('span', { class: 'badge live' }, 'LIVE'), ' ', h('b', {}, lb.payload.title), h('span', { class: 'sub' }, ' · started ' + ago(lb.ts) + ' · watch now →'));
 }
@@ -5280,7 +5316,7 @@ const chainTab = {
   upload(id) { const f = keep('upload:' + id, () => uploadForm(id)); f.open = true; return f; },
   golive(id) { return keep('studio:' + id, () => liveStudio(id)); },
   videos(id, d) {
-    return h('div', {}, d.liveNow.map(lb => liveBanner(id, lb)),
+    return h('div', {}, d.liveNow.map(lb => liveBanner(id, lb)), nodeRecordings(id).map(r => nodeRecordingPanel(id, r)),
       isMine(d.owner) ? h('div', { class: 'quick', style: 'margin:0 0 14px' }, h('a', { class: 'act', href: `#/c/${id}/upload` }, '＋ Add video'), h('a', { class: 'act live', href: `#/c/${id}/golive` }, '● Go live')) : null,
       d.videos.filter(b => videoVisible(id, b)).length ? h('div', { class: 'grid' }, d.videos.filter(b => videoVisible(id, b)).map(b => E.postPaid(b) ? videoCard(id, b) : unpaidCard(id, b))) : h('div', { class: 'empty' }, 'No videos yet.'));
   },

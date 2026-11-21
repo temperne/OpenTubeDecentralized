@@ -233,8 +233,40 @@ function youtubeOut(log, obsCfg) {   // forward the stream (fMP4, H.264 + AAC) t
   return { write: (b) => { try { ff.stdin.write(b); } catch {} }, end: () => { try { ff.stdin.end(); } catch {} } };
 }
 // Go live on the linked channel: writes the live block (as the channel's relay), then feeds the mesh/hub and YouTube.
+// The recording: OBS's stream (fragmented MP4) written as it arrives into the channel's folder in the video folder,
+// shared over BitTorrent when it ends and announced in the liveend block, so the owner can publish it as a video.
+async function thumbOf(file) {   // a small JPEG from 2 s in (needs ffmpeg), as a data URL; '' without
+  if (!ffmpegOk) return '';
+  return new Promise((res) => {
+    const ff = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-ss', '2', '-i', file, '-frames:v', '1', '-vf', 'scale=320:-2', '-q:v', '6', '-f', 'image2', '-c:v', 'mjpeg', 'pipe:1'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    const parts = []; ff.stdout.on('data', d => parts.push(d));
+    ff.on('exit', () => { const b = Buffer.concat(parts); res(b.length && b.length < 44000 ? 'data:image/jpeg;base64,' + b.toString('base64') : ''); });
+    ff.on('error', () => res(''));
+  });
+}
+function recorder(chain, title, log) {
+  let out = null, file = null, bytes = 0, open;
+  open = (async () => {
+    const host = globalThis.openTubeHost;
+    const p = host?.recordingPath ? await host.recordingPath(chain, title) : (() => { const dir = path.join(DATA, 'recordings'); fs.mkdirSync(dir, { recursive: true }); const name = `${title.replace(/[^\w .()-]/g, ' ').trim() || 'Live'} ${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.mp4`; return { full: path.join(dir, name), file: name }; })();
+    file = p; out = fs.createWriteStream(p.full); out.on('error', e => log('[obs] recording:', e.message));
+    log(`[obs] recording to ${p.full}`);
+  })().catch(e => log('[obs] can’t record:', e.message));
+  return {
+    write: (b) => { open.then(() => { if (out) { out.write(b); bytes += b.length; } }); },
+    async finish(stream) {
+      await open; if (!out) return null;
+      await new Promise(r => out.end(r));
+      if (bytes < 1000) { fs.rmSync(file.full, { force: true }); return null; }
+      const host = globalThis.openTubeHost;
+      if (!host?.seedRecording) { log(`[obs] recording saved to ${file.full} (video hosting is off on this computer, so it isn’t shared for publishing)`); return null; }
+      const r = await host.seedRecording(chain, file.file, title, stream);
+      return { ...r, mime: 'video/mp4', thumb: await thumbOf(file.full) };
+    }
+  };
+}
 function goLiveSink(log, obsCfg) {
-  let real = null, yt = youtubeOut(log, obsCfg), queued = [], stream = null, chain = null;
+  let real = null, yt = youtubeOut(log, obsCfg), queued = [], stream = null, chain = null, rec = null;
   return {
     async init(bytes, mime) {
       const armedOld = obsCfg.owner ? armed?.() : null;   // the older "Go live → pick this computer" flow (owner only)
@@ -246,10 +278,21 @@ function goLiveSink(log, obsCfg) {
         log(`[obs] live on ${engine.derive(chain)?.profile.name || chain.slice(0, 8)}: “${obsCfg.title}”`);
       }
       real = liveSink(chain, stream, mime); real.init(bytes); yt?.write(bytes);
-      for (const [b, k] of queued) { real.fragment(b, k); yt?.write(b); } queued = [];
+      if (!armedOld) { rec = recorder(chain, (obsCfg.title || 'Live').slice(0, 100), log); rec.write(bytes); }   // the older flow records in the owner's browser
+      for (const [b, k] of queued) { real.fragment(b, k); yt?.write(b); rec?.write(b); } queued = [];
     },
-    fragment(bytes, k) { if (real) { real.fragment(bytes, k); yt?.write(bytes); } else queued.push([bytes, k]); },
-    end() { real?.end(); yt?.end(); if (stream && !armed?.()) engine.append(chain, { type: 'liveend', stream, outcome: 'ended' }).catch(() => {}); log('[obs] stream ended'); }
+    fragment(bytes, k) { if (real) { real.fragment(bytes, k); yt?.write(bytes); rec?.write(bytes); } else queued.push([bytes, k]); },
+    end() {
+      real?.end(); yt?.end(); log('[obs] stream ended');
+      if (!stream || armed?.()) return;
+      (async () => {
+        const r = await rec?.finish(stream).catch(e => { log('[obs] recording failed:', e.message); return null; });
+        const p = { type: 'liveend', stream, outcome: 'ended' };
+        if (r) p.rec = { infohash: r.infohash, file: r.file.slice(0, 200), size: r.size, mime: r.mime, thumb: r.thumb };
+        await engine.append(chain, p);
+        if (r) log(`[obs] recording ready: the channel’s owner can publish it from the site (Go live, or the channel’s Videos)`);
+      })().catch(e => log('[obs] liveend:', e.message));
+    }
   };
 }
 // Tiles: several OBS streams (keys <key>, <key>-2, <key>-3, <key>-4) combined by ffmpeg into one picture (2 → side by

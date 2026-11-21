@@ -211,7 +211,41 @@ export async function startHost({ engine, nodeKey, user, users = () => [], video
     saveOv(); follow(); for (const c of folders.keys()) trim(c);
     return files();
   }
+  // ---- live recordings: an OBS stream this node received is written into the channel's folder and shared like any
+  // video. The channel's owner then publishes it (a video block) or discards it (deleted here).
+  async function recordingPath(chain, title) {
+    const f = await folderFor(chain), base = cleanName(title, 'Live');
+    let name = base + '.mp4';
+    for (let i = 2; fs.existsSync(path.join(f.dir, name)); i++) name = `${base} (${i}).mp4`;
+    return { full: path.join(f.dir, name), file: name };
+  }
+  async function seedRecording(chain, file, title, stream) {
+    const f = await folderFor(chain), full = path.join(f.dir, file);
+    return new Promise((res, rej) => {
+      client.seed(full, { announce: trackers, name: file }, (t) => {
+        torrents.set(t.infoHash, { chain, t });
+        f.meta.videos[t.infoHash] = { file, name: file, title, size: t.length, complete: true, own: true, live: stream, ts: Date.now() };
+        if (!ov.pinned.includes(t.infoHash)) { ov.pinned.push(t.infoHash); saveOv(); }   // kept until published or discarded
+        fsp.writeFile(path.join(f.dir, '.opentube', t.infoHash + '.torrent'), t.torrentFile).catch(() => {});
+        saveMeta(f); log(`[host] recorded “${title}” to ${f.name}/${file} (${(t.length / 1e6).toFixed(1)} MB), sharing it`);
+        res({ infohash: t.infoHash, size: t.length, file });
+      }).on?.('error', rej);
+    });
+  }
+  function settleRecordings() {   // the owner discarded a recording: delete it; published: it's an ordinary video now
+    for (const [chain, f] of folders) {
+      const d = engine.derive(chain); if (!d?.liveEnds) continue;
+      for (const [ih, e] of Object.entries(f.meta.videos)) {
+        if (!e.live) continue;
+        const outcome = d.liveEnds.get(e.live);
+        if (outcome === 'discarded') { ov.pinned = ov.pinned.filter(x => x !== ih); saveOv(); remove(ih, 'the owner discarded this recording'); delete f.meta.videos[ih]; saveMeta(f); }
+        else if (outcome === 'published') { delete e.live; saveMeta(f); }
+      }
+    }
+  }
+  setInterval(settleRecordings, 15000);
   return {
+    recordingPath, seedRecording,
     follow, piece, complete, command, files,
     noteProof(ih, key, ok) { const m = proven.get(ih) || proven.set(ih, new Map()).get(ih); if (ok) m.set(key, Date.now()); else m.delete(key); },
     status: () => {

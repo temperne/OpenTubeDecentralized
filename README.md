@@ -494,6 +494,10 @@ Many VPS providers only let a few ports in from the internet (often 22 and 80), 
 - **Open the port:** in the provider's control panel (Firewall or Security group), and on the server with `sudo iptables -I INPUT -p tcp --dport 1935 -j ACCEPT`.
 - **Or use a port that's already open:** add `--obs-port=80` to the command, or set "OBS port" when you create it on Devices. In OBS, use `rtmp://<its-ip>:80/live`. Only one program can use a port, so pick one nothing else on the server is using.
 
+### Recordings of streams through your computer
+
+When you go live with OBS through one of your computers, it records the stream into that channel's folder in its video folder as `<title>.mp4`. When the stream ends, it shares the recording over BitTorrent and announces it on the channel (its `liveend` block carries the recording's infohash, size and a thumbnail). On the channel's page and under Go live, the owner sees **📼 Recording ready**: **Publish recording** posts it as a video like any other (the computer keeps sharing it, others download it), and **Discard** deletes it from the computer. Recording needs video hosting on that computer (the default). With `--no-host`, the file is kept under `~/.opentube/node-data/recordings` but isn't offered for publishing.
+
 ### Updating a computer from the site
 
 Each computer on Devices has **⟳ Update** (highlighted when its version differs from the site's). It asks the computer, with a signed command, to download the site's current OpenTube and restart, so you don't need its terminal. This works for computers started with the one-line command. Computers running a version from before this button: stop OpenTube there and run the command again once.
