@@ -5792,12 +5792,21 @@ views.livewatch = {
       const cam = h('select', { style: 'width:auto' }), mic = h('select', { style: 'width:auto' }), st = h('span', { class: 'sub' });
       let media = null;
       const get = async () => {
-        try { media?.getTracks().forEach(t => t.stop()); media = await navigator.mediaDevices.getUserMedia({ video: cam.value ? { deviceId: { exact: cam.value } } : true, audio: mic.value === 'none' ? false : mic.value ? { deviceId: { exact: mic.value } } : true }); prev.srcObject = media; st.textContent = ''; }
+        try {
+          media?.getTracks().forEach(t => t.stop());
+          if (cam.value === 'screen') {   // the browser's own screen sharing (no virtual camera needed), with the microphone
+            const scr = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30 }, audio: false });
+            const au = mic.value === 'none' ? null : await navigator.mediaDevices.getUserMedia({ audio: mic.value ? { deviceId: { exact: mic.value } } : true }).catch(() => null);
+            media = new MediaStream([...scr.getVideoTracks(), ...(au ? au.getAudioTracks() : [])]);
+            scr.getVideoTracks()[0].onended = () => { if (!banner.joining) return; cam.value = cam.options[0]?.value || ''; get(); };   // "Stop sharing" in the browser: back to the camera
+          } else media = await navigator.mediaDevices.getUserMedia({ video: cam.value ? { deviceId: { exact: cam.value } } : true, audio: mic.value === 'none' ? false : mic.value ? { deviceId: { exact: mic.value } } : true });
+          prev.srcObject = media; st.textContent = '';
+        }
         catch (e) { st.textContent = '✗ ' + (e.name === 'NotAllowedError' ? 'The browser wasn’t allowed to use the camera.' : e.message); }
       };
       await get();
       try { const devs = await navigator.mediaDevices.enumerateDevices();
-        cam.replaceChildren(...devs.filter(x => x.kind === 'videoinput').map((x, i) => h('option', { value: x.deviceId }, x.label || `Camera ${i + 1}`)));
+        cam.replaceChildren(...devs.filter(x => x.kind === 'videoinput').map((x, i) => h('option', { value: x.deviceId }, x.label || `Camera ${i + 1}`)), ...(navigator.mediaDevices.getDisplayMedia ? [h('option', { value: 'screen' }, '🖥 Share screen')] : []));
         mic.replaceChildren(...devs.filter(x => x.kind === 'audioinput').map((x, i) => h('option', { value: x.deviceId }, x.label || `Microphone ${i + 1}`)), h('option', { value: 'none' }, 'No microphone'));
         const vt = media?.getVideoTracks()[0]?.getSettings().deviceId, at = media?.getAudioTracks()[0]?.getSettings().deviceId; if (vt) cam.value = vt; if (at) mic.value = at;
       } catch {}
