@@ -169,6 +169,28 @@ function liveKids(stream, sendWs) {
     get size() { return kids.size; }
   };
 }
+// Live chunks: every ~10 consecutive segments become one small torrent this node seeds (with hosting on), announced to
+// the hub with the list of segments inside. Viewers who missed segments (members saving the stream) fetch them over
+// BitTorrent from everyone who has the chunk, and check each segment's signature as usual.
+function chunker(stream, announce) {
+  let cur = [], busy = Promise.resolve(), announced = 0;
+  const flush = () => {
+    const segs = cur; cur = [];
+    if (!segs.length || !globalThis.openTubeHost?.seedChunk) return busy;
+    return (busy = busy.then(async () => {
+      const buf = Buffer.concat(segs.map(g => Buffer.from(g.d, 'base64'))), from = segs[0].n, to = segs.at(-1).n;
+      const ih = await globalThis.openTubeHost.seedChunk(buf, `live-${stream.slice(0, 8)}-${from}-${to}.bin`);
+      const c = { stream, from, to, o: segs[0].o, len: buf.length, ih, by: signer.pub, segs: segs.map(g => ({ n: g.n, o: g.o, h: g.h, sig: g.sig, ...(g.k ? { k: 1 } : {}) })) };
+      c.sig = await signer.sign(core.liveChunkPreimage(c));
+      announce(c);
+      if (!announced++) log(`[live] sharing the stream over BitTorrent too, in chunks of ~10 segments (first: ${ih})`);
+    }).catch(e => log('[live] chunk:', e.message)));
+  };
+  return {
+    seg(g) { if (!g?.d || cur.length && g.n !== cur.at(-1).n + 1) flush(); if (g?.d) cur.push(g); if (cur.length >= 10) flush(); },
+    end: () => flush()
+  };
+}
 // The site's live hub over a WebSocket, as this node's key: for broadcasting (OBS) or relaying (watch).
 function hubSocket(onMsg, onOpen) {
   let ws = null, ready = false, closed = false;
@@ -196,20 +218,24 @@ function liveRelays() {
   const chans = new Set(people.flatMap(u => { const m = engine.memberships.get(u); return [...(m?.own || []), ...(m?.joined || [])]; }));
   const want = new Map();
   for (const c of chans) { const d = engine.chains.has(c) && engine.derive(c); if (!d?.liveNow) continue; for (const lb of d.liveNow) if (lb.author !== signer.pub && lb.payload.relay !== signer.pub) want.set(lb.payload.stream, c); }
+  const fromBrowser = (stream, chain) => { const d = engine.chains.has(chain) && engine.derive(chain), lb = d?.streams?.find(b => b.payload.stream === stream); return !lb || lb.author === d.owner && !lb.payload.relay; };   // a computer streaming makes its own chunks
   for (const [stream, x] of relayAsked) { if (Date.now() - x.at > 24 * 3600000 || engine.chains.has(x.chain) && engine.derive(x.chain)?.liveEnds?.has(stream)) relayAsked.delete(stream); else want.set(stream, x.chain); }
   for (const [stream, r] of relaying) if (!want.has(stream)) { r.close(); relaying.delete(stream); }
   for (const [stream, chain] of want) {
     if (relaying.has(stream) || relaying.size >= 6) continue;
     const kids = liveKids(stream, (m) => hub.send(m));
+    const chunks = fromBrowser(stream, chain) ? chunker(stream, (c) => hub.send({ t: 'lchunk', stream, chunk: c })) : null;
     let got = 0;
     const hub = hubSocket((m) => {
-      if (m.t === 'seg' && m.seg?.stream === stream) { kids.seg(m.seg); if (!got++) log(`[live] relaying “${engine.derive(chain)?.streams.find(b => b.payload.stream === stream)?.payload.title || 'a stream'}” on ${engine.derive(chain)?.profile.name || chain.slice(0, 8)} to viewers over WebRTC`); }
+      if (m.t === 'seg' && m.seg?.stream === stream) { kids.seg(m.seg); chunks?.seg(m.seg); if (!got++) log(`[live] relaying “${engine.derive(chain)?.streams.find(b => b.payload.stream === stream)?.payload.title || 'a stream'}” on ${engine.derive(chain)?.profile.name || chain.slice(0, 8)} to viewers over WebRTC`); }
       else if (m.t === 'child' && m.dc) kids.child(m.peer);
       else if (m.t === 'unchild') kids.unchild(m.peer);
       else if (m.t === 'signal') kids.signal(m.from, m.data);
       else if (m.t === 'ended' || m.t === 'nostream') { r.close(); relaying.delete(stream); }
-    }, () => { kids.close(); if (RTCPC) hub.send({ t: 'watch', stream, segOnly: true, media: false, dcSlots: 16, slots: 0 }); });
-    const r = { close: () => { hub.send({ t: 'leave', stream }); kids.close(); hub.close(); } };
+      else if (m.t === 'viewers') liveStats.set(stream, m);
+    }, () => { kids.close(); if (RTCPC) hub.send({ t: 'watch', stream, segOnly: true, media: false, dcSlots: 16, slots: 0, relay: true }); });
+    const alive = setInterval(() => hub.send({ t: 'alive', stream }), 15000);
+    const r = { close: () => { clearInterval(alive); (chunks?.end() || Promise.resolve()).then(() => { hub.send({ t: 'leave', stream }); kids.close(); hub.close(); }); } };
     relaying.set(stream, r);
   }
 }
@@ -225,22 +251,23 @@ function liveSink(chain, stream, mime) {
   let send, finish;
   const site = process.env.NODE_SITE;
   if (!site) {   // this node is the site: feed its own hub
-    const src = liveHub.local(stream, chain, mime);
-    send = (g) => src.seg(g); finish = () => src.end();
+    const src = liveHub.local(stream, chain, mime), chunks = chunker(stream, (c) => src.chunk(c));
+    send = (g) => { src.seg(g); chunks.seg(g); }; finish = () => chunks.end().then(() => src.end());
   } else {       // relay to the site's hub as the broadcaster, and feed the segment tree ourselves
     const pending = []; let on = false;
     const kids = liveKids(stream, (m) => hub.send(m));
+    const chunks = chunker(stream, (c) => hub.send({ t: 'lchunk', stream, chunk: c }));
     const flush = () => { while (on && hub.ready && pending.length) hub.send({ t: 'seg', seg: pending.shift() }); };
     const hub = hubSocket((m) => {
       if (m.t === 'broadcasting') { on = true; flush(); log('[obs] relaying to ' + site + (RTCPC ? ' (and to viewers directly, over WebRTC)' : '')); }
       else if (m.t === 'child' && m.dc) kids.child(m.peer);
       else if (m.t === 'unchild') kids.unchild(m.peer);
       else if (m.t === 'signal') kids.signal(m.from, m.data);
-      else if (m.t === 'viewers') liveStats.set(stream, m);
+      else if (m.t === 'viewers') { liveStats.set(stream, m); liveStats.current = m; }
       else if (m.t === 'error') log('[obs] the site refused the stream:', m.error);
     }, () => { on = false; kids.close(); hub.send({ t: 'broadcast', stream, chain, mime, rtc: false, dcSlots: RTCPC ? Number(process.env.LIVE_DC_SLOTS) || 8 : 0 }); });
-    send = (g) => { pending.push(g); flush(); kids.seg(g); };
-    finish = () => { const done = () => { hub.send({ t: 'leave', stream }); ended = true; kids.close(); setTimeout(() => hub.close(), 500); };
+    send = (g) => { pending.push(g); flush(); kids.seg(g); chunks.seg(g); };
+    finish = () => { const done = () => { chunks.end().then(() => setTimeout(() => { hub.send({ t: 'leave', stream }); ended = true; kids.close(); setTimeout(() => hub.close(), 500); }, 500)); };
       const wait = () => (pending.length && Date.now() - t0 < 15000 ? setTimeout(wait, 200) : done()); const t0 = Date.now(); wait(); };
   }
   return { init: (bytes) => seg(bytes, false), fragment: (bytes, k) => seg(bytes, k), end: () => { queue.then(() => finish()); } };
@@ -254,7 +281,7 @@ const newStreamKey = () => 'ot-' + crypto.randomBytes(12).toString('base64url');
 const obsStore = (() => { try { return JSON.parse(fs.readFileSync(obsFile, 'utf8')); } catch { return {}; } })();
 if (!obsStore.profiles) { const { profiles, users, ...legacy } = obsStore; obsStore.profiles = legacy.key ? { [GRANT?.user || 'owner']: legacy } : {}; for (const k of Object.keys(legacy)) delete obsStore[k]; }
 obsStore.users ||= {};   // user key -> { can: ['obs', 'host', 'manage'], name }
-const saveObs = () => fs.writeFileSync(obsFile, JSON.stringify(obsStore, null, 2), { mode: 0o600 });
+const saveObs = () => fs.writeFileSync(obsFile, JSON.stringify(obsStore, (k, v) => k.startsWith('_') || k === 'owner' ? undefined : v, 2), { mode: 0o600 });   // _tiles etc. are runtime only
 function profileOf(user) {
   const p = obsStore.profiles[user] ||= {};
   Object.assign(p, { key: p.key || newStreamKey(), channel: p.channel ?? null, title: p.title || 'Live', youtube: p.youtube || { key: '', on: false }, tile: p.tile || { on: false, n: 4 } });
@@ -300,6 +327,7 @@ function rtmpProbe(host, port) {   // TCP connect + RTMP C0/C1; an RTMP server a
   });
 }
 const ffmpegOk = (() => { try { return !spawnSync('ffmpeg', ['-version']).error; } catch { return false; } })();
+if (!ffmpegOk && process.env.RTMP_PORT) log('[obs] ffmpeg isn’t installed here, so YouTube forwarding and group streams (tiles) are off. Install it (Linux: sudo apt install ffmpeg) and restart OpenTube.');
 function youtubeOut(log, obsCfg) {   // forward the stream (fMP4, H.264 + AAC) to YouTube, unchanged
   if (!obsCfg.youtube.on || !obsCfg.youtube.key || !ffmpegOk) return null;
   const ff = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'mp4', '-i', 'pipe:0', '-c', 'copy', '-f', 'flv', 'rtmp://a.rtmp.youtube.com/live2/' + obsCfg.youtube.key], { stdio: ['pipe', 'ignore', 'pipe'] });
@@ -373,12 +401,16 @@ function goLiveSink(log, obsCfg) {
 // Tiles: several OBS streams (keys <key>, <key>-2, <key>-3, <key>-4) combined by ffmpeg into one picture (2 → side by
 // side, 3-4 → 2×2), audio mixed. It starts when every slot has connected, or 20 s after the first with those present.
 function tileSlot(n, log, obsCfg) {
-  const tiles = obsCfg._tiles ||= { slots: new Map(), ff: null, timer: null };   // each person's group stream is their own
-  const slot = { n, chunks: [], pipe: null, ended: false };
+  // each person's group stream is their own; this state lives only in memory (never in obs.json)
+  const tiles = obsCfg._tiles ||= { slots: new Map(), ff: null, timer: null, restart: false };
+  const old = tiles.slots.get(n); if (old && !old.ended) { old.ended = true; try { old.pipe?.end(); } catch {} }   // the same key reconnecting replaces itself
+  const slot = { n, init: null, chunks: [], pipe: null, ended: false };
   tiles.slots.set(n, slot);
-  const startTiles = () => {
-    if (tiles.ff) return; clearTimeout(tiles.timer);
-    const list = [...tiles.slots.values()].filter(s => !s.ended).sort((a, b) => a.n - b.n); if (!list.length) return;
+  const active = () => [...tiles.slots.values()].filter(s => !s.ended).sort((a, b) => a.n - b.n);
+  const restart = (why) => { if (!tiles.ff) return startTiles(); log(`[tiles] ${why}: restarting the group picture`); tiles.restart = true; tiles.ff.kill('SIGTERM'); };
+  function startTiles() {
+    if (tiles.ff) return; clearTimeout(tiles.timer); tiles.timer = null;
+    const list = active().filter(s => s.init); if (!list.length) return;
     const k = list.length, lay = { 1: '0_0', 2: '0_0|w0_0', 3: '0_0|w0_0|0_h0', 4: '0_0|w0_0|0_h0|w0_h0' }[k];
     const vf = list.map((s, i) => `[${i}:v]scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2,setsar=1[v${i}]`).join(';')
       + ';' + list.map((s, i) => `[v${i}]`).join('') + (k > 1 ? `xstack=inputs=${k}:layout=${lay}[v]` : 'copy[v]')
@@ -390,16 +422,29 @@ function tileSlot(n, log, obsCfg) {
     ff.stderr.on('data', d => log('[tiles]', String(d).trim().slice(0, 200)));
     const out = goLiveSink(log, obsCfg); let first = true;
     ff.stdout.on('data', mp4Boxes((init) => out.init(init, 'video/mp4; codecs="avc1.640028,mp4a.40.2"').catch(e => log('[tiles]', e.message)), (frag) => out.fragment(frag, first ? (first = false, true) : false)));
-    ff.on('exit', () => { out.end(); tiles.ff = null; tiles.slots.clear(); log('[tiles] ended'); });
-    list.forEach((s, i) => { s.pipe = ff.stdio[3 + i]; s.pipe.on('error', () => {}); for (const c of s.chunks) s.pipe.write(c); s.chunks = []; });
-    log(`[tiles] combining ${k} stream(s)`);
-  };
-  if (!tiles.timer && !tiles.ff) tiles.timer = setTimeout(startTiles, 20000);
-  const write = (b) => { if (slot.pipe) { try { slot.pipe.write(b); } catch {} } else slot.chunks.push(b); };
+    ff.on('exit', (code) => {
+      out.end(); tiles.ff = null; for (const s of tiles.slots.values()) s.pipe = null;
+      const again = tiles.restart || (code && active().length); tiles.restart = false;
+      if (again && active().length) { for (const s of active()) s.chunks = []; setTimeout(startTiles, 1500); }   // with whoever is still streaming
+      else { for (const [k_, s] of tiles.slots) if (s.ended) tiles.slots.delete(k_); log('[tiles] ended'); }
+    });
+    list.forEach((s, i) => { s.pipe = ff.stdio[3 + i]; s.pipe.on('error', () => {}); s.pipe.write(s.init); for (const c of s.chunks) s.pipe.write(c); s.chunks = []; });
+    log(`[tiles] combining ${k} stream(s): ${list.map(s => s.n === 1 ? 'key' : 'key-' + s.n).join(', ')}`);
+  }
+  const write = (b) => { if (slot.pipe) { try { slot.pipe.write(b); } catch {} } else { slot.chunks.push(b); if (slot.chunks.length > 600) slot.chunks.splice(0, 300); } };
   return {
-    init(bytes) { write(bytes); if (tiles.slots.size >= obsCfg.tile.n) startTiles(); },
+    init(bytes) {
+      slot.init = bytes;
+      if (tiles.ff) return restart(`${n === 1 ? 'key' : 'key-' + n} joined`);
+      if (active().filter(s => s.init).length >= obsCfg.tile.n) startTiles();
+      else if (!tiles.timer) tiles.timer = setTimeout(startTiles, 20000);   // don't wait forever for everyone
+    },
     fragment(bytes) { write(bytes); },
-    end() { slot.ended = true; try { slot.pipe?.end(); } catch {} if ([...tiles.slots.values()].every(s => s.ended)) { tiles.ff?.kill('SIGTERM'); tiles.slots.clear(); clearTimeout(tiles.timer); tiles.timer = null; } }
+    end() {
+      slot.ended = true; try { slot.pipe?.end(); } catch {}
+      if (!active().length) { tiles.ff?.kill('SIGTERM'); clearTimeout(tiles.timer); tiles.timer = null; }
+      else if (tiles.ff && slot.pipe !== undefined) restart(`${n === 1 ? 'key' : 'key-' + n} left`);
+    }
   };
 }
 var armed = null, announceSoon = null;
@@ -623,7 +668,7 @@ async function control(c) {
       }
       const { portHolders } = await import('./rtmp.mjs');
       const bound = portHolders(Number(process.env.RTMP_PORT) || 0).map(x => ({ addr: x.addr, pid: x.pid, self: x.pid === process.pid, cmd: x.pid === process.pid ? '' : x.cmd.slice(0, 120) }));
-      data = { bound, version: { name: core.VERSION, build: BUILD, files: FILES }, key: obsCfg.key, port: Number(process.env.RTMP_PORT) || null, ips, publicIp: await publicIp(), listen: globalThis.openTubeRtmp?.status?.().host || process.env.RTMP_HOST || '::', lastConn: globalThis.openTubeRtmp?.lastConn?.() || null, publicHost: process.env.PUBLIC_URL ? new URL(process.env.PUBLIC_URL).hostname : null, channel: obsCfg.channel, title: obsCfg.title,
+      data = { watching: globalThis.openTubeRtmp?.status?.().live && liveStats.current ? liveStats.current.viewers : null, bound, version: { name: core.VERSION, build: BUILD, files: FILES }, key: obsCfg.key, port: Number(process.env.RTMP_PORT) || null, ips, publicIp: await publicIp(), listen: globalThis.openTubeRtmp?.status?.().host || process.env.RTMP_HOST || '::', lastConn: globalThis.openTubeRtmp?.lastConn?.() || null, publicHost: process.env.PUBLIC_URL ? new URL(process.env.PUBLIC_URL).hostname : null, channel: obsCfg.channel, title: obsCfg.title,
         linked: !!(obsCfg.channel && engine.derive(obsCfg.channel)?.relays.has(signer.pub)), youtube: { on: obsCfg.youtube.on, set: !!obsCfg.youtube.key }, tile: obsCfg.tile, ffmpeg: ffmpegOk, node: signer.pub, live: globalThis.openTubeRtmp?.status?.() || null };
     }
     else if (c.cmd === 'status') data = { height: engine.main.best.height, peers: peers.size, chains: engine.chains.size, host: globalThis.openTubeHost?.status() || null, obs: globalThis.openTubeRtmp?.status?.() || null };

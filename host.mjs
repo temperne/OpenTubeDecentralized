@@ -30,7 +30,11 @@ export async function startHost({ engine, nodeKey, user, users = () => [], video
   // DHT and TCP/UDP trackers too: ordinary BitTorrent apps can share these videos with this node, and it bridges them to browsers.
   const { createHash } = await import('node:crypto');
   const peerId = nodeKey ? createHash('sha1').update('opentube-node:' + nodeKey).digest('hex') : undefined;   // browsers recognize this node's bytes
-  const client = new WebTorrent({ dht: true, lsd: false, natUpnp: false, natPmp: false, peerId });
+  // WebRTC, so browsers can swarm with this node (they only speak BitTorrent over WebRTC). Without it the node only
+  // reaches ordinary BitTorrent apps (TCP/UDP, DHT).
+  const wrtc = await import('webrtc-polyfill').then(m => ({ RTCPeerConnection: m.RTCPeerConnection, RTCSessionDescription: m.RTCSessionDescription, RTCIceCandidate: m.RTCIceCandidate })).catch(() => null);
+  if (!wrtc) log('[host] webrtc-polyfill missing: browsers can’t download from this node over BitTorrent (npm install webrtc-polyfill)');
+  const client = new WebTorrent({ dht: true, lsd: false, natUpnp: false, natPmp: false, peerId, ...(wrtc ? { tracker: { wrtc } } : {}) });
   client.on('error', (e) => log('[host] webtorrent:', e.message));
   if (tabs) {   // pay per piece (core: createPieceTabs): viewers pay this node for the pieces it sends, and it pays for what it downloads
     client.on('add', (t) => tabs.attach(t));
@@ -244,8 +248,15 @@ export async function startHost({ engine, nodeKey, user, users = () => [], video
     }
   }
   setInterval(settleRecordings, 15000);
+  // live chunks (see liveChunkPreimage in the core): a few seconds of a stream as one small torrent, shared for 6 hours
+  function seedChunk(buf, name) {
+    return new Promise((res, rej) => {
+      const t = client.seed(buf, { announce: trackers, name }, (t) => { setTimeout(() => t.destroy(), 6 * 3600000); res(t.infoHash); });
+      t?.on?.('error', rej);
+    });
+  }
   return {
-    recordingPath, seedRecording,
+    recordingPath, seedRecording, seedChunk,
     follow, piece, complete, command, files,
     noteProof(ih, key, ok) { const m = proven.get(ih) || proven.set(ih, new Map()).get(ih); if (ok) m.set(key, Date.now()); else m.delete(key); },
     status: () => {
