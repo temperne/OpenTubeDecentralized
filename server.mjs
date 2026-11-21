@@ -206,7 +206,19 @@ function meetPlaces() {
   try { for (const e of JSON.parse(fs.readFileSync(path.join(DIR, 'seeds.json'), 'utf8')).entry || []) add(typeof e === 'string' ? e : e?.url); } catch {}
   return [...new Set(out)].slice(0, 16);
 }
-const defaultHubUrl = () => isEntry() || !process.env.NODE_SITE ? ownHubUrl() : process.env.NODE_SITE.replace(/^http/, 'ws') + '/live';
+const siteHubUrl = () => process.env.NODE_SITE ? process.env.NODE_SITE.replace(/^http/, 'ws') + '/live' : null;   // the site's: fallback only
+// public entry nodes this computer knows (signed statuses, newest first): { node, url (its /live) }
+function entryHubs() {
+  return [...engine.nodes.values()].filter(n => n.node !== signer.pub && n.roles?.includes('entry') && Date.now() - n.at < 10 * 60000)
+    .sort((a, b) => b.at - a.at).map(n => { const a = (n.addrs || []).find(x => /^https:\/\//.test(x)); return a ? { node: n.node, url: a.replace(/^http/, 'ws').replace(/\/+$/, '') + '/live' } : null; }).filter(Boolean);
+}
+// the hub this computer's own streams go on: its own (it's an entry node); else a public entry node; the site's last
+function pickNodeHub() {
+  if (isEntry()) return { node: signer.pub, url: ownHubUrl() };
+  const e = entryHubs()[0]; if (e) return e;
+  return siteHubUrl() ? { node: null, url: siteHubUrl() } : { node: signer.pub, url: ownHubUrl() };
+}
+const defaultHubUrl = () => pickNodeHub().url;
 function hubUrlOfNode(hub) {   // a node's live hub: ours, or its public (else any) address
   if (hub === signer.pub) return ownHubUrl();
   const n = engine.nodes.get(hub), a = (n?.addrs || []).find(x => /^https:/.test(x)) || (n?.addrs || []).find(x => !/localhost|127\./.test(x)) || n?.addrs?.[0];
@@ -214,7 +226,7 @@ function hubUrlOfNode(hub) {   // a node's live hub: ours, or its public (else a
 }
 function hubUrlFor(chain, stream) {   // the hub a stream lives on: named in its live block (its `hub` node), else the site's
   const lb = engine.chains.has(chain) && engine.derive(chain)?.streams?.find(b => b.payload.stream === stream), hub = lb?.payload?.hub;
-  if (!hub) return process.env.NODE_SITE ? process.env.NODE_SITE.replace(/^http/, 'ws') + '/live' : ownHubUrl();
+  if (!hub) return siteHubUrl() || entryHubs()[0]?.url || ownHubUrl();   // older streams name no hub: they're on the site's
   if (hub === signer.pub) return ownHubUrl();
   const n = engine.nodes.get(hub), a = (n?.addrs || []).find(x => /^https:/.test(x)) || (n?.addrs || []).find(x => !/localhost|127\./.test(x)) || n?.addrs?.[0];
   return a ? a.replace(/^http/, 'ws').replace(/\/+$/, '') + '/live' : defaultHubUrl();
@@ -240,7 +252,7 @@ function hubSocket(onMsg, onOpen, url = defaultHubUrl()) {
 const relaying = new Map();   // stream -> { hub, kids }
 const relayAsked = new Map();  // stream -> { chain, at }: the owner's browser asked us to relay it (they went live)
 function liveRelays() {
-  if (!process.env.NODE_SITE || !GRANT || process.env.LIVE_RELAY === '0') return;
+  if (!GRANT || process.env.LIVE_RELAY === '0') return;
   const people = [GRANT.user, ...Object.keys(obsStore.users)];
   const chans = new Set(people.flatMap(u => { const m = engine.memberships.get(u); return [...(m?.own || []), ...(m?.joined || [])]; }));
   const want = new Map();
@@ -315,7 +327,7 @@ function relayRecorder(chain, stream, title) {
     }
   };
 }
-function liveSink(chain, stream, mime) {
+function liveSink(chain, stream, mime, hubUrl = defaultHubUrl()) {
   let n = 0, o = 0, queue = Promise.resolve(), ended = false;
   const seg = (bytes, k) => (queue = queue.then(async () => {
     const g = { stream, n: n++, o, h: crypto.createHash('sha256').update(bytes).digest('hex') };
@@ -325,8 +337,7 @@ function liveSink(chain, stream, mime) {
     if (process.env.LIVE_DEBUG && g.n % 5 === 0) log('[live] segment', g.n, bytes.length, 'bytes');
   }).catch(e => log('[obs] segment failed:', e.message)));
   let send, finish;
-  const site = process.env.NODE_SITE;
-  if (!site && !isEntry()) {   // this node is the site: feed its own hub
+  if (hubUrl === ownHubUrl() && !isEntry() && !process.env.NODE_SITE) {   // this node is the site (self-hosted): feed its own hub
     const src = liveHub.local(stream, chain, mime), chunks = chunker(stream, (c) => src.chunk(c));
     send = (g) => { src.seg(g); chunks.seg(g); }; finish = () => chunks.end().then(() => src.end());
   } else {       // relay to the site's hub as the broadcaster, and feed the segment tree ourselves
@@ -335,16 +346,16 @@ function liveSink(chain, stream, mime) {
     const chunks = chunker(stream, (c) => hub.send({ t: 'lchunk', stream, chunk: c }));
     const flush = () => { while (on && hub.ready && pending.length) hub.send({ t: 'seg', seg: pending.shift() }); };
     const hub = hubSocket((m) => {
-      if (m.t === 'broadcasting') { on = true; refused = 0; flush(); log('[obs] relaying to ' + site + (RTCPC ? ' (and to viewers directly, over WebRTC)' : '')); }
+      if (m.t === 'broadcasting') { on = true; refused = 0; flush(); log('[obs] streaming through ' + hubUrl.replace(/^wss?:\/\//, '').replace(/\/live$/, '') + (RTCPC ? ' (and to viewers directly, over WebRTC)' : '')); }
       else if (m.t === 'child' && m.dc) kids.child(m.peer);
       else if (m.t === 'unchild') kids.unchild(m.peer);
       else if (m.t === 'signal') kids.signal(m.from, m.data);
       else if (m.t === 'viewers') { liveStats.set(stream, m); liveStats.current = m; }
       else if (m.t === 'error') {   // usually: the site hasn't received our live block yet, so it doesn't know we may broadcast. Ask again.
-        if (++refused === 1 || refused % 15 === 0) log('[obs] the site refused the stream:', m.error, refused < 60 ? '(asking again)' : '');
+        if (++refused === 1 || refused % 15 === 0) log('[obs] the hub refused the stream:', m.error, refused < 60 ? '(asking again)' : '');
         if (refused < 60 && !ended) setTimeout(() => hub.send(hello()), 2000);
       }
-    }, () => { on = false; kids.close(); hub.send(hello()); });
+    }, () => { on = false; kids.close(); hub.send(hello()); }, hubUrl);
     let refused = 0;
     const hello = () => ({ t: 'broadcast', stream, chain, mime, rtc: false, dcSlots: RTCPC ? Number(process.env.LIVE_DC_SLOTS) || 8 : 0 });
     send = (g) => { pending.push(g); flush(); kids.seg(g); chunks.seg(g); };
@@ -460,7 +471,7 @@ function recorder(chain, title, log) {
   };
 }
 function goLiveSink(log, obsCfg) {
-  let real = null, yt = youtubeOut(log, obsCfg), queued = [], stream = null, chain = null, rec = null;
+  let real = null, yt = youtubeOut(log, obsCfg), queued = [], stream = null, chain = null, rec = null, hubPick = null;
   return {
     async init(bytes, mime) {
       const armedOld = obsCfg.owner ? armed?.() : null;   // the older "Go live → pick this computer" flow (owner only)
@@ -468,10 +479,11 @@ function goLiveSink(log, obsCfg) {
       else {
         chain = obsCfg.channel; if (!chain || !engine.chains.get(chain)) throw new Error('no channel linked to this computer');
         stream = crypto.randomBytes(32).toString('hex');
-        await engine.append(chain, { type: 'live', title: (obsCfg.title || 'Live').slice(0, 140), stream, mime, ...(isEntry() ? { hub: signer.pub } : {}) }); myLive.add(stream);
+        hubPick = pickNodeHub();   // viewers find the stream on the hub its live block names
+        await engine.append(chain, { type: 'live', title: (obsCfg.title || 'Live').slice(0, 140), stream, mime, ...(hubPick.node ? { hub: hubPick.node } : {}) }); myLive.add(stream);
         log(`[obs] live on ${engine.derive(chain)?.profile.name || chain.slice(0, 8)}: “${obsCfg.title}”`);
       }
-      real = liveSink(chain, stream, mime); real.init(bytes); yt?.write(bytes);
+      real = liveSink(chain, stream, mime, hubPick?.url || hubUrlFor(chain, stream)); real.init(bytes); yt?.write(bytes);
       if (!armedOld) { rec = recorder(chain, (obsCfg.title || 'Live').slice(0, 100), log); rec.write(bytes); }   // the older flow records in the owner's browser
       for (const [b, k] of queued) { real.fragment(b, k); yt?.write(b); rec?.write(b); } queued = [];
     },
@@ -1137,17 +1149,38 @@ function acceptSocket(req, socket, role = 'node') {
   send({ t: 'nodehi', node: signer.pub }, id);
 }
 
-// ---- outgoing links to other home nodes (federation)
+// ---- outgoing links to other nodes: entry nodes (public OpenTube computers) first; PEERS (the launcher passes the
+// site's own node) is kept only while no entry node answers, so the site isn't needed.
+const dialed = new Map();   // url -> { ws, closed }
 function dial(url) {
   if (typeof WebSocket !== 'function') return log('PEERS needs Node 22+ (global WebSocket)');
-  const id = 'node:' + url;
-  const ws = new WebSocket(url);
-  ws.onopen = () => { peers.set(id, { send: (s) => ws.readyState === 1 && ws.send(s), label: url }); log(`linked to ${url}`); engine.peerJoined(id); };
-  ws.onmessage = (e) => { try { engine.handle(JSON.parse(e.data), id); } catch {} };
-  ws.onclose = () => { peers.delete(id); setTimeout(() => dial(url), 10000); };
-  ws.onerror = () => {};
+  if (dialed.has(url)) return;
+  const id = 'node:' + url, d = { ws: null, closed: false, tries: 0 }; dialed.set(url, d);
+  const open = () => {
+    let ws; try { ws = d.ws = new WebSocket(url); } catch { return; }
+    ws.onopen = () => { d.tries = 0; peers.set(id, { send: (s) => ws.readyState === 1 && ws.send(s), label: url }); log(`linked to ${url}`); engine.peerJoined(id); };
+    ws.onmessage = (e) => { try { engine.handle(JSON.parse(e.data), id); } catch {} };
+    ws.onclose = () => { peers.delete(id); if (!d.closed) setTimeout(open, Math.min(10 * 60000, 10000 * 2 ** d.tries++)); };
+    ws.onerror = () => {};
+  };
+  open();
 }
-PEERS.forEach(dial);
+const undial = (url) => { const d = dialed.get(url); if (!d) return; d.closed = true; try { d.ws?.close(); } catch {} dialed.delete(url); log(`let go of ${url} (an entry node answers)`); };
+const ownPublic = () => (process.env.PUBLIC_URL || '').replace(/\/+$/, '');
+function entryPeerUrls() {
+  const out = [];
+  const add = (u) => { u = String(u || '').replace(/\/+$/, ''); if (/^https:\/\//.test(u) && u !== ownPublic()) out.push(u.replace(/^http/, 'ws') + '/ot'); };
+  for (const h of entryHubs()) add(h.url.replace(/^ws/, 'http').replace(/\/live$/, ''));
+  try { for (const e of JSON.parse(fs.readFileSync(path.join(DIR, 'seeds.json'), 'utf8')).entry || []) add(typeof e === 'string' ? e : e?.url); } catch {}
+  return [...new Set(out)];
+}
+function maintainPeers() {
+  const entries = entryPeerUrls();
+  for (const u of entries.slice(0, 3)) dial(u);
+  const entryUp = entries.some(u => peers.has('node:' + u));
+  for (const u of PEERS) { if (entryUp && u === siteHubUrl()?.replace(/\/live$/, '/ot')) undial(u); else if (!entryUp) dial(u); }
+}
+maintainPeers(); setInterval(maintainPeers, 60000);
 
 // ---- the peer mesh: join the network's WebRTC room like every browser does, so browsers and other nodes connect to
 // this node directly (no server in between), introduced by any tracker: the site's, this node's own, public ones.

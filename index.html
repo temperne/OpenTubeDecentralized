@@ -479,7 +479,7 @@ function validPayload(chain, b, CFG) {
     case 'video': return kind === 'channel' && isStr(p.title, LIMITS.title) && isStr(p.desc, LIMITS.text) && isHex(p.infohash, 40) && isStr(p.file, 200) && Number.isSafeInteger(p.size) && isImg(p.thumb) && (p.comments === undefined || ['anyone', 'approved', 'off'].includes(p.comments))
       && (p.stream === undefined || isHex(p.stream, 64)) && validTags(p.tags);   // stream: the recording of a live stream
     // A live stream starts. Its media goes through the live hub (see createLiveHub), signed by this key or by `relay`
-    // (a home node the owner lets sign for this stream, e.g. for OBS ingest). Chat is comments on this block.
+    // (a computer the owner lets sign for this stream, e.g. for OBS ingest). Chat is comments on this block.
     case 'live': return kind === 'channel' && isStr(p.title, LIMITS.title) && p.title.trim().length > 0 && isHex(p.stream, 64) && isStr(p.mime, 80) && (p.relay === undefined || isKey(p.relay));
     case 'liveend': return kind === 'channel' && isHex(p.stream, 64) && ['published', 'discarded', 'ended'].includes(p.outcome) && liveStatsOk(p.stats);
     case 'settings': return kind === 'channel' && isHex(p.target, 64) && ['default', 'anyone', 'approved', 'off'].includes(p.comments);
@@ -1241,7 +1241,7 @@ function rankVideos(chainList, now = Date.now(), paid = null, postOk = null) {
   return items.sort((a, b) => b.s - a.s).slice(0, RANK.items);
 }
 
-// ---- a WebTorrent-compatible tracker, so a home node can introduce video peers itself.
+// ---- a WebTorrent-compatible tracker, so every OpenTube computer (node) is a meet place for video peers.
 // Speaks the WebSocket tracker protocol: announce with WebRTC offers, relay answers, scrape.
 function createTracker() {
   const swarms = new Map();   // info_hash -> Map(peer_id -> socket id)
@@ -1290,7 +1290,7 @@ function createTracker() {
   };
 }
 
-// ---- live streams. Every home node runs this hub at /live.
+// ---- live streams. Every OpenTube computer (node) runs this hub at /live; entry nodes are the public ones.
 // The broadcaster's browser sends WebRTC to a tree of viewers: verified members of the channel (people who joined it)
 // get the slots right under the broadcaster, everyone else hangs under members, and each viewer can relay to a few
 // more. The hub only introduces peers and relays their WebRTC signalling. It also relays SEGMENTS: ~1 s pieces of the
@@ -1472,7 +1472,7 @@ function createLiveHub(o) {   // o: { ownerOf(chain) -> key|null, signerOf(chain
         return out(sid, { t: 'broadcasting', stream: m.stream });
       }
       if (m.t === 'ingest') {   // the owner asks for a stream key so OBS can send this stream to the node
-        if (!o.ingest) return out(sid, { t: 'error', stream: m.stream, error: 'This home node can’t receive OBS streams (only server.mjs can).' });
+        if (!o.ingest) return out(sid, { t: 'error', stream: m.stream, error: 'This hub can’t receive OBS streams (only an OpenTube computer can).' });
         if (!isHex(m.stream, 64) || !isHex(m.chain, 64) || !isStr(m.mime, 80) || streams.has(m.stream)) return;
         const owner = o.ownerOf(m.chain);
         if (!owner || !s.keys.has(owner)) return out(sid, { t: 'error', stream: m.stream, error: 'not the owner of this channel' });
@@ -1889,7 +1889,7 @@ async function createEngine(o) {
       chain.stats.lastResponse = Date.now();
       await insert(chain.id, m.b.slice(0, 5000), from);
     } else if (m.t === 'watch') {
-      // Watch-group traffic: hubs (home nodes) relay it to everyone; browsers hand it to the player.
+      // Watch-group traffic: hubs (OpenTube computers) relay it to everyone; browsers hand it to the player.
       if (o.relayWatch) send(m);
       o.onWatch?.(m, from);
     } else if (m.t === 'tx') {
@@ -2378,10 +2378,9 @@ function connectNode(url) {
     ws.onopen = () => {
       entry.tries = 0;
       addLink(id, 'node', (m) => ws.readyState === 1 && ws.send(JSON.stringify(m)), label);
-      if (url === homeNodeUrl()) fetch(url.replace(/^ws/, 'http').replace(/\/ot$/, '/status')).then(r => r.json()).then(j => { homeRanker = j.ranker || null; scheduleRender(); }).catch(() => {});
     };
     ws.onmessage = (e) => { try { deliver(JSON.parse(e.data), id); } catch {} };
-    ws.onclose = () => { dropLink(id); setTimeout(open, Math.min(url === homeNodeUrl() ? 30 * 60000 : 120000, 3000 * 2 ** entry.tries++)); };   // keep trying, slower and slower (the site's own node: up to every 30 min, it may be out of quota)
+    ws.onclose = () => { dropLink(id); if (entry.closed) return; setTimeout(open, Math.min(url === homeNodeUrl() ? 30 * 60000 : 120000, 3000 * 2 ** entry.tries++)); };   // keep trying, slower and slower (the site's own node: up to every 30 min, it may be out of quota)
   };
   open();
 }
@@ -2401,7 +2400,10 @@ function maintainNodes() {
   const home = homeNodeUrl(), all = nodeUrls(), entries = all.filter(u => u !== home);
   for (const u of entries) { if (nodeSockets.size >= MAX_NODES) break; connectNode(u); }
   const entryUp = entries.some(u => net.links?.has?.('node:' + u));
-  if (entryUp) return;
+  if (entryUp) {   // an entry node answers: let go of the site's own node (it's only the fallback)
+    const s = home && nodeSockets.get(home); if (s) { s.closed = true; try { s.ws?.close(); } catch {} nodeSockets.delete(home); }
+    return;
+  }
   if (!entries.length || (entryWaitSince ||= Date.now()) < Date.now() - 6000) { if (home) connectNode(home); }
 }
 function startLocal() {
@@ -2470,7 +2472,7 @@ async function endOnChain(chainId, stream) {
   if (broadcasts.get(chainId)?.stream === stream && !broadcasts.get(chainId).ended) return;
   try { await append(chainId, { type: 'liveend', stream, outcome: 'ended' }); } catch (e) { console.warn('liveend', e); }
 }
-// Video peers are introduced by the home node's own tracker first; public trackers are a fallback.
+// Video peers meet at entry nodes' trackers (meet places) first; public trackers next; the site's own last.
 const homeTracker = params.get('net') ? null : homeNodeUrl()?.replace(/\/ot$/, '/tracker');
 // Trackers only introduce peers (any one is enough). Built in: this site's and the network's defaults; added: the current
 // public WebSocket trackers from github.com/ngosang/trackerslist (browsers can only use wss:// trackers), remembered
@@ -2524,7 +2526,7 @@ if (!params.get('trackers')) {
     add(list); try { localStorage.setItem('opentube-trackers', JSON.stringify(list)); } catch {}
   } catch {}
 }
-let homeRanker = null;  // the ranking list run by the node that served this page
+let homeRanker = null;  // the network's ranking list (named in entry nodes' status; the site's only as a fallback)
 const MIRROR = isKey(params.get('mirror')) ? params.get('mirror') : null;  // see "mirror mode" at the end
 
 // ---------------------------------------------------------------- video transport (WebTorrent)
@@ -3086,21 +3088,35 @@ function clusterAt(u8, from = 0) {
 }
 
 // The live hubs this page talks to. A stream lives on one hub: the one its live block names (an entry node: a public
-// OpenTube computer), or this site's own. Broadcasting from a browser picks an entry node when there is one, so the
-// site itself only serves the page. Messages for a stream go to its hub; each hub hears our keys.
+// OpenTube computer, or the computer that streams it). Broadcasting from a browser picks an entry node, else one of
+// your own computers; the site's own hub is only the last fallback (older streams that name no hub live there).
+// Messages for a stream go to its hub; each hub hears our keys.
 const liveNet = (() => {
   const conns = new Map();   // url -> { ws, ready, nonce, authed: Set }
   const handlers = new Map(), streamHub = new Map(), signers = new Map();
-  const homeUrl = () => { const u = homeNodeUrl(); return u && !params.get('net') ? u.replace(/\/ot$/, '/live') : null; };
-  const nodeHubUrl = (key) => {   // a node's /live address this page may open (https pages: only wss)
-    const n = E.nodes.get(key); if (!n) return null;
+  const siteHub = () => { const u = homeNodeUrl(); return u && !params.get('net') ? u.replace(/\/ot$/, '/live') : null; };   // fallback only
+  // the hub to use when a stream names none: one we're already connected to, else an entry node, your computer, the site
+  const bestHub = () => { const cand = [...entryHubs(), ...linkedHubs()].map(x => x.url); return cand.find(u => conns.get(u)?.ws?.readyState === 1) || cand[0] || siteHub(); };
+  // a node's /live addresses this page may open (https pages: only wss), the ones that worked before first
+  const goodHub = new Map();   // node -> url that connected
+  const nodeHubUrls = (key) => {
+    const n = E.nodes.get(key); if (!n) return [];
     const ok = (a) => location.protocol === 'https:' ? a.startsWith('https://') : !/\/\/(localhost|127\.)/.test(a) || /^(localhost|127\.)/.test(location.hostname);
-    const a = (n.addrs || []).find(ok); return a ? a.replace(/^http/, 'ws').replace(/\/+$/, '') + '/live' : null;
+    const all = (n.addrs || []).filter(ok).map(a => a.replace(/^http/, 'ws').replace(/\/+$/, '') + '/live');
+    const g = goodHub.get(key); return g && all.includes(g) ? [g, ...all.filter(u => u !== g)] : all;
   };
+  const nodeHubUrl = (key) => nodeHubUrls(key)[0] || null;
+  // the hub a stream lives on, reachable from here: each of its addresses in turn (a computer lists several: public,
+  // home network, localhost), so one unreachable address doesn't cut viewers off
+  async function resolveHub(lb) {
+    const key = lb?.payload?.hub || (E.nodes.has(lb?.author) ? lb.author : null);
+    for (const u of key ? nodeHubUrls(key) : []) if (await connect(u)) { goodHub.set(key, u); return u; }
+    return liveNetApi.hubOf(lb);
+  }
   const entryHubs = () => [...E.nodes.values()].filter(n => n.roles.includes('entry') && Date.now() - n.at < 120000).map(n => ({ node: n.node, url: nodeHubUrl(n.node) })).filter(x => x.url);
   // computers this page is already connected to (e.g. your own on localhost): hubs too, after entry nodes
   const linkedHubs = () => [...nodeSockets.keys()].filter(u => u !== homeNodeUrl() && net.links?.has?.('node:' + u)).map(u => ({ node: [...E.nodes.values()].find(n => (n.addrs || []).some(a => a.replace(/^http/, 'ws').replace(/\/+$/, '') + '/ot' === u))?.node || null, url: u.replace(/\/ot$/, '/live') }));
-  const urlFor = (stream) => streamHub.get(stream) || homeUrl();
+  const urlFor = (stream) => streamHub.get(stream) || bestHub();
   const send = (m) => { const c = conns.get(urlFor(m.stream ?? m.seg?.stream)); if (c?.ws?.readyState === 1) c.ws.send(JSON.stringify(m)); };
   async function authOn(c, signer) {
     if (!signer || !c.nonce || c.authed.has(signer.pub) || c.ws?.readyState !== 1) return;
@@ -3108,7 +3124,7 @@ const liveNet = (() => {
   }
   async function auth(signer) { if (!signer) return; signers.set(signer.pub, signer); for (const c of conns.values()) await authOn(c, signer); }
   const streamsOn = (url) => [...handlers.keys()].filter(st => urlFor(st) === url);
-  function connect(url = homeUrl()) {
+  function connect(url = bestHub()) {
     if (!url) return Promise.resolve(false);
     let c = conns.get(url); if (c?.ready) return c.ready;
     c = c || { ws: null, ready: null, nonce: null, authed: new Set() }; conns.set(url, c);
@@ -3139,17 +3155,21 @@ const liveNet = (() => {
   async function pickHub(prefer = null) {
     if (prefer) { const u = nodeHubUrl(prefer) || linkedHubs().find(x => x.node === prefer)?.url; if (u && await connect(u)) return { node: prefer, url: u }; }   // a group stream: the computer that combines it
     for (const h_ of entryHubs().sort(() => Math.random() - 0.5)) if (await connect(h_.url)) return h_;
-    const u = homeUrl(); if (u && await connect(u)) return { node: null, url: u };
-    for (const h_ of linkedHubs().filter(x => x.node)) if (await connect(h_.url)) return h_;   // the site is down: your own computer (others get the stream over the mesh)
+    for (const h_ of linkedHubs().filter(x => x.node)) if (await connect(h_.url)) return h_;   // your own computer (others reach it, or get the stream over the mesh)
+    const u = siteHub(); if (u && await connect(u)) return { node: null, url: u };   // last: the site's own hub
     return null;
   }
-  return {
-    connect, send, auth, pickHub, entryHubs, linkedHubs, nodeHubUrl,
-    available: () => !!homeUrl() || entryHubs().length > 0,
-    hubOf: (lb) => (lb?.payload?.hub && nodeHubUrl(lb.payload.hub)) || homeUrl(),   // where a stream's live block says it lives
+  const liveNetApi = {
+    connect, send, auth, pickHub, entryHubs, linkedHubs, nodeHubUrl, resolveHub,
+    available: () => entryHubs().length > 0 || linkedHubs().length > 0 || !!siteHub(),
+    // where a stream lives: the hub its live block names; a computer's own stream, that computer; else (older streams) the site
+    hubOf: (lb) => (lb?.payload?.hub && nodeHubUrl(lb.payload.hub)) || (E.nodes.has(lb?.author) && nodeHubUrl(lb.author)) || (lb?.payload?.hub ? bestHub() : siteHub()),
+    hubName: (url) => { const n = [...E.nodes.values()].find(n => (n.addrs || []).some(a => url?.startsWith(a.replace(/^http/, 'ws').replace(/\/+$/, '')))); return n ? (n.info?.name || 'a computer') + (n.roles.includes('entry') ? ' (entry node)' : '') : url === siteHub() ? 'the site' : 'the hub'; },
+    urlFor,
     on: (st, fn, url) => { handlers.set(st, fn); if (url) streamHub.set(st, url); },
     off: (st) => { handlers.delete(st); streamHub.delete(st); }
   };
+  return liveNetApi;
 })();
 
 // WebRTC helpers. Offers come from the parent (closer to the broadcaster); candidates wait for the remote description.
@@ -3290,25 +3310,25 @@ async function stopLive(chainId) {
   append(chainId, { type: 'liveend', stream: sess.stream, outcome: 'ended', ...(stats ? { stats } : {}) }).catch(e => console.warn('liveend', e));   // over now, for everyone: Publish/Discard comes after
   scheduleRender();
 }
-// OBS with a stream key (server.mjs home nodes): OBS sends WebM to the node, which signs and relays it. This browser
+// OBS with a stream key (an OpenTube computer): OBS sends WebM to the node, which signs and relays it. This browser
 // records it (the owner gets every segment) so the publish-or-discard step works the same.
 const OBS_MIME = 'video/webm;codecs="vp8,vorbis"';   // Vorbis, not Opus: browsers can't stream ffmpeg's Opus-in-WebM interleaving
 async function startObsLive(chainId, title) {
   if (!canHost()) throw new Error('Going live needs a video folder (the stream is recorded there).');
-  if (!(await liveNet.connect())) throw new Error('No home node to stream through.');
-  if (!diag.home?.node) { await probeHome(); if (!diag.home?.node) throw new Error('Couldn’t reach the home node.'); }
+  if (!(await liveNet.connect())) throw new Error('No hub to stream through: no entry node or computer of yours is reachable.');
+  if (!diag.net?.node) { await probeNetwork(); if (!diag.net?.node) throw new Error('Couldn’t reach an entry node.'); }
   const d = derive(chainId), signer = signerFor(d.owner);
   await liveNet.auth(signer);
   const stream = toHex(crypto.getRandomValues(new Uint8Array(32)));
   const k = await new Promise((res, rej) => {
-    const timer = setTimeout(() => rej(new Error('The home node didn’t answer.')), 10000);
+    const timer = setTimeout(() => rej(new Error('The hub didn’t answer.')), 10000);
     liveNet.on(stream, (m) => { if (m.t === 'ingestkey') { clearTimeout(timer); res(m); } else if (m.t === 'error') { clearTimeout(timer); rej(new Error(m.error)); } });
     liveNet.send({ t: 'ingest', stream, chain: chainId, mime: OBS_MIME });
   }).finally(() => liveNet.off(stream));
   const ch = await channelFolder(chainId);
   const file = await uniqueFileName(ch, cleanName(title, 'Live') + '.webm');
   (ch.meta.lives ||= {})[stream] = { file, title, own: true, started: Date.now(), obs: true }; saveMeta(ch);
-  const block = await append(chainId, { type: 'live', title, stream, mime: OBS_MIME, relay: diag.home.node });
+  const block = await append(chainId, { type: 'live', title, stream, mime: OBS_MIME, relay: diag.net.node });
   const sess = { chainId, stream, title, obs: true, url: new URL(k.path + k.key, location.href).href, started: Date.now(), ended: false, block, kids: new Map(), o: 0, viewers: null, bytes: 0, lastSeg: 0 };
   broadcasts.set(chainId, sess);
   sess.view = await joinLive(chainId, block, null);
@@ -3319,7 +3339,7 @@ async function startObsLive(chainId, title) {
 // as the stream's relay; the computer waits for OBS on rtmp://localhost/live and relays it to the site's hub.
 async function startNodeObsLive(chainId, title, nodeKey) {
   if (!canHost()) throw new Error('Going live needs a video folder (the stream is recorded there).');
-  if (!(await liveNet.connect())) throw new Error('No home node to stream through.');
+  if (!(await liveNet.connect())) throw new Error('No hub to stream through: no entry node or computer of yours is reachable.');
   const d = derive(chainId); await liveNet.auth(signerFor(d.owner));
   const stream = toHex(crypto.getRandomValues(new Uint8Array(32)));
   const ch = await channelFolder(chainId);
@@ -3362,7 +3382,7 @@ async function joinLive(chainId, lb, ui = null) {
   const stream = lb.payload.stream;
   let sess = viewing.get(stream);
   if (sess) { sess.ui = ui || sess.ui; if (ui) ui.attach(sess); return sess; }
-  const hubUrl = liveNet.hubOf(lb), hub = await liveNet.connect(hubUrl);   // the hub its live block names
+  const hubUrl = await liveNet.resolveHub(lb), hub = await liveNet.connect(hubUrl);   // the hub its live block names (an address of it that answers)
   sess = { chainId, stream, block: lb.hash, mime: lb.payload.mime, title: lb.payload.title, keys: liveSigner(chainId, lb), ui, parent: null, parentPc: null, media: null,
     kids: new Map(), dcKids: new Map(), pendingKids: new Set(), mode: 'pending', member: false, capture: null, ended: false, tries: 0, background: !ui };
   viewing.set(stream, sess);
@@ -3481,7 +3501,7 @@ async function onLiveMsg(sess, m) {
       liveNet.off(sess.stream); viewing.delete(sess.stream);
       return;
     case 'viewers': sess.viewers = m; sess.ui?.viewers?.(m); { const own = broadcasts.get(sess.chainId); if (own?.stream === sess.stream) { own.viewers = m; scheduleRender(); } } return;
-    case 'disconnected': sess.ui?.status('Lost the connection to the home node; reconnecting…'); return;
+    case 'disconnected': sess.ui?.status(`Lost the connection to this stream’s hub (${liveNet.hubName(liveNet.urlFor(sess.stream))}); reconnecting… Peers who have the stream keep passing it on meanwhile.`); return;
     case 'reconnected': if (!sess.ended) { sess.parentPc?.close(); sess.parentPc = null; sess.media = null; sendWatch(sess); } return;
   }
 }
@@ -3930,9 +3950,9 @@ views.home = { render() {
 } };
 
 // ---- explore (directory from main chain + pending mempool)
-// Live streams this browser knows about: loaded channels, plus what the home node's live hub reports.
+// Live streams this browser knows about: loaded channels, plus what entry nodes' live hubs report.
 function liveEverywhere() {
-  for (const x of diag.home?.liveStreams || []) if (!chains.has(x.chain) && genesisFor(x.chain)) { const c = openChain(x.chain); if (c) E.requestChain(c); }
+  for (const x of diag.net?.liveStreams || []) if (!chains.has(x.chain) && genesisFor(x.chain)) { const c = openChain(x.chain); if (c) E.requestChain(c); }
   const out = [];
   for (const c of chains.values()) { if (c === main) continue; const d = derive(c.id); if (d?.kind === 'channel') for (const lb of d.liveNow) out.push([c.id, lb]); }
   return out.sort((a, b) => b[1].ts - a[1].ts);
@@ -4755,8 +4775,8 @@ function profileBody(key) {   // everything that belongs to an identity, tied to
         pr.about ? h('p', { class: 'pre' }, pr.about) : null, pr.location ? h('div', { class: 'sub' }, '📍 ' + pr.location) : null,
         (pr.links || []).length ? h('div', { class: 'row', style: 'gap:8px;margin-top:6px' }, pr.links.map(l => h('a', { class: 'tagbox', style: 'padding:4px 12px', href: l.url, target: '_blank', rel: 'noopener noreferrer nofollow' }, '🔗 ' + l.label))) : null,
         (() => {   // where they're watching right now (public, like the viewer lists on live pages)
-          if (!diag.home || Date.now() - (diag.home.at || 0) > 30000) { if (!profileBody.probing) { profileBody.probing = true; probeHome().finally(() => { profileBody.probing = false; scheduleRender(); }); } }
-          const w = (diag.home?.liveStreams || []).filter(x => (x.now || []).includes(key));
+          if (!diag.net || Date.now() - (diag.net.at || 0) > 30000) { if (!profileBody.probing) { profileBody.probing = true; probeNetwork().finally(() => { profileBody.probing = false; scheduleRender(); }); } }
+          const w = (diag.net?.liveStreams || []).filter(x => (x.now || []).includes(key));
           return w.length ? h('div', { style: 'margin-top:6px' }, '📺 Watching now: ', w.map((x, i) => { const dd = chains.has(x.chain) && derive(x.chain), lb = dd?.streams?.find(b => b.payload.stream === x.stream);
             return [i ? ', ' : '', lb ? h('a', { href: `#/live/${x.chain}/${lb.hash}` }, `“${lb.payload.title}”`) : 'a live stream', dd ? [' on ', h('a', { href: `#/c/${x.chain}` }, dd.profile.name)] : null]; })) : null;
         })(),
@@ -5404,7 +5424,7 @@ function liveStudio(chainId) {
   };
   function setup() {
     const head = h('h3', { style: 'margin-top:0' }, '🔴 Go live');
-    const meshNote = liveNet.available() ? '' : h('p', { class: 'sub' }, 'No home node here: the stream goes out over the peer-to-peer mesh only (camera streams; OBS needs one of your computers running OpenTube).');
+    const meshNote = liveNet.available() ? '' : h('p', { class: 'sub' }, 'No entry node or computer of yours is reachable: the stream goes out over the peer-to-peer mesh only (camera streams; OBS needs one of your computers running OpenTube).');
     const source = h('select', {}, h('option', { value: '' }, 'Choose a camera…'));
     // group streams this browser can send into: on your computers, ones shared with you, and ones you were invited to
     let groupNodes = [];
@@ -5467,7 +5487,6 @@ function liveStudio(chainId) {
       obsGo.disabled = true; obsStatus.textContent = 'Getting a stream key…';
       try { await startObsLive(chainId, obsTitle.value.trim()); stopPreview(); ui(); } catch (e) { obsStatus.textContent = e.message; obsGo.disabled = false; }
     } }, 'Get a stream key');
-    if (!diag.home && !box.probed) { box.probed = true; probeHome().then(() => { if (diag.home?.ingest && !broadcasts.get(chainId) && !title.value && !obsTitle.value) ui(); }); }
     const comps = usableNodes('o').filter(n => n.roles.includes('obs') && Date.now() - n.at < 120000);
     if (!comps.length) setTimeout(() => {   // computers announce themselves every 30 s: show one as soon as it does (unless the person started typing)
       if (box.isConnected && !broadcasts.get(chainId) && !title.value && !obsTitle.value && usableNodes('o').some(n => n.roles.includes('obs') && Date.now() - n.at < 120000)) ui();
@@ -5485,7 +5504,7 @@ function liveStudio(chainId) {
       comps.length ? [h('p', { class: 'sub', style: 'margin-top:0' }, 'OBS sends to OpenTube running on one of your computers (yours at home, or a server), which puts it live on this channel. Pick the computer:'),
         (() => { const sel = h('select', { style: 'width:auto' }, comps.map(n => h('option', { value: n.node }, n.info?.name || n.grant.label || 'computer'))); const slot = h('div'); const show = () => slot.replaceChildren(obsPanel(comps.find(x => x.node === sel.value), { chainId })); sel.onchange = show; show(); return h('div', {}, sel, slot); })()]
         : h('p', { class: 'sub', style: 'margin:0' }, 'Run OpenTube on the computer where OBS is (My node → Your computers → Run OpenTube on a computer). It then appears here, and OBS’s normal Start Streaming button goes live on your channel.'));
-    const obs = diag.home?.ingest ? h('details', { style: 'margin-top:14px' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Or send the stream from OBS with a stream key'),
+    const obs = false ? h('details', { style: 'margin-top:14px' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Or send the stream from OBS with a stream key'),
       h('p', { class: 'sub' }, 'OBS sends the video straight to this site’s server, which relays it. Viewers watch a few seconds behind. Your browser records it, so keep this page open.'),
       h('label', {}, 'Title'), obsTitle, h('div', { class: 'row', style: 'margin-top:8px' }, obsGo, obsStatus)) : null;
     // OBS through one of your computers (or one shared with you) needs nothing in this browser: the computer records
@@ -5701,7 +5720,7 @@ views.livewatch = {
     const ui = {
       attach(sess) { ui.sess = sess; if (sess.media) ui.media(sess.media); else if (sess.mode === 'seg' || sess.mode === 'dc') ui.segmentMode(); },
       media(ms) { segp = null; player.srcObject = ms; player.play().catch(() => {}); how = ui.sess?.parent && ui.sess.parent === ui.sess.parentHint ? '' : ''; status.textContent = 'Live · by WebRTC (about a second behind)'; },
-      segmentMode() { if (segp) return; player.srcObject = null; segp = segmentPlayer(player, lb.payload.mime, ui.sess?.init); status.textContent = segp ? 'Live · by segments through the home node (a few seconds behind)' : 'This browser can’t play this stream format.'; },
+      segmentMode() { if (segp) return; player.srcObject = null; segp = segmentPlayer(player, lb.payload.mime, ui.sess?.init); status.textContent = segp ? `Live · by segments through ${liveNet.hubName(liveNet.urlFor(lb.payload.stream))} (a few seconds behind)` : 'This browser can’t play this stream format.'; },
       segment(g, u8) { if (ui.sess?.mode === 'seg' || ui.sess?.mode === 'dc' || !ui.sess?.media) segp?.push(g, u8); },
       status(t) { status.textContent = t; },
       viewers(m) { lastViewers = m; drawWho(); watchers.textContent = `👁 ${m.viewers} watching · peak ${m.peak ?? m.viewers} · ${m.seenCount || 0} have watched`; watchers.title = 'People who checked in within the last 45 s'; },
@@ -6140,9 +6159,9 @@ views.watch = {
           if (t.done || t.numPeers) return [];
           const waited = (Date.now() - (watchState?.started || Date.now())) / 1000;
           if (waited < 20) return [h('span', {}, 'Looking for a peer that has this video…')];
-          const homeTr = homeTracker && diag.trackers.get(homeTracker);
+          const homeTr = null;   // the site's tracker is only a fallback: its state doesn't decide anything
           return [h('span', { class: 'pill error' }, '❌ Nobody online has this video right now'),
-            h('span', {}, homeTr?.at && !homeTr.ok ? 'The home node’s video tracker is unreachable, so peers can’t be found. See Network.'
+            h('span', {}, homeTr?.at && !homeTr.ok ? 'No meet place (tracker) is reachable, so peers can’t be found. See Network.'
               : 'The uploader and everyone who joined this channel appear to be offline. It will start when one of them comes back. A headless host for this channel keeps videos online.')];
         })()].filter(Boolean));
     }, 500);
@@ -6187,7 +6206,7 @@ views.watch = {
 };
 
 // ---- network & diagnostics
-const diag = { trackers: new Map(), stun: null, home: null, storage: null, torrentSeen: new Map() };
+const diag = { trackers: new Map(), stun: null, net: null, storage: null, torrentSeen: new Map() };
 // Probe each video tracker by opening a WebSocket to it.
 function probeTrackers() {
   for (const url of TRACKERS) {
@@ -6216,34 +6235,42 @@ async function probeStun() {
 // Status: from the computers this page reaches (entry nodes, and ones it's linked to, e.g. your own on localhost)
 // first; the site's own node only if none answers, and not again for 10 minutes after it failed (its daily quota may
 // be spent: every request to it counts).
-let homeFailedAt = 0;
-async function probeHome() {
-  const url = homeNodeUrl(); if (!url || params.get('net')) return;
+let siteFailedAt = 0;
+// Network status (height, live streams, ranking list, clock): from entry nodes and your own computers; the site's
+// own node only if none of them answers.
+async function probeNetwork() {
+  if (params.get('net') === 'p2p') return;
+  const url = homeNodeUrl();
   const t0 = performance.now(), merged = { liveStreams: [] };
-  let got = null;
-  for (const x of [...liveNet.entryHubs(), ...liveNet.linkedHubs()].slice(0, 6)) {
+  let got = null, from = null;
+  const statusUrls = [...new Set([...liveNet.entryHubs(), ...liveNet.linkedHubs()].map(x => x.url.replace(/^ws/, 'http').replace(/\/live$/, '/status'))
+    .concat(savedEntries().flatMap(x => (x.addrs || []).slice(0, 1)).filter(a => /^https:\/\//.test(a) || location.protocol === 'http:').map(a => a.replace(/\/+$/, '') + '/status')))].slice(0, 6);
+  for (const su of statusUrls) {
     try {
-      const r = await fetch(x.url.replace(/^ws/, 'http').replace(/\/live$/, '/status'), { signal: AbortSignal.timeout(4000), cache: 'no-store' }); const js = await r.json();
-      got ||= js; for (const ls of js.liveStreams || []) if (!merged.liveStreams.some(y => y.stream === ls.stream)) merged.liveStreams.push(ls);
+      const sent = Date.now();
+      const r = await fetch(su, { signal: AbortSignal.timeout(4000), cache: 'no-store' }); const js = await r.json();
+      if (js.network && js.network !== MAIN_ID) continue;
+      if (!got) { got = js; from = su.replace(/\/status$/, ''); if (Number.isFinite(js.now)) diag.clockOffset = js.now + (Date.now() - sent) / 2 - Date.now(); }
+      for (const ls of js.liveStreams || []) if (!merged.liveStreams.some(y => y.stream === ls.stream)) merged.liveStreams.push(ls);
     } catch {}
   }
-  if (!got && Date.now() - homeFailedAt > 10 * 60000) {
+  if (!got && url && Date.now() - siteFailedAt > 10 * 60000) {
     try {
       const sent = Date.now();
       const r = await fetch(url.replace(/^ws/, 'http').replace(/\/ot$/, '/status'), { cache: 'no-store' });
       if (!r.ok) throw new Error(`the site’s node answered ${r.status}${r.status >= 500 ? ' (it may be out of its daily quota)' : ''}`);
-      got = await r.json();
+      got = await r.json(); from = 'the site';
       if (Number.isFinite(got.now)) diag.clockOffset = got.now + (Date.now() - sent) / 2 - Date.now();
       for (const ls of got.liveStreams || []) if (!merged.liveStreams.some(y => y.stream === ls.stream)) merged.liveStreams.push(ls);
-    } catch (e) { homeFailedAt = Date.now(); if (!diag.home || diag.home.error) diag.home = { error: e.message, at: Date.now() }; return; }
+    } catch (e) { siteFailedAt = Date.now(); if (!diag.net || diag.net.error) diag.net = { error: e.message, at: Date.now() }; return; }
   }
-  if (got) diag.home = { ...got, liveStreams: merged.liveStreams, ms: Math.round(performance.now() - t0), at: Date.now() };
+  if (got) { diag.net = { ...got, from, liveStreams: merged.liveStreams, ms: Math.round(performance.now() - t0), at: Date.now() }; if (got.ranker && !homeRanker) { homeRanker = got.ranker; scheduleRender(); } }
 }
 async function probeStorage() {
   try { const est = await navigator.storage.estimate(); diag.storage = { usage: est.usage, quota: est.quota, persisted: await navigator.storage.persisted?.() }; } catch {}
 }
-function runProbes() { if (route.name === 'network') probeTrackers(); probeHome(); probeStorage(); }   // tracker tests open connections: only on the Network page
-setTimeout(() => { probeHome(); probeStorage(); probeStun(); }, 2000);
+function runProbes() { if (route.name === 'network') probeTrackers(); probeNetwork(); probeStorage(); }   // tracker tests open connections: only on the Network page
+setTimeout(() => { probeNetwork(); probeStorage(); probeStun(); }, 2000);
 setInterval(runProbes, 5 * 60000);
 
 // Which video does an infohash belong to?
@@ -6266,8 +6293,8 @@ function healthChecks() {
   else checks.push((nP + nN >= 2 ? ok : warn)('Connection', `Connected to ${nP} peer(s) directly and ${nN} node(s). Every connection is an equal peer; none is required.`, nP + nN < 2 ? 'With only one connection, losing it pauses syncing until another peer is found.' : undefined));
   // main chain
   const ms = E.syncState(main);
-  const nodeH = diag.home?.height;
-  if (nodeH !== undefined && nodeH > main.best.height) checks.push(warn('Main chain', `Behind the home node: you have block #${main.best.height}, it has #${nodeH}.`, 'It should catch up within seconds. If not, reload.'));
+  const nodeH = diag.net?.height;
+  if (nodeH !== undefined && nodeH > main.best.height) checks.push(warn('Main chain', `Behind the network: you have block #${main.best.height}, ${diag.net?.from === 'the site' ? 'the site' : 'an entry node'} has #${nodeH}.`, 'It should catch up within seconds. If not, reload.'));
   else checks.push({ name: 'Main chain', level: ms.level, text: `Block #${main.best.height}, ${E.directory.size} registered. ${ms.text}`, fix: ms.level === 'ok' ? '' : 'Stay connected; missing blocks are requested automatically.' });
   const myPending = [...mempool.values()].filter(g => isMine(g.author));
   const myTxs = [...E.txpool.values()].filter(t => isMine(t.from));
@@ -6284,11 +6311,11 @@ function healthChecks() {
   else {
     const tr = [...diag.trackers.values()].filter(x => x.at);
     const up = tr.filter(x => x.ok).length;
-    const homeTr = homeTracker && diag.trackers.get(homeTracker);
+    const homeTr = null;
     if (!tr.length) checks.push(warn('Video (P2P)', 'Testing trackers…'));
-    else if (homeTracker && homeTr?.at && !homeTr.ok) checks.push(bad('Video (P2P)', `The home node’s video tracker is unreachable (${homeTr.err}); ${up} of ${tr.length} trackers work.`, (liveNet.linkedHubs().length || liveNet.entryHubs().length) ? 'Your computers’ trackers are used instead, so videos still work.' : 'The site’s own node may be out of its daily quota (it answers with an error). Run OpenTube on a computer (Devices), or add --public to a server’s command so it becomes an entry node: browsers then use it instead.'));
-    else if (!up) checks.push(bad('Video (P2P)', 'No video tracker is reachable, so viewers can’t find whoever has a video.', 'Check your network/firewall, or run a home node with its own tracker.'));
-    else checks.push(ok('Video (P2P)', `${up} of ${tr.length} trackers reachable${homeTr?.ok ? ', including the home node’s' : ''}.`));
+    else if (homeTracker && homeTr?.at && !homeTr.ok) checks.push(bad('Video (P2P)', `The site’s video tracker is unreachable (${homeTr.err}); ${up} of ${tr.length} trackers work.`, (liveNet.linkedHubs().length || liveNet.entryHubs().length) ? 'Your computers’ trackers are used instead, so videos still work.' : 'The site’s own node may be out of its daily quota (it answers with an error). Run OpenTube on a computer (Devices), or add --public to a server’s command so it becomes an entry node: browsers then use it instead.'));
+    else if (!up) checks.push(bad('Video (P2P)', 'No video tracker is reachable, so viewers can’t find whoever has a video.', 'Check your network/firewall, or run OpenTube on a computer with --tunnel (it becomes a meet place with its own tracker.'));
+    else checks.push(ok('Video (P2P)', `${up} of ${tr.length} trackers reachable${homeTr?.ok ? ', including an entry node’s' : ''}.`));
     if (diag.stun && !diag.stun.running) {
       if (diag.stun.error) checks.push(warn('Reachability', 'Could not test WebRTC reachability: ' + diag.stun.error));
       else if (diag.stun.types.includes('srflx')) checks.push(ok('Reachability', 'Your public address was discovered, so peers on other networks can usually connect to you.'));
@@ -6300,7 +6327,7 @@ function healthChecks() {
   // rankings
   if (homeRanker) {
     const r = E.rankings.get(homeRanker);
-    const st = diag.home?.ranking;
+    const st = diag.net?.ranking;
     checks.push(r ? (Date.now() - r.at > 20 * 60000 ? warn('Rankings', `The node’s ranking is ${ago(r.at)} old.`, 'The node republishes every 5 minutes; it may be stuck.') : ok('Rankings', `The node’s ranking (${r.items.length} videos) was published ${ago(r.at)}.`))
       : warn('Rankings', 'This site’s node has a ranking list but hasn’t published a ranking yet' + (st?.error ? ` (last error: ${st.error})` : '') + '. Explore ranks channels in this browser meanwhile.', 'It should appear within 5 minutes of the node waking up.'));
   }
@@ -6343,7 +6370,7 @@ views.network = { render() {
       h('td', {}, roleT), h('td', {}, (t.progress * 100).toFixed(0) + '%'), h('td', {}, String(t.numPeers)),
       h('td', {}, `↓${fmtBytes(t.downloadSpeed)}/s ↑${fmtBytes(t.uploadSpeed)}/s`), h('td', {}, pill(st[0], st[1])));
   };
-  const nodeInfo = diag.home;
+  const nodeInfo = diag.net;
   const rejected = Object.entries(E.stats.rejected);
   return h('div', {},
     h('div', { class: 'row', style: 'justify-content:space-between' }, h('h2', { style: 'margin:0' }, 'Network & diagnostics'),
@@ -6356,10 +6383,10 @@ views.network = { render() {
       h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Connection'),
         h('div', { class: 'kv' },
           h('div', {}, 'Mode'), h('div', {}, net.status()),
-          h('div', {}, 'Home node'), h('div', { class: 'mono' }, homeNodeUrl() || '— (no http host)'),
+          h('div', {}, 'Ways in'), h('div', { class: 'mono' }, [...nodeSockets.keys()].filter(u => net.links?.has?.('node:' + u)).map(u => u.replace(/^wss?:\/\//, '').replace(/\/ot$/, '') + (u === homeNodeUrl() ? ' (the site, fallback)' : '')).join(', ') || 'peer mesh only'),
           h('div', {}, 'Last message in'), h('div', {}, ago_(E.stats.lastMsgIn)),
           h('div', {}, 'Messages'), h('div', {}, `${E.stats.msgsIn.toLocaleString()} in · ${E.stats.msgsOut.toLocaleString()} out`),
-          h('div', {}, 'Node says'), h('div', {}, nodeInfo?.error ? pill('error', 'status unavailable: ' + nodeInfo.error)
+          h('div', {}, nodeInfo?.from ? `Status from ${nodeInfo.from.replace(/^https?:\/\//, '')}` : 'Status'), h('div', {}, nodeInfo?.error ? pill('error', 'status unavailable: ' + nodeInfo.error)
             : nodeInfo ? `height #${nodeInfo.height} · ${nodeInfo.peers} browsers connected · ${nodeInfo.chains} chains · ${nodeInfo.registered} registered · tracker: ${nodeInfo.tracker?.peers ?? '?'} peers in ${nodeInfo.tracker?.swarms ?? '?'} swarms · ${nodeInfo.ms} ms`
             : '—'),
           h('div', {}, 'Network ID'), h('div', { class: 'mono' }, MAIN_ID.slice(0, 32) + '…'))),
@@ -6392,8 +6419,8 @@ views.network = { render() {
       h('h4', {}, 'Trackers'),
       h('div', { class: 'tablewrap' }, h('table', { class: 'diag' }, h('tr', {}, ['Tracker', 'Role', 'Status'].map(t => h('th', {}, t))),
         TRACKERS.map(u => { const r = diag.trackers.get(u);
-          return h('tr', {}, h('td', { class: 'mono' }, u), h('td', {}, u === homeTracker ? 'home node' : 'public fallback'),
-            h('td', {}, !r?.at ? 'testing…' : r.ok ? pill('ok', `reachable · ${r.ms} ms`) : pill(u === homeTracker ? 'error' : 'warn', r.err))); }))),
+          return h('tr', {}, h('td', { class: 'mono' }, u), h('td', {}, u === homeTracker ? 'the site (fallback)' : /\/tracker$/.test(u) ? 'meet place (OpenTube computer)' : 'public tracker'),
+            h('td', {}, !r?.at ? 'testing…' : r.ok ? pill('ok', `reachable · ${r.ms} ms`) : pill('warn', r.err))); }))),
       h('h4', {}, 'Transfers'),
       wt.torrents.length ? h('div', { class: 'tablewrap' }, h('table', { class: 'diag' },
         h('tr', {}, ['Video', 'Role', 'Have', 'Peers', 'Speed', 'Status'].map(t => h('th', {}, t))), wt.torrents.map(torrentRow)))
@@ -6421,7 +6448,7 @@ setInterval(() => { if (route.name === 'network') views.network.refresh(); }, 20
 
 // ---- ads
 const { sha256hex } = globalThis.OpenTubeCore;
-const nowSync = () => Date.now() + (diag.clockOffset || 0);   // the home node's clock
+const nowSync = () => Date.now() + (diag.clockOffset || 0);   // the network's clock (an entry node's)
 const sleepUntil = (t) => new Promise(r => setTimeout(r, Math.max(0, t - nowSync())));
 const hexOf = (u8) => Array.from(u8, b => b.toString(16).padStart(2, '0')).join('');
 const adTid = new Map();   // ad block hash -> terms id
