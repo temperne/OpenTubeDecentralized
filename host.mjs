@@ -307,7 +307,7 @@ export async function startHost({ engine, nodeKey, user, users = () => [], meetP
       return { at: Date.now(), videoDir, channels: wanted().size, found: !!membership(), hosting: list.filter(t => t.done).length,
         hostedBytes: list.filter(t => t.done).reduce((n, t) => n + t.length, 0), downloading: list.filter(t => !t.done).length,
         peers: list.reduce((n, t) => n + t.numPeers, 0), up: Math.round(client.uploadSpeed), down: Math.round(client.downloadSpeed),
-        overCap: [...folders.values()].some(f => f.overCap) };
+        overCap: [...folders.values()].some(f => f.overCap), held: list.filter(t => t.done).map(t => t.infoHash) };
     }
   };
 }

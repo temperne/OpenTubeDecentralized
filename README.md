@@ -611,3 +611,10 @@ The blockchain rules live in the `<script id="opentube-core">` block of `index.h
 - Proof of work on a small network is weak: someone with much more CPU than everyone else could rewrite main-chain history. Difficulty is fixed in the genesis block and doesn't adjust.
 - Browsers limit storage per site, typically to a share of free disk.
 - Sync gossips every chain to every peer, which is fine for thousands of channels but needs per-chain rooms to go much further.
+
+## Stale data: only what works is listed
+
+Nothing is deleted from the chains; lists just leave out what doesn't work right now, and bring it back when it does.
+
+- **Live streams** are listed while they work: their hub has had video from them in the last minute (browsers ask it with a `probe` every 20 s; streams being watched report themselves through their segments). One that stopped (a closed page, a crash, a dead hub) drops out after more than a minute and comes back by itself if it resumes. Its owner can end it for good with **End stream** on the live page.
+- **Videos** nobody serves drop out of feeds and lists after 10 minutes of checks finding no one, and come back as soon as anyone serves them. Served means: this browser has it, a peer sends it, a computer's signed status says it holds it (a 2048-bit Bloom filter of its videos, `info.has`), or a meet place (tracker scrape) knows someone sharing it. The owner still sees their own videos, and a direct link still opens.

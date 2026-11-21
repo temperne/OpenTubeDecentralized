@@ -1018,9 +1018,13 @@ else if (GRANT) {
   const announce = async () => {
     let host = globalThis.openTubeHost?.status() || null;
     if (!host) try { host = JSON.parse(fs.readFileSync(process.env.HOST_STATUS_FILE, 'utf8')); if (Date.now() - host.at > 120000) host = { ...host, stale: true }; } catch {}
-    const info = { public: process.env.PUBLIC_URL || null, tunnel: process.env.TUNNEL_STATE || null, publicIp: (await publicIp()) || null, users: Object.fromEntries(Object.entries(obsStore.users).filter(([, u]) => !(u.until < Date.now())).slice(0, 20).map(([k, u]) => [k, u.can.map(x => x[0]).join('') + (u.guestOf ? 'g' : '')])),   // who may use it: o(bs) h(ost) m(anage)
+    const held = globalThis.openTubeHost?.status?.().held || [];
+    const info = { ...(held.length ? { has: core.holdBloom(held) } : {}), public: process.env.PUBLIC_URL || null, tunnel: process.env.TUNNEL_STATE || null, publicIp: (await publicIp()) || null, users: Object.fromEntries(Object.entries(obsStore.users).filter(([, u]) => !(u.until < Date.now())).slice(0, 20).map(([k, u]) => [k, u.can.map(x => x[0]).join('') + (u.guestOf ? 'g' : '')])),   // who may use it: o(bs) h(ost) m(anage)
       version: { name: core.VERSION, build: BUILD, files: FILES }, peerId: nodePeerId(signer.pub), name: (process.env.NODE_LABEL || os.hostname()).slice(0, 60), os: `${os.platform()} ${os.arch()}`, node: process.version, height: engine.main.best.height,
       peers: peers.size, chains: engine.chains.size, site: process.env.NODE_SITE || null, host, obs: globalThis.openTubeRtmp?.status?.() || null };
+    // a status must stay under 4000 bytes or no one accepts it: drop the least important parts first
+    for (const k of ['has', 'obs', 'host']) if (JSON.stringify(info).length > 3800) delete info[k];
+    if (JSON.stringify(info).length > 3800) info.users = Object.fromEntries(Object.entries(info.users).slice(0, 5));
     try { await engine.publishNodeInfo({ grant: GRANT, roles: rolesNow(), addrs: addrs(), info }); } catch (e) { log('announce failed:', e.message); }
   };
   log(`this node belongs to user ${GRANT.user.slice(0, 8)}… (${rolesNow().join(', ')}); it will show up on their My node page`);

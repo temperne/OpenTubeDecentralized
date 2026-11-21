@@ -1331,6 +1331,12 @@ const liveAuthPreimage = (nonce) => 'opentube-live-auth:' + nonce;
 // stream (the one streaming, or one relaying it). The announcement lists the segments inside (number, offset, hash,
 // signature) so whoever fetches it checks every segment exactly like one received live.
 const liveChunkPreimage = (c) => `opentube-live-chunk:${c.stream}:${c.from}:${c.to}:${c.o}:${c.len}:${c.ih}`;
+// Which videos a computer holds, in its signed status: a 2048-bit Bloom filter (512 hex chars) of the infohashes, 3
+// positions each. A false "yes" (a few % with ~150 videos) only keeps a video listed; never a false "no".
+const HOLD_BITS = 2048;
+const holdPos = (ih) => [0, 4, 8].map(i => parseInt(ih.slice(i, i + 4), 16) % HOLD_BITS);
+function holdBloom(ihs) { const b = new Uint8Array(HOLD_BITS / 8); for (const ih of ihs) if (/^[0-9a-f]{40}$/.test(ih)) for (const p of holdPos(ih)) b[p >> 3] |= 1 << (p & 7); return [...b].map(x => x.toString(16).padStart(2, '0')).join(''); }
+function holdHas(hexBloom, ih) { if (typeof hexBloom !== 'string' || hexBloom.length !== HOLD_BITS / 4 || !/^[0-9a-f]{40}$/.test(ih)) return false; return holdPos(ih).every(p => (parseInt(hexBloom.substr((p >> 3) * 2, 2), 16) >> (p & 7)) & 1); }
 // A live stream's public statistics, written into its liveend block when it ends (everyone can read them, not only
 // the streamer): peak viewers, unique viewers, total watch time in seconds, and who watched longest.
 const liveStatsOk = (s) => s === undefined || (!!s && typeof s === 'object' && !Array.isArray(s) && [s.peak, s.unique, s.secs].every(x => Number.isSafeInteger(x) && x >= 0 && x < 1e12)
@@ -1433,7 +1439,7 @@ function createLiveHub(o) {   // o: { ownerOf(chain) -> key|null, signerOf(chain
     // A stream whose segments come from this node itself (OBS ingest on server.mjs). Viewers get segments.
     local(stream, chain, mime) {
       const src = 'local:' + stream;
-      const st = { id: stream, chain, src, mime, media: false, seg0: null, segs: [], nodes: new Map([[src, node({ member: true, mode: 'src' })]]) };
+      const st = { id: stream, chain, src, mime, media: false, started: Date.now(), seg0: null, segs: [], nodes: new Map([[src, node({ member: true, mode: 'src' })]]) };
       streams.set(stream, st);
       return { seg: (g) => streams.get(stream) === st && relaySeg(st, g), end: () => streams.get(stream) === st && leave(st, src),
         chunk: (c) => { if (streams.get(stream) !== st) return; (st.chunks ||= []).push(c); for (const [id] of st.nodes) if (id !== src) out(id, { t: 'lchunk', stream: st.id, chunk: c }); } };
@@ -1466,7 +1472,7 @@ function createLiveHub(o) {   // o: { ownerOf(chain) -> key|null, signerOf(chain
         if (!(owner && s.keys.has(owner)) && !(relay && s.keys.has(relay))) return out(sid, { t: 'error', stream: m.stream, error: 'not the owner of this channel' });
         if (st && st.chain !== m.chain) return;
         if (st && st.src !== sid) leave(st, st.src);   // a reconnecting broadcaster replaces the old connection
-        const fresh = { id: m.stream, chain: m.chain, src: sid, mime: m.mime, media: m.rtc !== false, seg0: st?.seg0 || null, segs: st?.segs || [], chunks: st?.chunks || [], seenBy: st?.seenBy || new Map(), peak: st?.peak || 0, nodes: new Map() };
+        const fresh = { id: m.stream, chain: m.chain, src: sid, started: Date.now(), mime: m.mime, media: m.rtc !== false, seg0: st?.seg0 || null, segs: st?.segs || [], chunks: st?.chunks || [], seenBy: st?.seenBy || new Map(), peak: st?.peak || 0, nodes: new Map() };
         fresh.nodes.set(sid, node({ slots: m.rtc === false ? 0 : Math.min(Math.max(m.slots | 0, 0), LIVE.maxSlots) || LIVE.srcSlots, dcSlots: Math.min(Math.max(m.dcSlots | 0, 0), LIVE.maxDcSlots), member: true, mode: 'src', media: m.rtc !== false }));
         streams.set(m.stream, fresh); s.watching.add(m.stream);
         return out(sid, { t: 'broadcasting', stream: m.stream });
@@ -1478,7 +1484,9 @@ function createLiveHub(o) {   // o: { ownerOf(chain) -> key|null, signerOf(chain
         if (!owner || !s.keys.has(owner)) return out(sid, { t: 'error', stream: m.stream, error: 'not the owner of this channel' });
         return out(sid, { t: 'ingestkey', stream: m.stream, key: o.ingest.ticket({ stream: m.stream, chain: m.chain, mime: m.mime }), path: '/ingest/' });
       }
-      if (!st) return m.t === 'watch' ? out(sid, { t: 'nostream', stream: m.stream }) : undefined;
+      if (!st) return m.t === 'watch' || m.t === 'probe' ? out(sid, { t: 'nostream', stream: m.stream }) : undefined;
+      // is it working? (browsers ask before listing a stream as live): only if video came through in the last minute
+      if (m.t === 'probe') { const last = st.segs.length ? st.segs[st.segs.length - 1].at : st.started || 0; return out(sid, Date.now() - last < 60000 ? { t: 'up', stream: st.id, at: last } : { t: 'nostream', stream: st.id, stale: true }); }
       if (m.t === 'lchunk') {   // from the streamer or a relaying member: store it and tell everyone watching
         const c = m.chunk, n = st.nodes.get(sid);
         if (!n || !(sid === st.src || n.member) || !liveChunkShape(c) || c.stream !== st.id || JSON.stringify(c).length > 100000) return;
@@ -2118,7 +2126,7 @@ async function createEngine(o) {
 }
 
 const VERSION = '2026.11.21';   // the release name; the build fingerprint is a hash of index.html (see pageBuild / BUILD in server.mjs)
-globalThis.OpenTubeCore = { VERSION, MAIN_GENESIS, LIMITS, ORG_TYPES, LISTING_TYPES, XCHG, noteUnlock, mediaRefShape, placeShape, domainOf, MAIL, ORG, orgRoles, orderPreimage, courtPreimage, bindPreimage, retirePreimage, rekeyPreimage, SQUARE, SEAL, monthKey, squareMonths, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, obsChannelPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, liveChunkPreimage, liveChunkShape, liveStatsOk, liveStatsOf, createLiveHub, dcSend, dcReceiver, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
+globalThis.OpenTubeCore = { VERSION, MAIN_GENESIS, LIMITS, ORG_TYPES, LISTING_TYPES, XCHG, noteUnlock, mediaRefShape, placeShape, domainOf, MAIL, ORG, orgRoles, orderPreimage, courtPreimage, bindPreimage, retirePreimage, rekeyPreimage, SQUARE, SEAL, monthKey, squareMonths, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, obsChannelPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, liveChunkPreimage, liveChunkShape, liveStatsOk, liveStatsOf, holdBloom, holdHas, createLiveHub, dcSend, dcReceiver, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
 })();
 </script>
 
@@ -2452,19 +2460,72 @@ engine = await createEngine({
 });
 const E = engine;
 const { main, chains, mempool, CFG, MAIN_ID, openChain, genesisFor, headsOf, append } = E;
-// Streams known to be over (their hub said it doesn't have them, or that they ended) aren't "live now", even when
-// no liveend block was written (the page was closed, the browser or computer crashed). Remembered in this browser.
-const DEAD_KEY = 'ot-dead-streams';
-const deadStreams = (() => { try { return new Map(Object.entries(JSON.parse(localStorage.getItem(DEAD_KEY) || '{}'))); } catch { return new Map(); } })();
-const derive = (id) => { const d = E.derive(id); return d?.liveNow?.some(lb => deadStreams.has(lb.payload.stream)) ? { ...d, liveNow: d.liveNow.filter(lb => !deadStreams.has(lb.payload.stream)) } : d; };
-function markDead(chainId, stream) {
-  if (broadcasts.get(chainId)?.stream === stream && !broadcasts.get(chainId).ended) return;   // ours, still going
-  const lb = E.derive(chainId)?.streams?.find(b => b.payload.stream === stream);
-  if (!lb || Date.now() - lb.ts < 2 * 60000) return;   // just started: its hub may not have it yet
-  deadStreams.set(stream, Date.now());
-  try { localStorage.setItem(DEAD_KEY, JSON.stringify(Object.fromEntries([...deadStreams].sort((a, b) => b[1] - a[1]).slice(0, 300)))); } catch {}
-  endOnChain(chainId, stream); scheduleRender();
+// Stale data. A live stream is listed as live only while it works: its hub has had video from it in the last minute
+// (or we're receiving it). One that stopped working (the page was closed, a crash, a dead hub) drops out of the lists
+// after more than a minute, and comes back by itself if it starts working again. Nothing is deleted.
+// Videos nobody serves any more drop out the same way (see videoGone).
+const liveSeen = new Map(), liveNo = new Map(), hubDown = new Map(), deadStreams = new Map();   // stream -> time
+const noteLive = (stream) => { if (stream) { liveSeen.set(stream, Date.now()); liveNo.delete(stream); hubDown.delete(stream); } };
+function liveStale(chainId, lb) {
+  const s = lb.payload.stream, now = Date.now();
+  if (deadStreams.has(s)) return true;   // its owner ended it from this page
+  if (broadcasts.get(chainId)?.stream === s && !broadcasts.get(chainId).ended) return false;   // ours, going
+  if (now - lb.ts < 90000) return false;   // just started
+  if (now - (liveSeen.get(s) || 0) < 75000) return false;   // working a moment ago
+  return (liveNo.get(s) || 0) > (liveSeen.get(s) || 0) || now - (hubDown.get(s) || now) > 60000;   // its hub says it isn't working, or the hub's been unreachable over a minute
 }
+const derive = (id) => {
+  const d = E.derive(id); if (!d) return d;
+  const stale = d.liveNow?.some(lb => liveStale(id, lb)), mine = isMine(d.owner), gone = !mine && d.videos?.some(b => videoGone(b.payload.infohash));
+  if (!stale && !gone) return d;
+  return { ...d, ...(stale ? { liveNow: d.liveNow.filter(lb => !liveStale(id, lb)) } : {}), ...(gone ? { videos: d.videos.filter(b => !videoGone(b.payload.infohash)) } : {}) };
+};
+// Videos nobody serves any more drop out of feeds and lists (their owner still sees them, and a direct link still
+// works): only after 10 minutes of checks finding no one, and back as soon as anyone serves them again. Served means:
+// this browser has it, a peer sends it, a computer's signed status says it holds it, or a meet place (tracker) knows
+// someone sharing it.
+const VID_KEY = 'ot-video-served';
+const vidSeen = new Map(), vidChecked = new Map(), vidWant = new Set();   // ih -> last time served; ih -> { first, last, n }
+try { const j = JSON.parse(localStorage.getItem(VID_KEY) || '{}'); for (const [ih, x] of Object.entries(j)) { if (x.s) vidSeen.set(ih, x.s); if (x.c) vidChecked.set(ih, x.c); } } catch {}
+function videoServedNow(ih) {
+  try {
+    if (hosting.has(ih) || fetching.has(ih) || (getTorrent(ih)?.numPeers || 0) > 0) return true;
+    for (const n of E.nodes.values()) if (Date.now() - n.at < 15 * 60000 && globalThis.OpenTubeCore.holdHas(n.info?.has, ih)) return true;
+  } catch {}
+  return false;
+}
+function videoGone(ih) {
+  if (!ih) return false;
+  if (vidWant.size < 1000) vidWant.add(ih);
+  if (videoServedNow(ih)) { vidSeen.set(ih, Date.now()); return false; }
+  const c = vidChecked.get(ih), now = Date.now();
+  return !!c && c.n >= 2 && now - c.first > 10 * 60000 && now - (vidSeen.get(ih) || 0) > 10 * 60000;
+}
+const hexBin = (hex) => hex.match(/../g).map(x => String.fromCharCode(parseInt(x, 16))).join('');
+const binHex = (s) => [...s].map(c => c.charCodeAt(0).toString(16).padStart(2, '0')).join('');
+function scrape(url, ihs) {   // ask a tracker how many peers share each video: { ih: count }
+  return new Promise((res) => {
+    let ws; try { ws = new WebSocket(url); } catch { return res(null); }
+    const done = (v) => { clearTimeout(t); try { ws.close(); } catch {} res(v); }, t = setTimeout(() => done(null), 8000);
+    ws.onopen = () => ws.send(JSON.stringify({ action: 'scrape', info_hash: ihs.map(hexBin) }));
+    ws.onmessage = (e) => { try { const m = JSON.parse(e.data); if (m.action !== 'scrape' || !m.files) return; const out = {}; for (const [k, f] of Object.entries(m.files)) out[k.length === 20 ? binHex(k) : k] = (f.complete || 0) + (f.incomplete || 0); done(out); } catch {} };
+    ws.onerror = () => done(null);
+  });
+}
+async function checkVideos() {
+  const now = Date.now(), batch = [...vidWant].filter(ih => !videoServedNow(ih)).sort((a, b) => (vidChecked.get(a)?.last || 0) - (vidChecked.get(b)?.last || 0)).slice(0, 50);
+  vidWant.clear();
+  if (!batch.length) return;
+  const trackers = [...TRACKERS.filter(u => /\/tracker$/.test(u) && u !== homeTracker).slice(0, 2), ...TRACKERS.filter(u => !/\/tracker$/.test(u)).slice(0, 1)];
+  let answered = false;
+  for (const u of trackers) { const r = await scrape(u, batch); if (!r) continue; answered = true; for (const ih of batch) if (r[ih] > 0) vidSeen.set(ih, now); }
+  if (!answered) return;   // no tracker answered: that says nothing about the videos
+  for (const ih of batch) { const c = vidChecked.get(ih); vidChecked.set(ih, { first: c?.first || now, last: now, n: (c?.n || 0) + 1 }); if (vidSeen.get(ih) === now) vidChecked.delete(ih); }
+  try { const all = {}; for (const ih of new Set([...vidSeen.keys(), ...vidChecked.keys()])) all[ih] = { s: vidSeen.get(ih), c: vidChecked.get(ih) }; localStorage.setItem(VID_KEY, JSON.stringify(Object.fromEntries(Object.entries(all).slice(-2000)))); } catch {}
+  scheduleRender();
+}
+setTimeout(checkVideos, 60000); setInterval(checkVideos, 2 * 60000);
+function markDead(chainId, stream) { liveNo.set(stream, Date.now()); scheduleRender(); }   // the hub said it isn't there (not final)
 // a stream of ours that's over but was never closed on the channel: close it, so it stops showing as live for everyone
 // (the recording, if any, stays offered to publish)
 async function endOnChain(chainId, stream) {
@@ -3140,7 +3201,10 @@ const liveNet = (() => {
           for (const st of streamsOn(url)) handlers.get(st)?.({ t: 'reconnected' });
           return;
         }
-        handlers.get(m.stream ?? m.seg?.stream)?.(m);
+        const st_ = m.stream ?? m.seg?.stream;
+        if (['seg', 'up', 'lchunk', 'viewers', 'watching', 'parent', 'broadcasting'].includes(m.t)) noteLive(st_);   // signs of a working stream
+        else if (m.t === 'nostream' && st_) liveNo.set(st_, Date.now());
+        handlers.get(st_)?.(m);
       };
       c.ws.onclose = () => {
         c.ready = null; c.ws = null; c.nonce = null;
@@ -3159,8 +3223,17 @@ const liveNet = (() => {
     const u = siteHub(); if (u && await connect(u)) return { node: null, url: u };   // last: the site's own hub
     return null;
   }
+  // ask a stream's hub whether it's working (no viewer is added): the answer arrives as 'up' or 'nostream'
+  async function probe(lb) {
+    const s = lb.payload.stream, key = lb?.payload?.hub || (E.nodes.has(lb?.author) ? lb.author : null);
+    const cands = key ? nodeHubUrls(key) : [liveNetApi.hubOf(lb)];
+    let url = null; for (const u of cands) if (u && await connect(u)) { url = u; break; }
+    if (!url) { if (!hubDown.has(s)) hubDown.set(s, Date.now()); return; }
+    hubDown.delete(s); if (key) goodHub.set(key, url);
+    try { conns.get(url).ws.send(JSON.stringify({ t: 'probe', stream: s })); } catch {}
+  }
   const liveNetApi = {
-    connect, send, auth, pickHub, entryHubs, linkedHubs, nodeHubUrl, resolveHub,
+    connect, send, auth, pickHub, entryHubs, linkedHubs, nodeHubUrl, resolveHub, probe,
     available: () => entryHubs().length > 0 || linkedHubs().length > 0 || !!siteHub(),
     // where a stream lives: the hub its live block names; a computer's own stream, that computer; else (older streams) the site
     hubOf: (lb) => (lb?.payload?.hub && nodeHubUrl(lb.payload.hub)) || (E.nodes.has(lb?.author) && nodeHubUrl(lb.author)) || (lb?.payload?.hub ? bestHub() : siteHub()),
@@ -3418,7 +3491,7 @@ async function onLiveMsg(sess, m) {
       return;
     case 'nostream':   // not started yet, or already over: try again for a little while
       if ((++sess.tries < 10 || broadcasts.get(sess.chainId)?.stream === sess.stream) && !sess.ended) setTimeout(() => viewing.get(sess.stream) === sess && sendWatch(sess), broadcasts.get(sess.chainId)?.stream === sess.stream ? 10000 : 3000);   // the owner waits for OBS as long as it takes
-      else { sess.ended = true; sess.ui?.ended('This stream isn’t live right now.'); markDead(sess.chainId, sess.stream); }
+      else { sess.ended = true; sess.ui?.ended('This stream isn’t live right now.'); markDead(sess.chainId, sess.stream); if (sess.background) { liveNet.off(sess.stream); viewing.delete(sess.stream); } }
       return;
     case 'parent':
       sess.parent = m.peer; sess.mode = m.dc ? 'dc' : 'rtc'; sess.dcAt = 0; sess.ui?.status('Connecting…');
@@ -3469,7 +3542,7 @@ async function onLiveMsg(sess, m) {
       const g = m.seg; if (!g || g.stream !== sess.stream) return;
       if (sess.gotN?.has(g.n)) return;
       if (sess.capture && g.n > 0 && m.via !== 'chunk' && ((g.n * 7919) % 100) / 100 < Number(params.get('livedrop') || 0)) return;   // testing: lose the same segments on every path (?livedrop=0.3)
-      sess.gotN?.add(g.n);   // the same segment can arrive from the hub and the mesh
+      sess.gotN?.add(g.n); noteLive(g.stream);   // the same segment can arrive from the hub and the mesh
       if (m.via === 'mesh' && sess.mode === 'pending') { sess.mode = 'seg'; sess.ui?.segmentMode(); }
       const u8 = b64.dec(g.d);
       if (await sha256Bytes(u8) !== g.h) { if (params.get('debug')) console.log('live seg bad hash', g.n); return; }
@@ -3533,6 +3606,20 @@ async function settleCaptures(chainId) {
   }
 }
 // Members join their channels' live streams in the background, and settle finished ones.
+// Every 20 s: is each live stream we know of still working? Its hub answers a probe (streams being watched report
+// themselves through their segments). The lists change only when the answer does.
+let liveSig = '';
+setInterval(() => {
+  const listed = [];
+  for (const c of chains.values()) { if (c === main) continue; const d = E.derive(c.id); for (const lb of d?.liveNow || []) listed.push([c.id, lb]); }
+  let n = 0;
+  for (const [id, lb] of listed) {
+    if (Date.now() - lb.ts < 60000 || broadcasts.get(id)?.stream === lb.payload.stream) continue;
+    const v = viewing.get(lb.payload.stream); if (v && !v.ended) continue;
+    if (n++ >= 30) break; liveNet.probe(lb).catch(() => {});
+  }
+  setTimeout(() => { const sig = listed.filter(([id, lb]) => liveStale(id, lb)).map(([, lb]) => lb.payload.stream).join(); if (sig !== liveSig) { liveSig = sig; scheduleRender(); } }, 5000);
+}, 20000);
 function liveForJoined() {
   if (!canHost() || !liveNet.available() || !LIVE_MIME) return;
   for (const id of joinedList()) {
@@ -7484,7 +7571,7 @@ $('#terms-ok').onclick = () => { try { localStorage.setItem('opentube-terms', '1
 render(true);
 window.addEventListener('beforeunload', (e) => { if (E.miner || hosting.size) { e.preventDefault(); e.returnValue = ''; } });
 // Exposed for debugging in the console.
-window.opentube = { me, engine: E, net, wt, live: { broadcasts, viewing, hub: liveNet }, nodeCtl, trackers: TRACKERS, diag };
+window.opentube = { me, engine: E, net, wt, live: { broadcasts, viewing, hub: liveNet, liveStale }, nodeCtl, trackers: TRACKERS, diag, stale: { videoGone, checkVideos, scrape, vidSeen, vidChecked } };
 
 // ---------------------------------------------------------------- connect
 if (params.get('net') === 'local') startLocal();
