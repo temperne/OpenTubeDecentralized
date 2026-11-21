@@ -502,6 +502,17 @@ A computer reachable from the internet (started with `--public`, which sets up H
 - **Live streams** live on one hub, named in the live block (`hub`). A browser going live picks an entry node that answers. A computer that is an entry node uses its own hub for its streams. Viewers, relays and group streams connect to the hub the block names.
 - **Scratch pad:** every 15 s, each entry node sends the others what's live on its hub (viewer counts, who's watching), signed. This is held in memory only and expires after a minute. So any entry node's `/status` shows the whole network's live streams, and a browser needs to ask only one.
 
+### Finding the network without the site
+
+The site (Cloudflare) serves the page. Its own node is a last resort: it has a daily request quota, and when that's spent it answers with error 1101. Browsers find the network in this order, and none of these depends on one server:
+
+1. **Computers they remember:** entry nodes they've met, and your own computers (their localhost address works from the page). Kept in the browser and refreshed by itself.
+2. **`seeds.json`:** a static file served next to the page, which costs the Worker nothing. It lists entry nodes. A GitHub Action (`.github/workflows/seeds.yml`) refreshes it every hour: it asks the known entry nodes which entry nodes they know (`/entries.json`), keeps those that answer over HTTPS and commits the list, and the site redeploys. Nodes appear and drop out by themselves. If none answers, the old list stays.
+3. **The public tracker mesh:** browsers join the OpenTube room through public WebTorrent trackers. Peers there (browsers and nodes) pass along signed node statuses, entry nodes included.
+4. **The site's own node,** only while none of the above answers, and retried slowly (up to every 30 min) when it fails.
+
+Every node serves `/entries.json` (the entry nodes it knows) and `/seeds.json`. To add your server, start it with `--public`. It joins the list by itself once any entry node or the hourly update hears about it, or you can add its HTTPS address to `seeds.json` yourself.
+
 ### Group streams (several people in one picture)
 
 Under Devices → 🎥 OBS & streaming → **Group**, or on the live page of your own stream, switch the group stream **on**. Everyone connected is combined into one 1280×720 picture, arranged by how many are in it: one fills the screen, two sit side by side, three or four go in a 2×2 grid, and five to nine in 3×3. Audio is mixed.

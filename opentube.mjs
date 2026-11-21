@@ -51,7 +51,7 @@ await fsp.mkdir(APP, { recursive: true });
 // The site's current code. If the site can't be reached, the copy from last time is used.
 // It says so when it can't update, since an old copy can behave differently (an old OBS receiver listened on localhost only).
 const stale = [];
-for (const f of ['index.html', 'server.mjs', 'headless.mjs', 'rtmp.mjs', 'host.mjs', 'tls.mjs', 'sw.js']) {
+for (const f of ['index.html', 'server.mjs', 'headless.mjs', 'rtmp.mjs', 'host.mjs', 'tls.mjs', 'sw.js', 'seeds.json']) {
   try {
     const r = await fetch(new URL(f, site) + '?v=' + Date.now(), { cache: 'no-store' });
     if (!r.ok) throw new Error('HTTP ' + r.status);

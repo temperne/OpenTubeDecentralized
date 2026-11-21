@@ -1,0 +1,26 @@
+# Keeps seeds.json current: the entry nodes (public OpenTube computers) browsers try first. Hourly, it asks the known
+# entry nodes which entry nodes they know, keeps the ones that answer, and commits the list; the site redeploys.
+name: Update seed list
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  seeds:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/update-seeds.mjs
+      - name: Commit if changed
+        run: |
+          if ! git diff --quiet seeds.json; then
+            git config user.name "opentube-seeds"
+            git config user.email "opentube-seeds@users.noreply.github.com"
+            git commit -m "Update seed list (entry nodes that answer now)" seeds.json
+            git push
+          fi

@@ -1129,6 +1129,17 @@ function handle(req, res) {
     res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-cache', 'access-control-allow-origin': '*' });
     return res.end(fs.readFileSync(path.join(DIR, url.pathname.slice(1))));
   }
+  if (url.pathname === '/entries.json') {   // the entry nodes this node knows right now (from signed node statuses): how browsers and the seed list stay current
+    const fresh = [...engine.nodes.values()].filter(n => n.roles?.includes('entry') && Date.now() - n.at < 15 * 60000)
+      .map(n => ({ node: n.node, url: (n.addrs || []).find(a => /^https:\/\//.test(a)) || null, at: n.at })).filter(x => x.url);
+    if (isEntry() && /^https:/.test(process.env.PUBLIC_URL || '') && !fresh.some(x => x.node === signer.pub)) fresh.unshift({ node: signer.pub, url: process.env.PUBLIC_URL.replace(/\/+$/, ''), at: Date.now() });
+    res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*', 'cache-control': 'max-age=60' });
+    return res.end(JSON.stringify({ network: engine.MAIN_ID, at: Date.now(), entry: fresh.slice(0, 50) }));
+  }
+  if (url.pathname === '/seeds.json') {   // the entry nodes browsers try first (served by this node too, for self-hosted sites)
+    res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
+    try { return res.end(fs.readFileSync(path.join(DIR, 'seeds.json'))); } catch { return res.end('{"entry":[]}'); }
+  }
   if (url.pathname === '/sw.js') {  // WebTorrent's streaming service worker: lets videos play while downloading
     res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-cache' });
     return res.end(fs.readFileSync(path.join(DIR, 'sw.js')));

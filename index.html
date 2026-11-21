@@ -2330,15 +2330,23 @@ function homeNodeUrl() {
 // Entry nodes (public OpenTube computers) seen before, kept in this browser: a way into the network when the site
 // serves only the page.
 const ENTRY_KEY = 'ot-entry-nodes';
-const savedEntries = () => { try { return JSON.parse(localStorage.getItem(ENTRY_KEY) || '[]'); } catch { return []; } };
+const savedEntries = () => { try { return [...seedEntries, ...JSON.parse(localStorage.getItem(ENTRY_KEY) || '[]')]; } catch { return seedEntries; } };
+// the seed list shipped with the page (seeds.json, a static file: reading it costs the site nothing): entry nodes a
+// first-time visitor tries before the site's own node
+let seedEntries = [];
+const seedsReady = fetch('seeds.json', { cache: 'no-cache' }).then(r => r.ok ? r.json() : {}).then(j => {
+  seedEntries = (j.entry || []).filter(u => /^https:\/\//.test(u) || location.protocol === 'http:').slice(0, 20).map(u => ({ node: null, addrs: [u.replace(/\/+$/, '')], at: 0, seed: true }));
+  if (seedEntries.length && typeof maintainNodes === 'function') maintainNodes();
+}).catch(() => {});
 function saveEntries() {
-  try { const now = [...(engine?.nodes?.values() || [])].filter(n => n.roles.includes('entry')).map(n => ({ node: n.node, addrs: n.addrs, at: n.at }));
-    if (!now.length) return; const all = [...now, ...savedEntries().filter(x => !now.some(y => y.node === x.node))].sort((a, b) => b.at - a.at).slice(0, 20);
+  // entry nodes, and your own computers (their localhost address works from this page): ways in without the site
+  try { const now = [...(engine?.nodes?.values() || [])].filter(n => n.roles.includes('entry') || n.grant?.user === me.pub).map(n => ({ node: n.node, addrs: n.roles.includes('entry') ? n.addrs : (n.addrs || []).filter(a => /^https:|^http:\/\/(localhost|127\.)/.test(a)), at: n.at, mine: n.grant?.user === me.pub }));
+    if (!now.length) return; const all = [...now, ...savedEntries().filter(x => !x.seed && !now.some(y => y.node === x.node))].sort((a, b) => b.at - a.at).slice(0, 20);
     localStorage.setItem(ENTRY_KEY, JSON.stringify(all)); } catch {}
 }
 function nodeUrls() {
   const out = new Set();
-  for (const x of savedEntries()) for (const a of x.addrs || []) { const u = a.replace(/^http/, 'ws').replace(/\/+$/, '') + '/ot'; if (u.startsWith('wss://') || location.protocol === 'http:') out.add(u); }
+  for (const x of savedEntries()) for (const a of x.addrs || []) { const u = a.replace(/^http/, 'ws').replace(/\/+$/, '') + '/ot'; if (u.startsWith('wss://') || location.protocol === 'http:' || (x.mine && /^ws:\/\/(localhost|127\.)/.test(u))) out.add(u); }
   const home = params.get('net') === 'p2p' ? null : homeNodeUrl(); if (home) out.add(home);
   for (const u of (params.get('nodes') || '').split(',')) if (/^wss?:\/\//.test(u)) out.add(u);
   for (const n of engine?.nodes?.values() || []) for (const a of n.addrs || []) {
@@ -2360,7 +2368,7 @@ function connectNode(url) {
       if (url === homeNodeUrl()) fetch(url.replace(/^ws/, 'http').replace(/\/ot$/, '/status')).then(r => r.json()).then(j => { homeRanker = j.ranker || null; scheduleRender(); }).catch(() => {});
     };
     ws.onmessage = (e) => { try { deliver(JSON.parse(e.data), id); } catch {} };
-    ws.onclose = () => { dropLink(id); setTimeout(open, Math.min(120000, 3000 * 2 ** entry.tries++)); };   // keep trying, slower and slower
+    ws.onclose = () => { dropLink(id); setTimeout(open, Math.min(url === homeNodeUrl() ? 30 * 60000 : 120000, 3000 * 2 ** entry.tries++)); };   // keep trying, slower and slower (the site's own node: up to every 30 min, it may be out of quota)
   };
   open();
 }
@@ -2437,13 +2445,29 @@ const homeTracker = params.get('net') ? null : homeNodeUrl()?.replace(/\/ot$/, '
 // for next time in case the list can't be fetched.
 const TRACKER_LIST = 'https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_all_ws.txt';
 const TRACKERS = params.get('trackers') ? params.get('trackers').split(',') : [homeTracker, ...CFG.trackers].filter(Boolean);
-// entry nodes are trackers too: add theirs as they appear (and remember the entry nodes for next time)
-setInterval(() => {
+// entry nodes, and computers this page is linked to, are trackers too: add theirs as they appear (and remember the
+// entry nodes for next time)
+const addNodeTrackers = () => {
   if (params.get('trackers') || typeof liveNet === 'undefined') return;
-  for (const x of liveNet.entryHubs()) { const t = x.url.replace(/\/live$/, '/tracker'); if (!TRACKERS.includes(t) && TRACKERS.length < 24) TRACKERS.push(t); }
-  if (homeTracker && TRACKERS.some(t => t !== homeTracker && liveNet.entryHubs().some(x => x.url.replace(/\/live$/, '/tracker') === t)) && TRACKERS.includes(homeTracker)) TRACKERS.splice(TRACKERS.indexOf(homeTracker), 1);   // the site's tracker only as a fallback
+  for (const x of seedEntries) { const t = x.addrs[0].replace(/^http/, 'ws') + '/tracker'; if (!TRACKERS.includes(t) && TRACKERS.length < 24) TRACKERS.unshift(t); }
+  for (const x of [...liveNet.entryHubs(), ...liveNet.linkedHubs()]) { const t = x.url.replace(/\/live$/, '/tracker'); if (!TRACKERS.includes(t) && TRACKERS.length < 24) TRACKERS.unshift(t); }
+  if (homeTracker && TRACKERS.some(t => t !== homeTracker && [...liveNet.entryHubs(), ...liveNet.linkedHubs()].some(x => x.url.replace(/\/live$/, '/tracker') === t)) && TRACKERS.includes(homeTracker)) TRACKERS.splice(TRACKERS.indexOf(homeTracker), 1);   // the site's tracker only as a fallback
   saveEntries();
-}, 15000);
+};
+setInterval(addNodeTrackers, 15000); setTimeout(addNodeTrackers, 3000); seedsReady.then(addNodeTrackers);
+// ask entry nodes (and the seeds) which entry nodes they know, and remember them all: the list stays current by itself
+async function refreshEntries() {
+  const urls = [...new Set([...savedEntries().flatMap(x => x.addrs || []), ...[...(E?.nodes?.values() || [])].filter(n => n.roles.includes('entry')).flatMap(n => n.addrs || [])]
+    .filter(a => /^https:\/\//.test(a) || location.protocol === 'http:').map(a => a.replace(/\/+$/, '')))].slice(0, 6);
+  const found = [];
+  for (const u of urls) {
+    try { const j = await (await fetch(u + '/entries.json', { signal: AbortSignal.timeout(5000) })).json(); if (j.network && j.network !== MAIN_ID) continue; for (const e of j.entry || []) if (e?.url && /^https:\/\//.test(e.url)) found.push({ node: e.node || null, addrs: [e.url], at: e.at || Date.now() }); } catch {}
+    if (found.length >= 20) break;
+  }
+  if (!found.length) return;
+  try { const keep = JSON.parse(localStorage.getItem(ENTRY_KEY) || '[]'); const all = [...found, ...keep.filter(x => !found.some(y => y.addrs[0] === x.addrs?.[0]))].sort((a, b) => b.at - a.at).slice(0, 30); localStorage.setItem(ENTRY_KEY, JSON.stringify(all)); } catch {}
+}
+seedsReady.then(() => setTimeout(refreshEntries, 5000)); setInterval(refreshEntries, 10 * 60000);
 if (!params.get('trackers')) {
   const add = (list) => { for (const u of list) if (/^wss:\/\/[\w.-]+(:\d+)?(\/[\w./-]*)?$/.test(u) && !TRACKERS.includes(u.replace(/:443(?=\/|$)/, ''))) TRACKERS.push(u.replace(/:443(?=\/|$)/, '')); };
   try { add(JSON.parse(localStorage.getItem('opentube-trackers') || '[]')); } catch {}
@@ -3028,6 +3052,8 @@ const liveNet = (() => {
     const a = (n.addrs || []).find(ok); return a ? a.replace(/^http/, 'ws').replace(/\/+$/, '') + '/live' : null;
   };
   const entryHubs = () => [...E.nodes.values()].filter(n => n.roles.includes('entry') && Date.now() - n.at < 120000).map(n => ({ node: n.node, url: nodeHubUrl(n.node) })).filter(x => x.url);
+  // computers this page is already connected to (e.g. your own on localhost): hubs too, after entry nodes
+  const linkedHubs = () => [...nodeSockets.keys()].filter(u => u !== homeNodeUrl() && net.links?.has?.('node:' + u)).map(u => ({ node: [...E.nodes.values()].find(n => (n.addrs || []).some(a => a.replace(/^http/, 'ws').replace(/\/+$/, '') + '/ot' === u))?.node || null, url: u.replace(/\/ot$/, '/live') }));
   const urlFor = (stream) => streamHub.get(stream) || homeUrl();
   const send = (m) => { const c = conns.get(urlFor(m.stream ?? m.seg?.stream)); if (c?.ws?.readyState === 1) c.ws.send(JSON.stringify(m)); };
   async function authOn(c, signer) {
@@ -3065,12 +3091,13 @@ const liveNet = (() => {
   }
   // a hub to broadcast on: an entry node that answers (spread over them by a random start), else this site
   async function pickHub() {
-    const hubs = entryHubs().sort(() => Math.random() - 0.5);
-    for (const h_ of hubs) if (await connect(h_.url)) return h_;
-    const u = homeUrl(); return u && await connect(u) ? { node: null, url: u } : null;
+    for (const h_ of entryHubs().sort(() => Math.random() - 0.5)) if (await connect(h_.url)) return h_;
+    const u = homeUrl(); if (u && await connect(u)) return { node: null, url: u };
+    for (const h_ of linkedHubs().filter(x => x.node)) if (await connect(h_.url)) return h_;   // the site is down: your own computer (others get the stream over the mesh)
+    return null;
   }
   return {
-    connect, send, auth, pickHub, entryHubs, nodeHubUrl,
+    connect, send, auth, pickHub, entryHubs, linkedHubs, nodeHubUrl,
     available: () => !!homeUrl() || entryHubs().length > 0,
     hubOf: (lb) => (lb?.payload?.hub && nodeHubUrl(lb.payload.hub)) || homeUrl(),   // where a stream's live block says it lives
     on: (st, fn, url) => { handlers.set(st, fn); if (url) streamHub.set(st, url); },
@@ -6062,20 +6089,31 @@ async function probeStun() {
     diag.stun = { types: [...types], at: Date.now() };
   } catch (e) { diag.stun = { error: e.message, at: Date.now() }; }
 }
+// Status: from the computers this page reaches (entry nodes, and ones it's linked to, e.g. your own on localhost)
+// first; the site's own node only if none answers, and not again for 10 minutes after it failed (its daily quota may
+// be spent: every request to it counts).
+let homeFailedAt = 0;
 async function probeHome() {
   const url = homeNodeUrl(); if (!url || params.get('net')) return;
-  const t0 = performance.now();
-  try {
-    const sent = Date.now();
-    const j = await (await fetch(url.replace(/^ws/, 'http').replace(/\/ot$/, '/status'), { cache: 'no-store' })).json();
-    const rtt = Date.now() - sent;
-    if (Number.isFinite(j.now)) diag.clockOffset = j.now + rtt / 2 - Date.now();
-    diag.home = { ...j, ms: Math.round(performance.now() - t0), at: Date.now() };
-    for (const x of liveNet.entryHubs().slice(0, 6)) {   // and what's live on the entry nodes (each hub knows its own streams)
-      try { const r = await fetch(x.url.replace(/^ws/, 'http').replace(/\/live$/, '/status'), { signal: AbortSignal.timeout(4000) }); const js = await r.json(); for (const ls of js.liveStreams || []) if (!diag.home.liveStreams?.some(y => y.stream === ls.stream)) (diag.home.liveStreams ||= []).push(ls); } catch {}
-    }
+  const t0 = performance.now(), merged = { liveStreams: [] };
+  let got = null;
+  for (const x of [...liveNet.entryHubs(), ...liveNet.linkedHubs()].slice(0, 6)) {
+    try {
+      const r = await fetch(x.url.replace(/^ws/, 'http').replace(/\/live$/, '/status'), { signal: AbortSignal.timeout(4000), cache: 'no-store' }); const js = await r.json();
+      got ||= js; for (const ls of js.liveStreams || []) if (!merged.liveStreams.some(y => y.stream === ls.stream)) merged.liveStreams.push(ls);
+    } catch {}
   }
-  catch (e) { diag.home = { error: e.message, at: Date.now() }; }
+  if (!got && Date.now() - homeFailedAt > 10 * 60000) {
+    try {
+      const sent = Date.now();
+      const r = await fetch(url.replace(/^ws/, 'http').replace(/\/ot$/, '/status'), { cache: 'no-store' });
+      if (!r.ok) throw new Error(`the site’s node answered ${r.status}${r.status >= 500 ? ' (it may be out of its daily quota)' : ''}`);
+      got = await r.json();
+      if (Number.isFinite(got.now)) diag.clockOffset = got.now + (Date.now() - sent) / 2 - Date.now();
+      for (const ls of got.liveStreams || []) if (!merged.liveStreams.some(y => y.stream === ls.stream)) merged.liveStreams.push(ls);
+    } catch (e) { homeFailedAt = Date.now(); if (!diag.home || diag.home.error) diag.home = { error: e.message, at: Date.now() }; return; }
+  }
+  if (got) diag.home = { ...got, liveStreams: merged.liveStreams, ms: Math.round(performance.now() - t0), at: Date.now() };
 }
 async function probeStorage() {
   try { const est = await navigator.storage.estimate(); diag.storage = { usage: est.usage, quota: est.quota, persisted: await navigator.storage.persisted?.() }; } catch {}
@@ -6124,7 +6162,7 @@ function healthChecks() {
     const up = tr.filter(x => x.ok).length;
     const homeTr = homeTracker && diag.trackers.get(homeTracker);
     if (!tr.length) checks.push(warn('Video (P2P)', 'Testing trackers…'));
-    else if (homeTracker && homeTr?.at && !homeTr.ok) checks.push(bad('Video (P2P)', `The home node’s video tracker is unreachable (${homeTr.err}); ${up} of ${tr.length} trackers work.`, 'The node may be an older version without /tracker. Redeploy it.'));
+    else if (homeTracker && homeTr?.at && !homeTr.ok) checks.push(bad('Video (P2P)', `The home node’s video tracker is unreachable (${homeTr.err}); ${up} of ${tr.length} trackers work.`, (liveNet.linkedHubs().length || liveNet.entryHubs().length) ? 'Your computers’ trackers are used instead, so videos still work.' : 'The site’s own node may be out of its daily quota (it answers with an error). Run OpenTube on a computer (Devices), or add --public to a server’s command so it becomes an entry node: browsers then use it instead.'));
     else if (!up) checks.push(bad('Video (P2P)', 'No video tracker is reachable, so viewers can’t find whoever has a video.', 'Check your network/firewall, or run a home node with its own tracker.'));
     else checks.push(ok('Video (P2P)', `${up} of ${tr.length} trackers reachable${homeTr?.ok ? ', including the home node’s' : ''}.`));
     if (diag.stun && !diag.stun.running) {
@@ -7281,11 +7319,11 @@ $('#terms-ok').onclick = () => { try { localStorage.setItem('opentube-terms', '1
 render(true);
 window.addEventListener('beforeunload', (e) => { if (E.miner || hosting.size) { e.preventDefault(); e.returnValue = ''; } });
 // Exposed for debugging in the console.
-window.opentube = { me, engine: E, net, wt, live: { broadcasts, viewing, hub: liveNet }, nodeCtl };
+window.opentube = { me, engine: E, net, wt, live: { broadcasts, viewing, hub: liveNet }, nodeCtl, trackers: TRACKERS, diag };
 
 // ---------------------------------------------------------------- connect
 if (params.get('net') === 'local') startLocal();
-else { startP2P(); setTimeout(maintainNodes, 6000); setInterval(maintainNodes, 60000); }   // give the mesh a few seconds first
+else { startP2P(); setTimeout(maintainNodes, savedEntries().length ? 300 : 6000); setTimeout(maintainNodes, 8000); setInterval(maintainNodes, 60000); }   // remembered computers at once; otherwise give the mesh a few seconds first
 
 // ---------------------------------------------------------------- mirror mode
 // ?mirror=<user ID> turns this page into that person's always-on host (e.g. headless Chromium on a

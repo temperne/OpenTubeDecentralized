@@ -1,0 +1,6 @@
+{
+  "note": "Entry nodes: public OpenTube computers (started with --public) that browsers use first as their way into the network, trackers and live hubs. The site's own node is only a fallback. Add yours: its https address.",
+  "entry": [
+    "https://84.46.239.112.sslip.io"
+  ]
+}
