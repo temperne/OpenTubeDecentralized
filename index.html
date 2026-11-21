@@ -61,6 +61,17 @@
   .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
   .avatar { width: 56px; height: 56px; border-radius: 50%; background: var(--panel-2) center/cover; flex: none; display: grid; place-items: center; font-weight: 700; font-size: 22px; color: var(--muted); }
   .avatar.sm { width: 36px; height: 36px; font-size: 15px; }
+  header .status .detail { display: none; }
+  .fmt-hint { opacity: 0; transition: opacity .15s; }
+  *:focus-within > .fmt-hint, .fmt-hint:hover, *:focus-within > * > .fmt-hint { opacity: 1; }
+  .avatar.xs { width: 26px; height: 26px; font-size: 12px; }
+  .msg { display: flex; gap: 8px; align-items: flex-start; padding: 6px 2px; border-bottom: 1px solid var(--line, rgba(127,127,127,.15)); }
+  .msg:last-child { border-bottom: none; }
+  .msg .who { font-weight: 600; text-decoration: none; }
+  .msg .who:hover { text-decoration: underline; }
+  .msg.mine { background: color-mix(in srgb, var(--accent, #3b82f6) 7%, transparent); border-radius: 6px; }
+  .msg .body { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .msg .body p { margin: 2px 0 0; }
   .chan-row { display: flex; gap: 12px; align-items: center; padding: 10px; border-radius: 10px; color: var(--text); }
   .chan-row:hover { background: var(--panel-2); text-decoration: none; }
   .fp { font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); }
@@ -77,7 +88,7 @@
   #bell { position: relative; } .bell-n { position: absolute; top: -4px; right: -6px; background: #e11d48; color: #fff; border-radius: 999px; font-size: 10px; padding: 0 5px; line-height: 16px; }
   .rich ul { margin: 4px 0; padding-left: 22px; } .rich code { background: var(--panel-2); padding: 0 4px; border-radius: 4px; }
   .linkchip { white-space: nowrap; } .linkchip .tagx { background: none; border: 0; cursor: pointer; padding: 0 2px; font-size: 12px; }
-  a.person { color: inherit; text-decoration: none; } a.person:hover { text-decoration: underline; }
+  a.person { color: var(--accent2, #2563eb); font-weight: 600; text-decoration: none; } a.person:hover { text-decoration: underline; }
   .badge.ok { color: var(--ok); border-color: var(--ok); } .badge.warn { color: var(--warn); border-color: var(--warn); }
   .watch { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 20px; }
   @media (max-width: 900px) { .watch { grid-template-columns: 1fr; } }
@@ -150,8 +161,8 @@
   <a class="status" href="#/network" title="Network & diagnostics" style="color:inherit;text-decoration:none">
     <span><span class="dot" id="dot-health"></span><span id="st-health">checking…</span></span>
     <span><span class="dot" id="dot-net"></span><span id="st-net">connecting…</span></span>
-    <span><span class="dot" id="dot-chain"></span><span id="st-chain">main chain…</span></span>
-    <span id="st-p2p"></span>
+    <span class="detail"><span class="dot" id="dot-chain"></span><span id="st-chain">main chain…</span></span>
+    <span id="st-p2p" class="detail"></span>
   </a>
 </header>
 <div id="folderbar" class="hidden"></div>
@@ -3480,11 +3491,12 @@ function updateStatus() {
   try {
     const level = worst(healthChecks());
     $('#dot-health').className = 'dot ' + { ok: 'on', warn: 'busy', error: 'bad' }[level];
-    $('#st-health').textContent = { ok: 'healthy', warn: 'degraded', error: 'problem' }[level];
+    $('#st-health').textContent = { ok: 'Online', warn: 'Limited', error: 'Problem' }[level];
   } catch {}
   $('#dot-net').className = 'dot' + (net.online() ? ' on' : '');
   $('#st-net').textContent = net.status();
   $('#dot-chain').className = 'dot' + (E.miner ? ' busy' : ' on');
+  setTimeout(() => { const st = document.querySelector('header .status'); if (st) st.title = [...st.querySelectorAll('span[id^="st-"]')].map(x => x.textContent).filter(Boolean).join(' · ') + ' — click for network & diagnostics'; }, 0);
   $('#st-chain').textContent = `main #${main.best.height} · ${E.directory.size} registered` + (E.miner ? ` · mining (${E.minedHashes.toLocaleString()} hashes)` : '') + (mempool.size ? ` · ${mempool.size} pending` : '');
   $('#st-p2p').textContent = `hosting ${hosting.size} · ↑${fmtBytes(wt.uploadSpeed)}/s ↓${fmtBytes(wt.downloadSpeed)}/s`;
 }
@@ -3569,7 +3581,7 @@ function publishMyMembership() {
   publishMyMembership.t = setTimeout(() => { if (!MIRROR) E.publishMembership(joinedList(), myChannels()).catch(() => {}); }, 1000);   // your nodes host your joined channels and your own
 }
 function setSub(id, mode) {
-  if (mode === 'join' && !canHost() && !MIRROR) { toast(folder.state === 'unsupported' ? 'Joining means hosting videos, which needs Chrome or Edge on a computer. You can still subscribe and watch.' : 'Choose a video folder first (My node → Video folder). Joined channels download into it.'); return; }
+  if (mode === 'join' && !canHost() && !MIRROR && !storageNodes().length) { toast(folder.state === 'unsupported' ? 'Joining means hosting videos, which needs Chrome or Edge on a computer. You can still subscribe and watch.' : 'Choose a video folder first (My node → Video folder). Joined channels download into it.'); return; }
   const wasJoined = subs[id] === 'join';
   if (mode) subs[id] = mode; else delete subs[id];
   saveSubs();
@@ -4506,6 +4518,7 @@ async function ensureMyPage() {   // your page chain: created the first time you
 // Add someone as a friend, choosing what kind of friend they are (which of your posts they can read), or change it.
 function addFriendControl(key, name) {
   const f = settings.friends.find(x => x.key === key);
+  if (!f) return h('button', { class: 'small', onclick: () => { settings.friends.push({ key, name, level: 'friends' }); saveSettings(); toast(`${name || 'They'} added as a friend`); render(true); } }, '＋ Add friend');
   const sel = h('select', { style: 'width:auto' }, settings.friendLevels.map(l => h('option', { value: l, selected: (f?.level || 'friends') === l }, LEVEL_NAMES[l] || l)));
   sel.onchange = () => { if (f) { f.level = sel.value; saveSettings(); toast(`${name || 'They'}: ${LEVEL_NAMES[sel.value] || sel.value}`); } };
   return h('span', { class: 'row', style: 'gap:4px' }, sel, f ? h('button', { class: 'small on', title: 'Remove from friends', onclick: () => { settings.friends = settings.friends.filter(x => x.key !== key); saveSettings(); render(true); } }, 'Friend ✓')
@@ -4566,8 +4579,10 @@ function profileBody(key) {   // everything that belongs to an identity, tied to
   const olderMonths = () => { for (const m of globalThis.OpenTubeCore.squareMonths()) squareChain(m); toast('Loading older months of public posts…'); };
   const section = (title, body, empty) => h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, title), body && (!Array.isArray(body) || body.length) ? body : h('div', { class: 'sub' }, empty));
   return h('div', {},
-    h('div', { class: 'panel row', style: 'gap:16px;align-items:flex-start' }, avatar(pr.avatar, pr.name || keyName(key)),
-      h('div', { style: 'flex:1;min-width:220px' }, h('h1', { style: 'margin:0' }, pr.name || keyName(key)), pageId && nameOf(pageId) ? h('div', {}, h('a', { href: nameLink(nameOf(pageId)), style: 'font-weight:600' }, nameOf(pageId))) : null, h('div', { class: 'fp' }, key),
+    mine ? h('div', { class: 'sub', style: 'margin:6px 0' }, 'Your public profile, as others see it:') : null,
+    h('div', { class: 'panel row', style: 'gap:16px;align-items:flex-start' }, avatar(pr.avatar, pr.name || (mine ? settings.name : keyName(key))),
+      h('div', { style: 'flex:1;min-width:220px' }, h('h1', { style: 'margin:0' }, pr.name || (mine ? settings.name || 'No name yet' : keyName(key))),
+        mine && !pr.name ? h('div', { class: 'sub' }, 'Set your name and picture under “Edit your profile” above.') : null, pageId && nameOf(pageId) ? h('div', {}, h('a', { href: nameLink(nameOf(pageId)), style: 'font-weight:600' }, nameOf(pageId))) : null, h('div', { class: 'fp' }, key),
         pr.about ? h('p', { class: 'pre' }, pr.about) : null, pr.location ? h('div', { class: 'sub' }, '📍 ' + pr.location) : null,
         (pr.links || []).length ? h('div', { class: 'row', style: 'gap:8px;margin-top:6px' }, pr.links.map(l => h('a', { class: 'tagbox', style: 'padding:4px 12px', href: l.url, target: '_blank', rel: 'noopener noreferrer nofollow' }, '🔗 ' + l.label))) : null,
         roles.length ? h('div', { class: 'sub', style: 'margin-top:6px' }, roles.map(([o, r], i) => [i ? ' · ' : '', r === 'judge' ? 'arbitrator' : r, ' at ', chainLink(o)])) : null),
@@ -4650,7 +4665,7 @@ function fmtBar(ta) {   // B / I / link / list buttons for a text box
     h('button', { class: 'small', type: 'button', title: 'Italic', onclick: () => wrap('*', '*', 'italic') }, h('i', {}, 'I')),
     h('button', { class: 'small', type: 'button', title: 'Link', onclick: () => { const u = prompt('Link address (https://…)'); if (u && /^https?:\/\//.test(u)) wrap('[', `](${u})`, 'link text'); } }, '🔗'),
     h('button', { class: 'small', type: 'button', title: 'List item', onclick: () => wrap((ta.value && !ta.value.endsWith('\n') ? '\n' : '') + '- ', '', 'item') }, '• list'),
-    h('span', { class: 'sub' }, '**bold** *italic* [text](https://…) #tag @channel @@person'));
+    h('span', { class: 'sub fmt-hint' }, '**bold** *italic* [text](https://…) #tag @channel @@person'));
 }
 // ---------------------------------------------------------------- maps (OpenStreetMap via Leaflet)
 // Places are just coordinates on the chain; the map tiles come from OpenStreetMap and address search from Nominatim,
@@ -5142,7 +5157,7 @@ views.chain = { render() {
   const d = derive(id), p = d.profile, mine = isMine(d.owner);
   const reg = E.directory.get(id);
   const subBtn = h('button', { class: subs[id] === 'sub' ? 'on' : '', onclick: () => setSub(id, subs[id] === 'sub' ? null : 'sub') }, subs[id] === 'sub' ? 'Subscribed ✓' : 'Subscribe');
-  const joinBtn = d.kind === 'channel' ? h('button', { class: subs[id] === 'join' ? 'on' : 'primary', title: 'Joining downloads every video this channel posts and shares it with other viewers.', onclick: () => setSub(id, subs[id] === 'join' ? 'sub' : 'join') }, subs[id] === 'join' ? (canHost() ? 'Joined · hosting ✓' : 'Joined · not hosting (no folder)') : canHost() ? 'Join (host videos)' : folder.state === 'unsupported' ? 'Join (needs Chrome/Edge)' : 'Join (needs video folder)') : null;
+  const joinBtn = d.kind === 'channel' ? h('button', { class: subs[id] === 'join' ? 'on' : 'primary', title: 'Joining downloads every video this channel posts and shares it with other viewers.', onclick: () => setSub(id, subs[id] === 'join' ? 'sub' : 'join') }, subs[id] === 'join' ? (canHost() ? 'Joined · hosting ✓' : storageNodes().length ? 'Joined · hosted on your computer ✓' : 'Joined · not hosting') : canHost() || storageNodes().length ? 'Join' : folder.state === 'unsupported' ? 'Join (needs Chrome/Edge)' : 'Join (needs video folder)') : null;
   const tabs = d.kind === 'org' ? ['flags', 'reports', 'rules', 'filings', 'cases', 'courts', 'people', 'about'].concat(mine ? ['manage'] : [])
     : d.kind === 'case' ? ['docket', 'about'].concat(mine ? ['manage'] : [])
     : d.kind === 'group' ? ['discussion', 'members', 'about'].concat(mine ? ['manage'] : [])
@@ -5154,7 +5169,8 @@ views.chain = { render() {
       h('div', { style: 'flex:1;min-width:200px' }, h('h1', { style: 'margin:0' }, p.name),
         nameOf(id) ? h('div', { class: 'row', style: 'gap:8px;margin:2px 0' }, h('a', { href: nameLink(nameOf(id)), style: 'font-weight:600' }, nameOf(id)),
           h('button', { class: 'small', onclick: () => copyText(nameLink(nameOf(id))) }, 'Copy link')) : null,
-        h('div', { class: 'sub' }, h('span', { class: 'fp' }, 'owner ' + fp(d.owner)), ` · ${d.blockCount} blocks · `, reg ? `registered in main block #${reg.height}` : h('span', { class: 'badge warn' }, 'registration pending'))),
+        h('div', { class: 'sub' }, d.kind === 'channel' ? `${d.videos.length} video${d.videos.length === 1 ? '' : 's'}` : d.kind, d.liveNow?.length ? h('span', { class: 'badge live', style: 'margin-left:6px' }, 'LIVE') : null,
+          reg ? null : h('span', { class: 'badge warn', style: 'margin-left:6px' }, 'registration pending'))),
       subBtn, joinBtn, subs[id] || settings.orgs?.[id] ? notifObjSelect(id) : null,
       (() => { const who = ownerIdentity(id); return who && who !== me.pub && !isMine(d.owner) ? h('span', { class: 'row', style: 'gap:6px' }, h('span', { class: 'sub' }, 'by'), personLink(who), addFriendControl(who, personName(who) || ''), h('a', { class: 'small', href: `#/messages/${who}` }, '✉')) : null; })(),
       !mine ? h('button', { title: 'Send this channel some of your coins', onclick: async () => {
@@ -5423,7 +5439,8 @@ views.livewatch = {
     const drawChat = () => {
       const dd = derive(id), list = dd.commentsFor(block).filter(b => !dd.hidden.has(b.hash)).sort((a, z) => a.ts - z.ts).slice(-200);
       const atEnd = chat.scrollTop + chat.clientHeight >= chat.scrollHeight - 30;
-      chat.replaceChildren(...(list.length ? list.map(cb => h('div', { class: 'item' }, h('b', {}, cb.author === dd.owner ? dd.profile.name : (cb.payload.name || 'anon')), h('span', { class: 'fp' }, ' ·' + fp(cb.author)), ' ', cb.payload.text)) : [h('div', { class: 'sub' }, 'No messages yet.')]));
+      chat.replaceChildren(...(list.length ? list.map(cb => msgRow(cb.author, id, { name: cb.payload.name, text: cb.payload.text, ts: cb.ts,
+        extra: isMine(dd.owner) && !isMine(cb.author) ? h('button', { class: 'small', style: 'margin-top:2px', onclick: () => append(id, { type: 'hide', target: cb.hash }) }, 'Hide') : null })) : [h('div', { class: 'sub' }, 'No messages yet. Say hello!')]));
       if (atEnd) chat.scrollTop = chat.scrollHeight;
     };
     let segp = null, how = '';
@@ -5552,13 +5569,14 @@ const chainTab = {
       links.length ? h('div', { class: 'row', style: 'gap:8px;margin-top:8px;flex-wrap:wrap' }, links.map(l => h('a', { class: 'tagbox', style: 'padding:4px 12px', href: l.url, target: '_blank', rel: 'noopener noreferrer nofollow' }, '🔗 ' + l.label))) : null,
       owner && owner !== d.owner ? h('div', { class: 'sub', style: 'margin-top:8px' }, 'Owned by ', personLink(owner), ' (coins paid to this channel go to them)') : null,
       d.kind === 'org' ? orgFacts(d) : null,
-      h('div', { class: 'kv', style: 'margin-top:16px' },
+      h('details', { style: 'margin-top:16px' }, h('summary', { class: 'sub', style: 'cursor:pointer' }, 'Technical details'), h('div', { class: 'kv', style: 'margin-top:8px' },
         h('div', {}, 'Chain ID'), h('div', { class: 'mono' }, id),
         h('div', {}, 'Channel key'), h('div', { class: 'mono' }, d.owner),
         h('div', {}, 'Owner identity'), h('div', { class: 'mono' }, ownerIdentity(id) !== d.owner ? ownerIdentity(id) : 'not bound yet'),
         h('div', {}, 'Default comments'), h('div', {}, d.kind === 'channel' ? { anyone: 'Anyone', approved: 'Approved users only', off: 'Off' }[d.profile.comments] : '—'),
         h('div', {}, 'Blocks'), h('div', {}, String(d.blockCount)),
-        h('div', {}, 'Heads'), h('div', { class: 'mono' }, [...chains.get(id).heads].map(x => x.slice(0, 12)).join(', '))));
+        h('div', {}, 'Registered'), h('div', {}, E.directory.get(id) ? 'yes' : 'pending'),
+        h('div', {}, 'Heads'), h('div', { class: 'mono' }, [...chains.get(id).heads].map(x => x.slice(0, 12)).join(', ')))));
   },
   manage(id, d) { return keep('manage', () => chainTab.manageBuild(id, d)); },
   manageBuild(id, d) { return h('div', {}, namePanel(id, d), sponsorPanel(id, d), chainTab.manageCore(id, d)); },
@@ -5839,7 +5857,7 @@ views.watch = {
         if (hidden && !isMine(cb.author) && !isMine(dd.owner)) return null;
         const canHide = !hidden && (isMine(dd.owner) || isMine(cb.author));
         return h('div', { class: 'item' + (hidden ? ' hidden-item' : '') },
-          h('b', {}, cb.author === dd.owner ? dd.profile.name : personLink(cb.author, personName(E.ledger.resolve(cb.author)) || cb.payload.name || 'anon')), ' ', h('span', { class: 'fp' }, '·' + fp(cb.author)),
+          (() => { const a = authorOf(cb.author, id, cb.payload.name); return h('span', { class: 'row', style: 'gap:6px;display:inline-flex;align-items:center' }, h('a', { href: a.href }, avatar(a.pic, a.name, 'xs')), h('a', { class: 'person', href: a.href, style: 'font-weight:600' }, a.name)); })(), ' ', h('span', { class: 'fp' }, '·' + fp(cb.author)),
           cb.author === dd.owner ? h('span', { class: 'badge ok', style: 'margin-left:6px' }, 'owner') : null,
           h('span', { class: 'sub' }, ' · ' + ago(cb.ts)), hidden ? h('span', { class: 'badge', style: 'margin-left:6px' }, 'hidden') : null,
           rich(cb.payload.text, cb.author, 'p'),
@@ -6475,6 +6493,23 @@ const fmtTok = (n) => Number(n).toLocaleString();
 function personName(key) {   // the name on someone's public profile (their page chain), if they set one
   const id = circleOf(key); if (!id) return null;
   return (chains.has(id) ? derive(id)?.profile.name : null) || genesisFor(id)?.payload.name || null;
+}
+// Who wrote something, as a link: the channel itself when its owner wrote it, otherwise the person's profile. With their
+// picture (from their profile page) or initial.
+function authorOf(key, chainId, fallbackName = '') {
+  const d = chainId && derive(chainId);
+  if (d && key === d.owner) return { name: d.profile.name, href: `#/c/${chainId}`, pic: d.profile.avatar, owner: true };
+  const k = E.ledger?.resolve(key) || key, circle = circleOf(k), prof = circle && chains.has(circle) ? derive(circle)?.profile : null;
+  return { name: personName(k) || fallbackName || keyName(key) || 'anon', href: `#/u/${k}`, pic: prof?.avatar || '', owner: false };
+}
+function msgRow(key, chainId, { name = '', text = '', ts = 0, extra = null, cls = '' } = {}) {
+  const a = authorOf(key, chainId, name);
+  return h('div', { class: 'msg' + (isMine(key) ? ' mine' : '') + (cls ? ' ' + cls : '') },
+    h('a', { href: a.href, title: a.name }, avatar(a.pic, a.name, 'xs')),
+    h('div', { class: 'body' },
+      h('div', {}, h('a', { class: 'who', href: a.href }, a.name), a.owner ? h('span', { class: 'badge ok', style: 'margin-left:6px' }, 'owner') : null,
+        a.name.includes(fp(key)) ? null : h('span', { class: 'fp', title: 'Their key fingerprint' }, ' ·' + fp(key)), ts ? h('span', { class: 'sub' }, ' · ' + ago(ts)) : null),
+      rich(text, key, 'p'), extra));
 }
 const personLink = (key, text) => h('a', { href: `#/u/${E.ledger.resolve(key)}`, class: 'person' }, text || keyName(key));
 function keyName(key) {
@@ -7112,7 +7147,7 @@ views.me = { render(all = false) {
         h('label', {}, 'Type'), kind, h('label', {}, 'Name'), name, h('label', {}, 'About'), about, chanOnly,
         h('div', { style: 'margin-top:12px' }, create))),
     h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Subscriptions'), Object.keys(subs).length ? Object.keys(subs).map(chanRow) : h('div', { class: 'sub' }, 'None yet.')),
-    h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Node'),
+    h('details', { class: 'panel' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Technical details (this browser’s node)'),
       h('div', { class: 'kv' },
         h('div', {}, 'Network ID'), h('div', { class: 'mono' }, MAIN_ID),
         h('div', {}, 'Main chain'), h('div', {}, `height ${main.best.height}, ${main.blocks.size} blocks stored, tip ${main.best.hash.slice(0, 16)}…`),
