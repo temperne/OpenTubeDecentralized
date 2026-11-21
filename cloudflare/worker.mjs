@@ -21,6 +21,21 @@ export default {
       ctx.waitUntil(cache.put(key, res.clone()));
       return res;
     }
+    if (url.pathname === '/entries.json' && request.method === 'GET') {
+      // The entry nodes (public OpenTube computers) browsers use instead of this site's node. Served from Cloudflare's
+      // edge cache: the Durable Object is asked at most every 2 minutes per location, and when it can't answer (e.g.
+      // its daily quota is spent) the static seed list is served instead.
+      const cache = caches.default, key = new Request(url.origin + '/entries.json');
+      const hit = await cache.match(key); if (hit) return hit;
+      let body = null;
+      try { const r = await env.NODE.get(env.NODE.idFromName('main')).fetch(new Request(url.origin + '/entries.json')); if (r.ok) body = await r.json(); } catch {}
+      let seeds = { entry: [] }; try { seeds = await (await env.ASSETS.fetch(new Request(url.origin + '/seeds.json'))).json(); } catch {}
+      const urls = [...new Set([...(body?.entry || []).map(e => e.url), ...(seeds.entry || [])].filter(u => /^https:\/\//.test(u || '')))].slice(0, 50);
+      const res = Response.json({ network: body?.network || seeds.network || null, at: Date.now(), entry: urls.map(u => ({ url: u, node: body?.entry?.find(e => e.url === u)?.node || null })) },
+        { headers: { 'access-control-allow-origin': '*', 'cache-control': `public, max-age=${body ? 120 : 30}` } });
+      ctx.waitUntil(cache.put(key, res.clone()));
+      return res;
+    }
     if (url.pathname === '/ot' || url.pathname === '/tracker' || url.pathname === '/live' || url.pathname === '/status') {
       // One node for the whole network: every browser talks to the same Durable Object.
       return env.NODE.get(env.NODE.idFromName('main')).fetch(request);
@@ -159,6 +174,11 @@ export class OpenTubeNode {
     const E = this.engine, url = new URL(request.url);
     await this.ensureRanker(url.host);
     await this.ensureAlarm();
+    if (url.pathname === '/entries.json') {   // entry nodes this node heard of (signed node statuses), with https addresses
+      const entry = [...E.nodes.values()].filter(n => n.roles?.includes('entry') && Date.now() - n.at < 15 * 60000)
+        .map(n => ({ node: n.node, url: (n.addrs || []).find(a => /^https:\/\//.test(a)) || null, at: n.at })).filter(x => x.url).slice(0, 50);
+      return Response.json({ network: E.MAIN_ID, at: Date.now(), entry });
+    }
     if (url.pathname === '/status') {
       return Response.json({
         network: E.MAIN_ID, now: Date.now(), height: E.main.best.height, tip: E.main.best.hash, registered: E.directory.size,

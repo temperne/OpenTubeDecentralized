@@ -21,6 +21,10 @@
 //   --mine            also spend CPU confirming everyone's registrations (by default the node confirms only its own
 //                     transactions, such as the receipts it's paid for)
 //   --cap-gb=5        storage limit per channel you host (your own channels are never trimmed)
+//   --tunnel          a public HTTPS address through Cloudflare Tunnel: no open ports, certificate or account needed
+//                     (https://<name>.trycloudflare.com; it changes when the tunnel restarts). With a Cloudflare account:
+//                     --tunnel-token=<token> --public-url=https://your.host for a fixed address. OBS (RTMP) can't go
+//                     through a tunnel: it still needs its port.
 //   --public          make this node public over HTTPS as <your-ip>.sslip.io with a Let's Encrypt certificate, so browsers
 //                     can use it as a node and tracker (needs ports 80 and 443; on Linux run as root). --public=your.domain
 //                     uses your own domain. --email=you@example.com for Let's Encrypt notices.
@@ -150,6 +154,43 @@ if (want.host && want.node && !args['browser-host']) {
   else log('couldn’t install WebTorrent, so video hosting is off. The node and OBS receiver still run.');
 }
 
+// ---- Cloudflare Tunnel (--tunnel): a public HTTPS address with no open ports, no certificate and no router setup.
+// cloudflared connects out to Cloudflare, which forwards https://<name>.trycloudflare.com (WebSockets included) to
+// this node. No account needed (the address changes when the tunnel restarts; the node announces the new one).
+// With an account: --tunnel-token=<token> --public-url=https://your.host (a named tunnel, a fixed address).
+async function cloudflaredPath() {
+  const found = spawnSync(process.platform === 'win32' ? 'where' : 'which', ['cloudflared']);
+  if (found.status === 0) return String(found.stdout).split(/\r?\n/)[0].trim();
+  const dir = path.join(HOME, 'bin'); fs.mkdirSync(dir, { recursive: true });
+  const arch = process.arch === 'arm64' ? 'arm64' : process.arch === 'arm' ? 'arm' : 'amd64';
+  const plat = process.platform, file = path.join(dir, plat === 'win32' ? 'cloudflared.exe' : 'cloudflared');
+  if (fs.existsSync(file)) return file;
+  const name = plat === 'win32' ? 'cloudflared-windows-amd64.exe' : plat === 'darwin' ? `cloudflared-darwin-${arch === 'arm64' ? 'arm64' : 'amd64'}.tgz` : `cloudflared-linux-${arch}`;
+  log('downloading Cloudflare’s tunnel program (cloudflared, once)…');
+  const r = await fetch('https://github.com/cloudflare/cloudflared/releases/latest/download/' + name); if (!r.ok) throw new Error('download failed: HTTP ' + r.status);
+  const buf = Buffer.from(await r.arrayBuffer());
+  if (name.endsWith('.tgz')) { const tgz = file + '.tgz'; fs.writeFileSync(tgz, buf); spawnSync('tar', ['-xzf', tgz, '-C', dir]); fs.rmSync(tgz, { force: true }); }
+  else fs.writeFileSync(file, buf);
+  fs.chmodSync(file, 0o755); return file;
+}
+let tunnelUrl = null;
+if (want.node && (args.tunnel || args['tunnel-token'])) {
+  try {
+    const bin = await cloudflaredPath(), token = args['tunnel-token'] ? String(args['tunnel-token']) : null;
+    const argv = token ? ['tunnel', '--no-autoupdate', 'run', '--token', token] : ['tunnel', '--no-autoupdate', '--url', `http://localhost:${port}`];
+    if (token && !args['public-url']) log('⚠ --tunnel-token needs --public-url=https://your.host (the hostname routed to this tunnel in Cloudflare)');
+    const tunnel = spawn(bin, argv, { stdio: ['ignore', 'pipe', 'pipe'] }); children.add(tunnel);
+    tunnel.on('exit', (code) => { children.delete(tunnel); if (!stopping) { log(`tunnel stopped (${code}); restarting OpenTube for a new one`); relaunch(); } });
+    tunnelUrl = args['public-url'] ? String(args['public-url']).replace(/\/+$/, '') : await new Promise((res) => {
+      const t = setTimeout(() => res(null), 45000);
+      const look = (d) => { const m = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/.exec(String(d)); if (m) { clearTimeout(t); res(m[0]); } };
+      tunnel.stdout.on('data', look); tunnel.stderr.on('data', look);
+    });
+    if (tunnelUrl) log(`  public: ${tunnelUrl} (through Cloudflare Tunnel; browsers use it as a way into the network, tracker and live hub)`);
+    else log('the tunnel didn’t give an address within 45 s; the node runs without a public address');
+  } catch (e) { log('tunnel off:', e.message); }
+}
+
 if (want.node) {
   const roles = ['node', ...(want.host ? ['host'] : []), ...(want.obs ? ['obs'] : [])];
   run('node', 'server.mjs', [], {
@@ -157,6 +198,7 @@ if (want.node) {
     NODE_GRANT: String(args.grant), NODE_SITE: site.origin, NODE_ROLES: roles.join(','), NODE_LABEL: String(args.name || os.hostname()),
     HOST_STATUS_FILE: STATUS, RTMP_PORT: want.obs ? String(Number(args['obs-port']) || 1935) : '',
     ...(args.public ? { PUBLIC: args.public === true ? 'auto' : String(args.public), ...(args.email ? { PUBLIC_EMAIL: String(args.email) } : {}) } : {}),
+    ...(tunnelUrl ? { PUBLIC_URL: tunnelUrl } : {}),
     ...(nodeHosts ? { VIDEO_DIR: VIDEOS, HOST_USER: grant.user, CAP_GB: String(args['cap-gb'] || 5) } : {})
   });
 }

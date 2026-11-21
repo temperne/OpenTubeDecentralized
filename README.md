@@ -502,12 +502,16 @@ A computer reachable from the internet (started with `--public`, which sets up H
 - **Live streams** live on one hub, named in the live block (`hub`). A browser going live picks an entry node that answers. A computer that is an entry node uses its own hub for its streams. Viewers, relays and group streams connect to the hub the block names.
 - **Scratch pad:** every 15 s, each entry node sends the others what's live on its hub (viewer counts, who's watching), signed. This is held in memory only and expires after a minute. So any entry node's `/status` shows the whole network's live streams, and a browser needs to ask only one.
 
+### Public without opening ports: Cloudflare Tunnel
+
+`--tunnel` (or "Public through Cloudflare Tunnel" when you create the command on Devices) makes a computer an entry node with no open ports, certificate or router setup. The launcher downloads `cloudflared` once and opens a quick tunnel: Cloudflare gives the node an address like `https://some-words.trycloudflare.com` and forwards visitors, WebSockets included, over the computer's own outgoing connection. No Cloudflare account is needed. The address changes when the tunnel restarts; the node announces the new one, and browsers, entry lists and the seed list follow. With an account, `--tunnel-token=<token> --public-url=https://node.your.domain` uses a named tunnel with a fixed address. OBS (RTMP) can't go through a tunnel; it still uses its own port.
+
 ### Finding the network without the site
 
 The site (Cloudflare) serves the page. Its own node is a last resort: it has a daily request quota, and when that's spent it answers with error 1101. Browsers find the network in this order, and none of these depends on one server:
 
 1. **Computers they remember:** entry nodes they've met, and your own computers (their localhost address works from the page). Kept in the browser and refreshed by itself.
-2. **`seeds.json`:** a static file served next to the page, which costs the Worker nothing. It lists entry nodes. A GitHub Action (`.github/workflows/seeds.yml`) refreshes it every hour: it asks the known entry nodes which entry nodes they know (`/entries.json`), keeps those that answer over HTTPS and commits the list, and the site redeploys. Nodes appear and drop out by themselves. If none answers, the old list stays.
+2. **The site's list, `entries.json`:** the entry nodes the site's node currently hears of, served from Cloudflare's edge cache. Each page load is one cheap Worker request, and the Durable Object is asked at most every 2 minutes per location. When it can't answer (for example, its quota is spent), the static list below is served instead. **`seeds.json`:** a static file served next to the page, which costs the Worker nothing. It lists entry nodes. A GitHub Action (`.github/workflows/seeds.yml`) refreshes it every hour: it asks the known entry nodes which entry nodes they know (`/entries.json`), keeps those that answer over HTTPS and commits the list, and the site redeploys. Nodes appear and drop out by themselves. If none answers, the old list stays.
 3. **The public tracker mesh:** browsers join the OpenTube room through public WebTorrent trackers. Peers there (browsers and nodes) pass along signed node statuses, entry nodes included.
 4. **The site's own node,** only while none of the above answers, and retried slowly (up to every 30 min) when it fails.
 
