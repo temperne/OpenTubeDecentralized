@@ -19,6 +19,7 @@
 // No npm install needed: Node 20+ (Ed25519 WebCrypto, global WebSocket client on 22+).
 // For https/wss, put it behind a TLS proxy such as Caddy:  caddy reverse-proxy --to :8080
 import http from 'node:http';
+import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -1176,7 +1177,41 @@ function upgrade(req, socket) {
   if (p === '/ot') acceptSocket(req, socket, 'node');
   else if (p === '/tracker') acceptSocket(req, socket, 'tracker');
   else if (p === '/live') acceptSocket(req, socket, 'live');
+  else if (p === '/rtmp' && process.env.RTMP_PORT) rtmpOverWs(req, socket);
   else socket.destroy();
+}
+// OBS through the public address: RTMP carried inside a WebSocket (binary frames both ways), handed to this computer's
+// own OBS receiver, so OBS works through a Cloudflare Tunnel (web traffic only) too. The stream key is checked as usual.
+// On the OBS side: node opentube.mjs --obs-via=<this computer's https address>, then OBS → rtmp://127.0.0.1/live.
+function rtmpOverWs(req, socket) {
+  const key = req.headers['sec-websocket-key']; if (!key) return socket.destroy();
+  socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${crypto.createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64')}\r\n\r\n`);
+  socket.setNoDelay(true);
+  const tcp = net.connect(Number(process.env.RTMP_PORT), '127.0.0.1'); tcp.setNoDelay(true);
+  const frame = (op, payload) => { const len = payload.length;
+    const head = len < 126 ? Buffer.from([0x80 | op, len]) : len < 65536 ? Buffer.from([0x80 | op, 126, len >> 8, len & 255]) : (() => { const b = Buffer.alloc(10); b[0] = 0x80 | op; b[1] = 127; b.writeBigUInt64BE(BigInt(len), 2); return b; })();
+    if (!socket.destroyed) socket.write(Buffer.concat([head, payload])); };
+  tcp.on('data', (d) => frame(2, d));
+  const end = () => { tcp.destroy(); socket.destroy(); };
+  tcp.on('close', end); tcp.on('error', end); socket.on('close', end); socket.on('error', end);
+  let buf = Buffer.alloc(0);
+  socket.on('data', (chunk) => {
+    buf = Buffer.concat([buf, chunk]);
+    for (;;) {
+      if (buf.length < 2) return;
+      const op = buf[0] & 0x0f, masked = buf[1] & 0x80; let len = buf[1] & 0x7f, off = 2;
+      if (len === 126) { if (buf.length < 4) return; len = buf.readUInt16BE(2); off = 4; }
+      else if (len === 127) { if (buf.length < 10) return; len = Number(buf.readBigUInt64BE(2)); off = 10; }
+      if (len > 16 * 1024 * 1024) return end();
+      const need = off + (masked ? 4 : 0) + len; if (buf.length < need) return;
+      let payload = buf.subarray(off + (masked ? 4 : 0), need);
+      if (masked) { const m = buf.subarray(off, off + 4); payload = Buffer.from(payload); for (let i = 0; i < payload.length; i++) payload[i] ^= m[i & 3]; }
+      buf = buf.subarray(need);
+      if (op === 8) return end();
+      if (op === 9) { frame(10, payload); continue; }
+      if (op === 2 || op === 0) tcp.write(payload);
+    }
+  });
 }
 const server = http.createServer(handle);
 server.on('upgrade', upgrade);

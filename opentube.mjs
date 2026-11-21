@@ -39,6 +39,25 @@ const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 const args = Object.fromEntries(process.argv.slice(1).filter(a => a.startsWith('--')).map(a => { const i = a.indexOf('='); return i < 0 ? [a.slice(2), true] : [a.slice(2, i), a.slice(i + 1)]; }));
 const major = Number(process.versions.node.split('.')[0]);
 if (major < 22) { console.error(`OpenTube needs Node.js 22 or newer (you have ${process.version}). Get it from https://nodejs.org`); process.exit(1); }
+// --obs-via=<https address of an OpenTube computer>: only a bridge for OBS. It listens on 127.0.0.1 (port 1935, or
+// --obs-port) and carries the RTMP stream inside a WebSocket to that computer's public address, so OBS reaches a
+// computer behind a Cloudflare Tunnel (which carries web traffic only) or a firewall that blocks port 1935.
+if (args['obs-via']) {
+  const net = await import('node:net');
+  let to; try { to = new URL(String(args['obs-via'])); to.protocol = to.protocol === 'http:' ? 'ws:' : 'wss:'; to.pathname = to.pathname.replace(/\/+$/, '') + '/rtmp'; to.search = ''; }
+  catch { console.error('--obs-via needs the computer’s address, like --obs-via=https://example.trycloudflare.com'); process.exit(1); }
+  const port = Number(args['obs-port']) || 1935;
+  const srv = net.createServer((c) => {
+    c.pause(); const ws = new WebSocket(to); ws.binaryType = 'arraybuffer';
+    ws.onopen = () => { log('[obs-via] OBS connected: forwarding to', to.host); c.on('data', (d) => ws.send(d)); c.resume(); };
+    ws.onmessage = (e) => c.write(Buffer.from(e.data));
+    ws.onclose = () => c.destroy(); ws.onerror = () => { log('[obs-via] couldn’t reach', to.href, '(is OBS receiving switched on there, and is it updated?)'); c.destroy(); };
+    c.on('close', () => { try { ws.close(); } catch {} }); c.on('error', () => {});
+  });
+  srv.on('error', (e) => { console.error(e.code === 'EADDRINUSE' ? `Port ${port} is in use here (an OpenTube receiving OBS?). Use --obs-port=1936 and put rtmp://127.0.0.1:1936/live in OBS.` : e.message); process.exit(1); });
+  srv.listen(port, '127.0.0.1', () => log(`OBS bridge ready. In OBS: Settings → Stream → Custom…, Server rtmp://127.0.0.1${port === 1935 ? '' : ':' + port}/live and your stream key from that computer. Forwarding to ${to.host}. Ctrl+C stops.`));
+  await new Promise(() => {});
+}
 let site;
 try { site = new URL(args.site); } catch { console.error('Missing --site. Copy the command from the site: My node → Run OpenTube on your computer.'); process.exit(1); }
 let grant = null;
