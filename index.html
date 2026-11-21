@@ -1345,7 +1345,10 @@ function createLiveHub(o) {   // o: { ownerOf(chain) -> key|null, signerOf(chain
     for (const [sid, n] of st.nodes) if (sid !== st.src && now - (n.seen || 0) < LIVE.staleMs && !n.relay) viewers++;
     for (const [sid, n] of st.nodes) if (sid !== st.src) { if (n.member) members++; if (n.mode === 'rtc') rtc++; else if (n.mode === 'seg') seg++; else if (n.mode === 'dc') dc++; }
     const src = st.nodes.get(st.src);
-    return { viewers, members, rtc, seg, dc, direct: (src?.children.size || 0) + (src?.dcKids?.size || 0) };
+    // who: open by design. Watching now (checked in recently), and everyone who has been here, with time spent
+    const nowKeys = [...new Set([...st.nodes].filter(([sid, n]) => sid !== st.src && !n.relay && n.who && now - (n.seen || 0) < LIVE.staleMs).map(([, n]) => n.who))].slice(0, 100);
+    const seen = [...(st.seenBy || new Map())].sort((a, b) => b[1].last - a[1].last).slice(0, 100).map(([k, x]) => ({ k, first: x.first, last: x.last, secs: Math.round(x.secs) }));
+    return { viewers, now: nowKeys, seenCount: st.seenBy?.size || 0, seen, members, rtc, seg, dc, direct: (src?.children.size || 0) + (src?.dcKids?.size || 0) };
   }
   const report = (st) => out(st.src, { t: 'viewers', stream: st.id, ...counts(st) });
   function sendSegs(sid, st) { if (st.seg0) out(sid, { t: 'seg', seg: st.seg0 }); for (const g of st.segs) if (g.n !== 0) out(sid, { t: 'seg', seg: g }); }
@@ -1433,7 +1436,7 @@ function createLiveHub(o) {   // o: { ownerOf(chain) -> key|null, signerOf(chain
       sockets.delete(sid);
     },
     stats() { return { streams: streams.size, sockets: sockets.size }; },
-    live() { return [...streams.values()].map(st => ({ stream: st.id, chain: st.chain, ...counts(st) })); },
+    live() { return [...streams.values()].map(st => { const c = counts(st); return { stream: st.id, chain: st.chain, viewers: c.viewers, now: c.now, seenCount: c.seenCount }; }); },
     message(sid, m) {   // one socket's messages are handled strictly in order (auth must finish before watch)
       const s = sockets.get(sid); if (!s) return Promise.resolve();
       return (s.queue = (s.queue || Promise.resolve()).then(() => handle(sid, m)).catch(() => {}));
@@ -1454,7 +1457,7 @@ function createLiveHub(o) {   // o: { ownerOf(chain) -> key|null, signerOf(chain
         if (!(owner && s.keys.has(owner)) && !(relay && s.keys.has(relay))) return out(sid, { t: 'error', stream: m.stream, error: 'not the owner of this channel' });
         if (st && st.chain !== m.chain) return;
         if (st && st.src !== sid) leave(st, st.src);   // a reconnecting broadcaster replaces the old connection
-        const fresh = { id: m.stream, chain: m.chain, src: sid, mime: m.mime, media: m.rtc !== false, seg0: st?.seg0 || null, segs: st?.segs || [], chunks: st?.chunks || [], nodes: new Map() };
+        const fresh = { id: m.stream, chain: m.chain, src: sid, mime: m.mime, media: m.rtc !== false, seg0: st?.seg0 || null, segs: st?.segs || [], chunks: st?.chunks || [], seenBy: st?.seenBy || new Map(), nodes: new Map() };
         fresh.nodes.set(sid, node({ slots: m.rtc === false ? 0 : Math.min(Math.max(m.slots | 0, 0), LIVE.maxSlots) || LIVE.srcSlots, dcSlots: Math.min(Math.max(m.dcSlots | 0, 0), LIVE.maxDcSlots), member: true, mode: 'src', media: m.rtc !== false }));
         streams.set(m.stream, fresh); s.watching.add(m.stream);
         return out(sid, { t: 'broadcasting', stream: m.stream });
@@ -1487,6 +1490,7 @@ function createLiveHub(o) {   // o: { ownerOf(chain) -> key|null, signerOf(chain
         const n = node({ slots: Math.min(Math.max(m.slots | 0, 0), LIVE.maxSlots), dcSlots: Math.min(Math.max(m.dcSlots | 0, 0), LIVE.maxDcSlots), member: member(sid, st.chain), media: m.media !== false, relay: m.relay === true });
         o.debug?.('[hub] watch', st.id.slice(0, 8), 'keys', [...s.keys].map(k => k.slice(0, 6) + (o.isJoined(k, st.chain) ? ':joined' : '')).join(','), 'member', n.member);
         st.nodes.set(sid, n); s.watching.add(st.id);
+        if (!m.relay && !m.anon) { n.who = [...s.keys][0] || null; if (n.who) { const x = (st.seenBy ||= new Map()).get(n.who) || { first: Date.now(), last: Date.now(), secs: 0 }; x.last = Date.now(); st.seenBy.set(n.who, x); } }
         out(sid, { t: 'watching', stream: st.id, mime: st.mime, member: n.member });
         for (const c of (st.chunks || []).slice(-600)) out(sid, { t: 'lchunk', stream: st.id, chunk: c });   // what's been bundled so far
         if (n.member) sendSegs(sid, st);   // members save the stream: give them what we have
@@ -1498,7 +1502,7 @@ function createLiveHub(o) {   // o: { ownerOf(chain) -> key|null, signerOf(chain
         }
         return report(st);
       }
-      if (m.t === 'alive') { const n = st.nodes.get(sid); if (n) n.seen = Date.now(); return; }
+      if (m.t === 'alive') { const n = st.nodes.get(sid); if (n) { const x = n.who && st.seenBy?.get(n.who); if (x) { x.secs += Math.min(60, (Date.now() - x.last) / 1000); x.last = Date.now(); } n.seen = Date.now(); } return; }
       if (m.t === 'leave') return leave(st, sid);
       if (m.t === 'fallback') {   // WebRTC didn't work for this viewer: segments instead
         const n = st.nodes.get(sid); if (!n || n.mode === 'src') return;
@@ -4585,6 +4589,12 @@ function profileBody(key) {   // everything that belongs to an identity, tied to
         mine && !pr.name ? h('div', { class: 'sub' }, 'Set your name and picture under “Edit your profile” above.') : null, pageId && nameOf(pageId) ? h('div', {}, h('a', { href: nameLink(nameOf(pageId)), style: 'font-weight:600' }, nameOf(pageId))) : null, h('div', { class: 'fp' }, key),
         pr.about ? h('p', { class: 'pre' }, pr.about) : null, pr.location ? h('div', { class: 'sub' }, '📍 ' + pr.location) : null,
         (pr.links || []).length ? h('div', { class: 'row', style: 'gap:8px;margin-top:6px' }, pr.links.map(l => h('a', { class: 'tagbox', style: 'padding:4px 12px', href: l.url, target: '_blank', rel: 'noopener noreferrer nofollow' }, '🔗 ' + l.label))) : null,
+        (() => {   // where they're watching right now (public, like the viewer lists on live pages)
+          if (!diag.home || Date.now() - (diag.home.at || 0) > 30000) { if (!profileBody.probing) { profileBody.probing = true; probeHome().finally(() => { profileBody.probing = false; scheduleRender(); }); } }
+          const w = (diag.home?.liveStreams || []).filter(x => (x.now || []).includes(key));
+          return w.length ? h('div', { style: 'margin-top:6px' }, '📺 Watching now: ', w.map((x, i) => { const dd = chains.has(x.chain) && derive(x.chain), lb = dd?.streams?.find(b => b.payload.stream === x.stream);
+            return [i ? ', ' : '', lb ? h('a', { href: `#/live/${x.chain}/${lb.hash}` }, `“${lb.payload.title}”`) : 'a live stream', dd ? [' on ', h('a', { href: `#/c/${x.chain}` }, dd.profile.name)] : null]; })) : null;
+        })(),
         roles.length ? h('div', { class: 'sub', style: 'margin-top:6px' }, roles.map(([o, r], i) => [i ? ' · ' : '', r === 'judge' ? 'arbitrator' : r, ' at ', chainLink(o)])) : null),
       mine ? null : h('div', { class: 'row' },
         h('a', { class: 'act', href: `#/messages/${key}` }, '✉ Message'),
@@ -5239,7 +5249,9 @@ function liveStudio(chainId) {
       if (now.map(n => n.node).join() === groupNodes.map(n => n.node).join() && intoSel.options.length) return;
       groupNodes = now; const keep = intoSel.value;
       intoSel.replaceChildren(h('option', { value: '' }, 'Live on this channel'), ...groupNodes.map(n => h('option', { value: n.node }, nodePerms(n).includes('g') ? `Into the group stream I’m invited to on ${n.info?.name || 'a computer'}` : `Into my group stream on ${n.info?.name || 'my computer'} (switch it on there)`)));
-      intoSel.value = groupNodes.some(n => n.node === keep) ? keep : ''; intoRow.classList.toggle('hidden', !groupNodes.length);
+      const want = keep || window.pendingInto;   // "Join on camera" on someone's live page picked their group
+      intoSel.value = groupNodes.some(n => n.node === want) ? want : ''; intoRow.classList.toggle('hidden', !groupNodes.length);
+      if (intoSel.value && intoSel.value === window.pendingInto) { window.pendingInto = null; intoRow.style.outline = '2px solid var(--live, #e11d48)'; intoRow.style.borderRadius = '6px'; }
     };
     fillInto(); const intoTimer = setInterval(() => { if (!intoRow.isConnected && intoRow.wasIn) return clearInterval(intoTimer); if (intoRow.isConnected) intoRow.wasIn = true; fillInto(); }, 3000);
     const mic = h('select', {}, h('option', { value: '' }, 'No microphone'));
@@ -5424,7 +5436,21 @@ views.livewatch = {
     if (lb.payload.type !== 'live') return h('div', { class: 'empty' }, 'Not a live stream.');
     const player = h('video', { playsInline: true, autoplay: true, muted: true, controls: true, style: 'width:100%;background:#000;border-radius:8px;aspect-ratio:16/9' });
     const status = h('div', { class: 'sub' }, 'Joining…');
-    const watchers = h('span', { class: 'badge', style: 'margin-left:8px' }, '👁 …');
+    const watchers = h('button', { class: 'badge', style: 'margin-left:8px;cursor:pointer;border:none', title: 'Who is watching, and who has been here', onclick: () => { whoBox.classList.toggle('hidden'); drawWho(); } }, '👁 …');
+    const whoBox = h('div', { class: 'panel hidden', style: 'margin-top:8px' });
+    let lastViewers = null;
+    const face = (k, extra = '') => { const a = authorOf(k, null); return h('a', { href: a.href, class: 'row', style: 'gap:6px;display:inline-flex;align-items:center;margin:0 10px 6px 0', title: a.name + extra }, avatar(a.pic, a.name, 'xs'), h('span', {}, a.name)); };
+    const dur = (secs) => secs < 60 ? `${secs} s` : secs < 3600 ? `${Math.round(secs / 60)} min` : `${(secs / 3600).toFixed(1)} h`;
+    const drawWho = () => {
+      if (whoBox.classList.contains('hidden')) return;
+      const m = lastViewers; if (!m) return whoBox.replaceChildren(h('div', { class: 'sub' }, 'Counting…'));
+      const anon = Math.max(0, (m.viewers || 0) - (m.now || []).length);
+      whoBox.replaceChildren(
+        h('h4', { style: 'margin:0 0 6px' }, `Watching now (${m.viewers})`), h('div', {}, (m.now || []).map(k => face(k)), anon ? h('span', { class: 'sub' }, `+ ${anon} not signed in`) : null, !(m.now || []).length && !anon ? h('span', { class: 'sub' }, 'Nobody right now.') : null),
+        h('h4', { style: 'margin:10px 0 6px' }, `Has been here (${m.seenCount || 0})`),
+        h('div', {}, (m.seen || []).map(x => face(x.k, ` · first ${ago(x.first)}, watched ${dur(x.secs)}`))),
+        h('div', { class: 'sub', style: 'margin-top:6px' }, 'Open to everyone: who watches is public on OpenTube, so anyone can count and compare.'));
+    };
     const unmute = h('button', { class: 'small', onclick: () => { player.muted = false; player.play().catch(() => {}); unmute.remove(); } }, '🔊 Unmute');
     const chat = h('div', { style: 'max-height:420px;overflow:auto' });
     const box = h('input', { type: 'text', placeholder: 'Say something…', maxLength: LIMITS.comment, style: 'flex:1' });
@@ -5436,12 +5462,40 @@ views.livewatch = {
       try { await append(id, { type: 'comment', target: block, text, name: settings.name.slice(0, LIMITS.name) }); box.value = ''; } finally { send.disabled = false; }
     };
     box.onkeydown = (e) => { if (e.key === 'Enter') send.click(); };
+    // a group stream from one of the host's computers: the host invites people on camera right from the chat, and an
+    // invited viewer gets a "Join on camera" banner here
+    const hostNode = () => lb.author !== d.owner ? E.nodes.get(lb.author) : null;
+    const iHost = () => { const n = hostNode(); return !!n && isMine(d.owner) && nodePerms(n).includes('o') && !nodePerms(n).includes('g'); };
+    const invited = new Map();   // identity -> 'sending' | 'ok' | error text
+    const inviteBtn = (author, name) => {
+      const k = E.ledger.resolve(author), st = invited.get(k);
+      if (k === me.pub || isMine(author)) return null;
+      return h('button', { class: 'small' + (st === 'ok' ? ' on' : ''), style: 'margin:2px 0 0 4px', disabled: st === 'sending' || st === 'ok', title: 'Let them join this stream on camera (6 hours)', onclick: async () => {
+        invited.set(k, 'sending'); drawChat();
+        try { await nodeCtl(hostNode(), 'group.invite', { key: k, hours: 6, name: personName(k) || name || '' }); invited.set(k, 'ok'); toast(`${personName(k) || name || 'They'} can join on camera now: they’ll see a “Join on camera” button on this page.`); }
+        catch (e) { invited.delete(k); toast('Invite failed: ' + e.message); }
+        drawChat();
+      } }, st === 'ok' ? '🎥 Invited ✓' : st === 'sending' ? 'Inviting…' : '🎥 Invite on camera');
+    };
+    const banner = h('div');
+    const drawBanner = () => {
+      const n = hostNode();
+      if (!n || !nodePerms(n).includes('g') || [...broadcasts.values()].some(b => b.group === n.node && !b.ended)) return banner.replaceChildren();
+      banner.replaceChildren(h('div', { class: 'panel', style: 'border-color:var(--live, #e11d48);margin:10px 0 0' }, h('div', { class: 'row', style: 'justify-content:space-between' },
+        h('span', {}, '🎥 ', h('b', {}, 'You’re invited to join this stream on camera.')),
+        h('button', { class: 'primary', onclick: () => {
+          const mineCh = myChannels().filter(c => derive(c)?.kind === 'channel');
+          if (!mineCh.length) { toast('You need a channel to go live from: create one first (it takes a few seconds).'); location.hash = '#/you/channels'; return; }
+          window.pendingInto = n.node; location.hash = `#/c/${mineCh[0]}/golive`;
+        } }, 'Join on camera'))));
+    };
     const drawChat = () => {
       const dd = derive(id), list = dd.commentsFor(block).filter(b => !dd.hidden.has(b.hash)).sort((a, z) => a.ts - z.ts).slice(-200);
-      const atEnd = chat.scrollTop + chat.clientHeight >= chat.scrollHeight - 30;
+      const atEnd = chat.scrollTop + chat.clientHeight >= chat.scrollHeight - 30, host = iHost();
       chat.replaceChildren(...(list.length ? list.map(cb => msgRow(cb.author, id, { name: cb.payload.name, text: cb.payload.text, ts: cb.ts,
-        extra: isMine(dd.owner) && !isMine(cb.author) ? h('button', { class: 'small', style: 'margin-top:2px', onclick: () => append(id, { type: 'hide', target: cb.hash }) }, 'Hide') : null })) : [h('div', { class: 'sub' }, 'No messages yet. Say hello!')]));
+        extra: isMine(dd.owner) && !isMine(cb.author) ? h('div', {}, h('button', { class: 'small', style: 'margin-top:2px', onclick: () => append(id, { type: 'hide', target: cb.hash }) }, 'Hide'), host ? inviteBtn(cb.author, cb.payload.name) : null) : null })) : [h('div', { class: 'sub' }, 'No messages yet. Say hello!')]));
       if (atEnd) chat.scrollTop = chat.scrollHeight;
+      drawBanner();
     };
     let segp = null, how = '';
     const ui = {
@@ -5450,7 +5504,7 @@ views.livewatch = {
       segmentMode() { if (segp) return; player.srcObject = null; segp = segmentPlayer(player, lb.payload.mime, ui.sess?.init); status.textContent = segp ? 'Live · by segments through the home node (a few seconds behind)' : 'This browser can’t play this stream format.'; },
       segment(g, u8) { if (ui.sess?.mode === 'seg' || ui.sess?.mode === 'dc' || !ui.sess?.media) segp?.push(g, u8); },
       status(t) { status.textContent = t; },
-      viewers(m) { watchers.textContent = `👁 ${m.viewers} watching`; watchers.title = 'People who checked in within the last 45 s'; },
+      viewers(m) { lastViewers = m; drawWho(); watchers.textContent = `👁 ${m.viewers} watching`; watchers.title = 'People who checked in within the last 45 s'; },
       ended(t) { status.textContent = t + (d.recordings.get(lb.payload.stream) ? '' : ' If the streamer publishes the recording, it appears with the channel’s videos.'); }
     };
     const ended = d.liveEnds.has(lb.payload.stream);
@@ -5467,7 +5521,7 @@ views.livewatch = {
     views.livewatch.refresh = drawChat;   // new blocks (chat) shouldn't rebuild the player
     return h('div', { class: 'split', style: 'grid-template-columns:2fr 1fr' },
       h('div', {}, player, h('div', { class: 'row', style: 'justify-content:space-between;margin-top:8px' }, h('h2', { style: 'margin:0' }, ended ? '' : h('span', { class: 'badge live' }, 'LIVE'), ' ', lb.payload.title), unmute),
-        h('div', { class: 'sub' }, h('a', { href: `#/c/${id}` }, d.profile.name), ' · started ', ago(lb.ts), watchers), status),
+        h('div', { class: 'sub' }, h('a', { href: `#/c/${id}` }, d.profile.name), ' · started ', ago(lb.ts), watchers), status, whoBox, banner),
       (() => {   // your own stream from one of your computers: the group stream's controls (who's in, disconnect, cancel invites)
         const n = lb.author !== d.owner && E.nodes.get(lb.author);
         return n && isMine(d.owner) && nodePerms(n).includes('o') && !nodePerms(n).includes('g') ? h('div', { class: 'panel' }, keep('grouplive:' + lb.hash, () => groupPanel(n, { title: true }))) : null;

@@ -241,6 +241,33 @@ function liveRelays() {
   }
 }
 setInterval(liveRelays, 10000);
+// ---- updating itself: every 10 minutes, compare our program files with the site's. When the site has a new version and
+// this computer isn't busy (receiving OBS, a group stream, relaying or recording someone's stream), restart with it: the
+// one-command launcher downloads the site's current code on restart (exit code 75). Busy: try again later.
+let updateSeen = null;
+const busyWith = () => {
+  if (globalThis.openTubeRtmp?.status?.().live) return 'receiving OBS';
+  if (Object.values(obsStore.profiles).some(p => p._group?.enc || [...(p._group?.inputs?.values() || [])].some(x => !x.ended))) return 'a group stream';
+  if (relaying.size) return 'relaying a live stream';
+  return null;
+};
+async function checkForUpdate() {
+  if (!process.env.OPENTUBE_LAUNCHER || !process.env.NODE_SITE || process.env.AUTO_UPDATE === '0') return;
+  try {
+    const differ = [];
+    for (const f of [...Object.keys(FILES), 'index.html']) {
+      const r = await fetch(new URL(f, process.env.NODE_SITE + '/') + '?v=' + Date.now(), { signal: AbortSignal.timeout(15000) }); if (!r.ok) continue;
+      const h = crypto.createHash('sha256').update(Buffer.from(await r.arrayBuffer())).digest('hex').slice(0, 12);
+      if (h !== (f === 'index.html' ? BUILD : FILES[f])) differ.push(f);
+    }
+    if (!differ.length) return;
+    const busy = busyWith();
+    if (busy) { if (updateSeen !== differ.join()) log(`[update] a new OpenTube is on the site (${differ.join(', ')}); updating once this computer is idle (now: ${busy})`); updateSeen = differ.join(); return; }
+    log(`[update] a new OpenTube is on the site (${differ.join(', ')}): restarting to update`);
+    setTimeout(() => process.exit(75), 1000);
+  } catch (e) { log('[update] check failed:', e.message); }
+}
+setTimeout(checkForUpdate, 2 * 60000); setInterval(checkForUpdate, 10 * 60000);
 // Recording a stream we relay (someone without a video folder went live through this computer): every segment is
 // written at its offset, so the file is the streamer's recording byte for byte. When it ends: shared over BitTorrent and
 // offered on the channel (liveend with the recording), like an OBS recording.
