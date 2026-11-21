@@ -186,6 +186,23 @@ function mp4Boxes(onInit, onFrag) {
     }
   };
 }
+let pubIp = null;
+async function publicIp() {
+  if (pubIp !== null) return pubIp || null;
+  for (const u of ['https://api.ipify.org', 'https://ifconfig.me/ip', 'https://icanhazip.com']) { try { const t = (await (await fetch(u, { signal: AbortSignal.timeout(4000) })).text()).trim(); if (/^\d{1,3}(\.\d{1,3}){3}$/.test(t)) return (pubIp = t); } catch {} }
+  pubIp = ''; return null;
+}
+function rtmpProbe(host, port) {   // TCP connect + RTMP C0/C1; an RTMP server answers with S0
+  return new Promise(async (res) => {
+    const net = await import('node:net'), t0 = Date.now();
+    const sock = net.connect({ host, port, timeout: 6000 });
+    const done = (r) => { try { sock.destroy(); } catch {} res({ ...r, ms: Date.now() - t0, host, port }); };
+    sock.on('connect', () => { const c1 = Buffer.alloc(1537); c1[0] = 3; sock.write(c1); });
+    sock.on('data', (d) => done(d[0] === 3 ? { ok: true } : { ok: false, error: 'something else answers on that port' }));
+    sock.on('timeout', () => done({ ok: false, error: 'no answer: the port is blocked by a firewall, or the address isn’t this computer' }));
+    sock.on('error', (e) => done({ ok: false, error: e.code === 'ECONNREFUSED' ? 'refused: nothing listens there (is OpenTube running with OBS on?)' : e.message }));
+  });
+}
 const ffmpegOk = (() => { try { return !spawnSync('ffmpeg', ['-version']).error; } catch { return false; } })();
 function youtubeOut(log) {   // forward the stream (fMP4, H.264 + AAC) to YouTube, unchanged
   if (!obsCfg.youtube.on || !obsCfg.youtube.key || !ffmpegOk) return null;
@@ -269,7 +286,7 @@ if (process.env.RTMP_PORT) {
         if (!armed() && !(obsCfg.channel && engine.derive(obsCfg.channel)?.relays.has(signer.pub))) return 'Not linked to a channel yet. On the site: Go live → OBS → pick this computer and link it to your channel.';
         return goLiveSink(log);
       } });
-    globalThis.openTubeRtmp = { status: () => ({ ...rtmp.status(), armed: !!armed(), port: Number(process.env.RTMP_PORT), channel: obsCfg.channel, tiles: obsCfg.tile.on ? obsCfg.tile.n : 0, youtube: obsCfg.youtube.on && !!obsCfg.youtube.key }) };
+    globalThis.openTubeRtmp = { lastConn: () => rtmp.status().lastConn || null, status: () => ({ ...rtmp.status(), armed: !!armed(), port: Number(process.env.RTMP_PORT), channel: obsCfg.channel, tiles: obsCfg.tile.on ? obsCfg.tile.n : 0, youtube: obsCfg.youtube.on && !!obsCfg.youtube.key }) };
   } catch (e) { log('OBS receiver unavailable:', e.message); }
 }
 
@@ -388,7 +405,12 @@ async function control(c) {
       saveObs();
       const os = await import('node:os');
       const ips = Object.values(os.networkInterfaces()).flat().filter(i => i && i.family === 'IPv4' && !i.internal).map(i => i.address);
-      data = { key: obsCfg.key, port: Number(process.env.RTMP_PORT) || null, ips, publicHost: process.env.PUBLIC_URL ? new URL(process.env.PUBLIC_URL).hostname : null, channel: obsCfg.channel, title: obsCfg.title,
+      if (c.cmd === 'obs' && a.test) {   // can OBS reach us from the internet? connect to our own public address and do the RTMP greeting
+        const pub = await publicIp(), port = Number(process.env.RTMP_PORT);
+        data = { test: pub ? await rtmpProbe(pub, port) : { ok: false, error: 'couldn’t find this computer’s public address' }, publicIp: pub };
+        return signed({ v: 1, kind: 'nodectlr', node: signer.pub, re: c.nonce, at: Date.now(), ok: true, data });
+      }
+      data = { version: 2, key: obsCfg.key, port: Number(process.env.RTMP_PORT) || null, ips, publicIp: await publicIp(), listen: process.env.RTMP_HOST || '0.0.0.0', lastConn: globalThis.openTubeRtmp?.lastConn?.() || null, publicHost: process.env.PUBLIC_URL ? new URL(process.env.PUBLIC_URL).hostname : null, channel: obsCfg.channel, title: obsCfg.title,
         linked: !!(obsCfg.channel && engine.derive(obsCfg.channel)?.relays.has(signer.pub)), youtube: { on: obsCfg.youtube.on, set: !!obsCfg.youtube.key }, tile: obsCfg.tile, ffmpeg: ffmpegOk, node: signer.pub, live: globalThis.openTubeRtmp?.status?.() || null };
     }
     else if (c.cmd === 'status') data = { height: engine.main.best.height, peers: peers.size, chains: engine.chains.size, host: globalThis.openTubeHost?.status() || null, obs: globalThis.openTubeRtmp?.status?.() || null };

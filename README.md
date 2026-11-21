@@ -432,6 +432,18 @@ Known limits: the recording is WebM straight from the browser's recorder, so som
 - **YouTube:** tick *Also send it to YouTube* and paste your YouTube stream key. The computer forwards the same stream to YouTube unchanged (needs ffmpeg there).
 - **Tiles** (group streams): choose 2, 3 or 4. Each person streams to the same server with the key, or the key plus `-2`, `-3`, `-4`. The computer combines the pictures (side by side, or 2×2), mixes the audio, and the result goes live as one stream (needs ffmpeg). The combined stream starts when all have connected, or 20 s after the first.
 
+**If OBS just says "Connecting…"**, its connection isn't reaching the computer. Open *🎥 OBS & streaming* for it:
+
+- **Status** says whether it's listening, and the last connection that reached it, with how far it got (handshake, connected, publishing with the key). If nothing has ever reached it, look at the address or the firewall.
+- **Test from the internet** has the computer connect to its own public address the way OBS does, and reports whether it got through.
+
+The usual causes:
+
+- **The computer runs an older OpenTube:** stop it and run the command again; it updates itself on start.
+- **A server or VPS blocks the port:** allow incoming TCP **1935** in its firewall (for example `sudo ufw allow 1935/tcp`) and in the provider's security settings.
+- **The wrong address in OBS:** use the server address shown first (the public one) from outside that network.
+- **No stream key in OBS:** the key belongs in OBS's *Stream Key* box, not in the server address.
+
 **Live over the mesh (no hub needed).** A hub on the site's node is now optional. The broadcaster also publishes every signed segment to the peer-to-peer mesh (an OBS node does too):
 
 - **Wanting:** a viewer sends `lwant` for a stream. Each peer remembers which links want it and passes the want on, a few hops, toward whoever has the stream.

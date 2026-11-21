@@ -138,6 +138,9 @@ export function startRtmp({ port = 1935, host = '127.0.0.1', onPublish, log = ()
   const state = { port, live: 0, bytes: 0, sessions: new Set() };
   const server = net.createServer((sock) => {
     sock.setNoDelay(true);
+    const who = String(sock.remoteAddress || '').replace(/^::ffff:/, '');
+    log(`connection from ${who}`); state.lastConn = { at: Date.now(), from: who, stage: 'connected' };
+    const shake = setTimeout(() => { if (stage < 2) { log(`${who}: no RTMP handshake within 10 s (is this OBS, with Service “Custom…” and a server starting rtmp://?)`); sock.destroy(); } }, 10000);
     let buf = Buffer.alloc(0), stage = 0, inChunk = 128, outChunk = 4096, sink = null, published = false;
     const streams = new Map();   // chunk stream id -> { ts, len, type, sid, body: [], got }
     let video = null, audio = null, vq = [], aq = [], seq = 1, sentInit = false, lastV = null, lastA = null, fragStart = null;
@@ -194,12 +197,14 @@ export function startRtmp({ port = 1935, host = '127.0.0.1', onPublish, log = ()
     async function onCommand(sid, vals) {
       const [name, txn] = vals;
       if (name === 'connect') {
+        log(`${who}: OBS connected (app “${vals[2]?.app ?? '?'}”)`); state.lastConn.stage = 'connected to app ' + (vals[2]?.app ?? '?');
         control(5, 2500000); write(2, 6, 0, Buffer.concat([u32(2500000), Buffer.from([2])])); control(1, outChunk);
         command(0, '_result', txn, { fmsVer: 'FMS/3,0,1,123', capabilities: 31 }, { level: 'status', code: 'NetConnection.Connect.Success', description: 'Connection succeeded.', objectEncoding: 0 });
       } else if (name === 'createStream') command(0, '_result', txn, null, 1);
       else if (name === 'releaseStream' || name === 'FCPublish') command(0, '_result', txn, null, null);
       else if (name === 'publish') {
         const key = String(vals[3] || '');
+        log(`${who}: publish with stream key ${key ? key.slice(0, 4) + '…' : '(empty: put the key in OBS’s Stream Key box)'}`); state.lastConn.stage = 'publish';
         const r = await onPublish?.(key);
         if (!r || typeof r === 'string') { status(sid, 'error', 'NetStream.Publish.BadName', r || 'refused'); log('OBS stream refused: ' + (r || 'no handler')); setTimeout(() => sock.destroy(), 500); return; }
         sink = r; published = true; state.live++;
@@ -226,9 +231,9 @@ export function startRtmp({ port = 1935, host = '127.0.0.1', onPublish, log = ()
         const c1 = buf.subarray(1, 1537);
         const s1 = Buffer.concat([u32(Math.floor(Date.now() / 1000)), u32(0), crypto.randomBytes(1528)]);
         sock.write(Buffer.concat([Buffer.from([3]), s1, c1]));
-        buf = buf.subarray(1537); stage = 1;
+        buf = buf.subarray(1537); stage = 1; state.lastConn.stage = 'handshake';
       }
-      if (stage === 1) { if (buf.length < 1536) return; buf = buf.subarray(1536); stage = 2; }   // C2
+      if (stage === 1) { if (buf.length < 1536) return; buf = buf.subarray(1536); stage = 2; clearTimeout(shake); state.lastConn.stage = 'handshake done'; }   // C2
       while (stage === 2 && buf.length) {
         let pos = 0;
         const b0 = buf[pos++], fmt = b0 >> 6; let csid = b0 & 63;
@@ -256,10 +261,11 @@ export function startRtmp({ port = 1935, host = '127.0.0.1', onPublish, log = ()
         if (st.got >= st.len) { const body = Buffer.concat(st.body); st.body = []; st.got = 0; onMessage(st.type, st.sid, st.ts, body); }
       }
     });
-    const bye = () => end();
+    const bye = () => { clearTimeout(shake); end(); };
     sock.on('close', bye); sock.on('error', bye);
   });
   server.on('error', (e) => log(`OBS receiver couldn’t listen on ${host}:${port}: ${e.message}`));
-  server.listen(port, host, () => log(`OBS receiver on rtmp://${host === '0.0.0.0' ? 'this-computer' : 'localhost'}:${port}/live`));
-  return { status: () => ({ port, live: state.live > 0, bytes: state.bytes }), close: () => server.close() };
+  server.on('error', (e) => { state.error = e.code === 'EADDRINUSE' ? `port ${port} is already in use (another OBS receiver or streaming server?)` : e.message; log('OBS receiver: ' + state.error); });
+  server.listen(port, host, () => { state.listening = true; log(`OBS receiver on rtmp://${host === '0.0.0.0' ? 'this-computer' : 'localhost'}:${port}/live (listening on ${host})`); });
+  return { status: () => ({ port, host, listening: !!state.listening, error: state.error || null, live: state.live > 0, bytes: state.bytes, lastConn: state.lastConn || null }), close: () => server.close() };
 }

@@ -6506,12 +6506,14 @@ const openManagers = new Map();   // node key -> its open file manager (kept whi
 function obsPanel(n, { chainId = null } = {}) {
   const box = h('div', { class: 'panel', style: 'margin-top:8px;background:var(--panel-2)' }), st = h('span', { class: 'sub' });
   let data = null;
-  const run = async (cmd, args) => { st.textContent = 'asking the computer…'; try { const r = await nodeCtl(n, cmd, args); data = r.data; st.textContent = ''; draw(); } catch (e) { st.textContent = '✗ ' + e.message; draw(); } };
+  let testResult = null;
+  const run = async (cmd, args) => { st.textContent = 'asking the computer…'; try { const r = await nodeCtl(n, cmd, args); if (args?.test) testResult = r.data; else data = r.data; st.textContent = ''; draw(); }
+    catch (e) { st.textContent = /unknown command|bad command/.test(e.message) ? '✗ This computer runs an older OpenTube. On it, stop OpenTube (Ctrl+C) and run your command again: it updates itself on start.' : '✗ ' + e.message; draw(); } };
   const mask = (v) => h('span', { class: 'row', style: 'gap:6px;flex:1' }, (() => { const i = h('input', { type: 'password', readOnly: true, value: v, class: 'mono', style: 'flex:1' }); return [i, h('button', { class: 'small', type: 'button', onclick: (e) => { i.type = i.type === 'password' ? 'text' : 'password'; e.target.textContent = i.type === 'password' ? 'Show' : 'Hide'; } }, 'Show'), h('button', { class: 'small', type: 'button', onclick: () => copyText(v, 'Stream key') }, 'Copy')]; })());
   const draw = () => {
     if (!data) return box.replaceChildren(h('b', {}, `OBS on ${n.info?.name || 'this computer'}`), ' ', st);
     if (!data.port) return box.replaceChildren(h('b', {}, 'OBS'), h('p', { class: 'sub' }, 'This computer isn’t receiving OBS (it was started with --no-obs). Start it again without that option.'));
-    const hosts = [...new Set([data.publicHost, ...data.ips, 'localhost'].filter(Boolean))];
+    const hosts = [...new Set([data.publicHost, data.publicIp, ...data.ips, 'localhost'].filter(Boolean))];
     const servers = hosts.map(hh => `rtmp://${hh}${data.port === 1935 ? '' : ':' + data.port}/live`);
     const chans = myChannels(), ch = h('select', { style: 'width:auto' }, h('option', { value: '' }, 'Choose the channel it goes live on…'), chans.map(id => h('option', { value: id, selected: (data.channel || chainId) === id }, channelTitle(id))));
     const title = h('input', { type: 'text', value: data.title || 'Live', maxLength: 140, style: 'flex:1' });
@@ -6522,7 +6524,11 @@ function obsPanel(n, { chainId = null } = {}) {
     box.replaceChildren(h('div', { class: 'row', style: 'justify-content:space-between' }, h('b', {}, `OBS on ${n.info?.name || 'this computer'}`), st),
       h('p', { class: 'sub', style: 'margin:4px 0' }, 'In OBS: Settings → Stream → Service “Custom…”, then paste the server and the stream key. Use an H.264 encoder, AAC audio, keyframe interval 2 s. Start Streaming goes live on the channel below by itself.'),
       row('Server', h('div', { style: 'flex:1' }, servers.map(u => h('div', { class: 'row', style: 'gap:6px' }, h('code', { class: 'mono', style: 'flex:1' }, u), h('button', { class: 'small', onclick: () => copyText(u, 'Server') }, 'Copy'))))),
-      h('div', { class: 'sub', style: 'margin-left:128px' }, 'Use the address OBS can reach: localhost if OBS runs on that computer, its network address otherwise (open port ' + data.port + ' on its firewall if needed).'),
+      h('div', { class: 'sub', style: 'margin-left:128px' }, 'Use the address OBS can reach: localhost if OBS runs on that computer; its public address (first) from anywhere else; a 192.168… / 10… address only from the same home network. A server or VPS must allow incoming TCP port ' + data.port + ' (its firewall and the provider’s security settings).'),
+      row('Status', h('span', { class: 'sub', style: 'flex:1' }, data.live?.error ? '⚠ ' + data.live.error : data.live?.listening === false ? '⚠ not listening' : `listening on ${data.listen}:${data.port}`,
+        data.lastConn ? ` · last OBS connection ${ago(data.lastConn.at)} from ${data.lastConn.from}: ${data.lastConn.stage}` : ' · no OBS connection has reached this computer yet'),
+        h('button', { class: 'small', onclick: () => run('obs', { test: true }) }, 'Test from the internet'), h('button', { class: 'small', onclick: () => run('obs') }, 'Refresh')),
+      testResult ? h('div', { class: 'sub', style: 'margin-left:128px' }, testResult.test.ok ? `✅ Reachable: rtmp://${testResult.test.host}:${testResult.test.port} answers like OBS expects (${testResult.test.ms} ms).` : `❌ ${testResult.test.host ? testResult.test.host + ':' + testResult.test.port + ' — ' : ''}${testResult.test.error}`) : null,
       row('Stream key', mask(data.key), h('button', { class: 'small', onclick: () => confirm('Make a new stream key? OBS will need the new one.') && run('obs.rotate') }, 'New key')),
       row('Channel', ch, linked ? h('span', { class: 'badge ok' }, 'linked') : selected ? h('button', { class: 'small primary', onclick: async () => { await append(selected, { type: 'relay', key: n.node, on: true }); toast('Linked: this computer can go live on ' + channelTitle(selected)); await run('obs.set', { channel: selected, title: title.value }); } }, 'Link this computer to it') : null),
       row('Title', title, h('button', { class: 'small', onclick: () => run('obs.set', { channel: ch.value || null, title: title.value }) }, 'Save')),
