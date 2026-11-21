@@ -288,7 +288,7 @@ function validGenesis(g) {
   if (p.kind === 'channel' && (!isImg(p.avatar) || !['anyone', 'approved', 'off'].includes(p.comments))) return false;
   if (p.kind === 'list' && p.ranking !== undefined && p.ranking !== true) return false;
   if (p.kind === 'group' && (!isImg(p.avatar) || !['open', 'approved'].includes(p.join))) return false;   // open: anyone may post; approved: members the owner approved
-  if (p.kind === 'org' && (!isImg(p.avatar) || !isStr(p.jurisdiction ?? '', 120))) return false;   // jurisdiction: e.g. United States › California
+  if (p.kind === 'org' && (!isImg(p.avatar) || !isStr(p.jurisdiction ?? '', 120) || !(p.orgType === undefined || ORG_TYPES.includes(p.orgType)) || !detailsShape(p.details) || !peopleShape(p.people))) return false;   // jurisdiction: e.g. United States › California
   if (p.kind === 'case' && (!(p.listing === undefined || isHex(p.listing, 64)) || !(p.about.trim().length > 0))) return false;
   if (p.kind === 'circle' && !(typeof p.enc === 'string' && /^[A-Za-z0-9_-]{80,100}$/.test(p.enc))) return false;   // your friends page: enc = your public encryption key
   return true;
@@ -333,6 +333,9 @@ function squareMonths(now = Date.now()) {   // every month from the first until 
 // ---- the tree of chains. A chain can have CHILD chains registered on it with a `child` block instead of on the main
 // chain: an org's dispute CASES live under the org. Nobody needs a child chain until they look at it, so browsers
 // sync it only when they open it (nodes keep them all).
+// What an organization is, legally, and who is behind it (declared by the organization; each person links to a profile).
+const ORG_TYPES = ['corporation', 'llc', 'partnership', 'sole', 'nonprofit', 'cooperative', 'government', 'club', 'arbitration', 'other'];
+const peopleShape = (x) => x === undefined || (Array.isArray(x) && x.length <= 50 && x.every(q => q && isKey(q.key) && isStr(q.role, 60) && (q.share === undefined || (Number.isFinite(q.share) && q.share >= 0 && q.share <= 100))));
 const ORG = { roles: ['moderator', 'clerk', 'judge'],   // 'judge' is shown as "arbitrator"
   slug: /^[a-z0-9][a-z0-9-]{1,30}$/, filings: ['complaint', 'motion', 'response', 'evidence', 'appeal', 'order', 'other'],
   states: ['filed', 'open', 'hearing', 'stayed', 'decided', 'appealed', 'closed'], appealDays: 14 };
@@ -472,7 +475,8 @@ function validPayload(chain, b, CFG) {
     case 'comment': return isHex(p.target, 64) && isStr(p.text, LIMITS.comment) && p.text.trim().length > 0;
     case 'hide': return isHex(p.target, 64);
     case 'allow': case 'revoke': return isKey(p.key);
-    case 'profile': return (p.place === undefined || placeShape(p.place)) && (p.links === undefined || (Array.isArray(p.links) && p.links.length <= 12 && p.links.every(l => l && isStr(l.label, 40) && isStr(l.url, 300) && /^https:\/\/\S+$/.test(l.url))))
+    case 'profile': return (p.orgType === undefined || (kind === 'org' && ORG_TYPES.includes(p.orgType))) && (p.details === undefined || (kind === 'org' && detailsShape(p.details))) && (p.people === undefined || (kind === 'org' && peopleShape(p.people)))
+      && (p.jurisdiction === undefined || (kind === 'org' && isStr(p.jurisdiction, 120))) && (p.place === undefined || placeShape(p.place)) && (p.links === undefined || (Array.isArray(p.links) && p.links.length <= 12 && p.links.every(l => l && isStr(l.label, 40) && isStr(l.url, 300) && /^https:\/\/\S+$/.test(l.url))))
       && (p.location === undefined || isStr(p.location, 100)) && (p.join === undefined || (kind === 'group' && ['open', 'approved'].includes(p.join))) && (p.name === undefined || (isStr(p.name, LIMITS.name) && p.name.trim().length > 0)) && (p.about === undefined || isStr(p.about, LIMITS.about)) && (p.avatar === undefined || isImg(p.avatar)) && (p.comments === undefined || ['anyone', 'approved', 'off'].includes(p.comments));
     case 'add': return kind === 'list' && isHex(p.target, 64) && (p.video === undefined || isHex(p.video, 64)) && isStr(p.note ?? '', LIMITS.about);   // a whole channel, or one of its videos
     case 'vote': return (kind === 'channel' || kind === 'group') && isHex(p.target, 64) && [1, 0, -1].includes(p.v);
@@ -1460,7 +1464,7 @@ function derive(c) {
     const p = b.payload;
     if (p.type === 'video' && p.comments) videoPolicy.set(b.hash, p.comments);
     if (p.type === 'settings') { if (p.comments === 'default') videoPolicy.delete(p.target); else videoPolicy.set(p.target, p.comments); }
-    if (p.type === 'profile') for (const k of ['name', 'about', 'avatar', 'comments', 'join', 'links', 'location', 'place']) if (p[k] !== undefined) profile[k] = p[k];
+    if (p.type === 'profile') for (const k of ['name', 'about', 'avatar', 'comments', 'join', 'links', 'location', 'place', 'orgType', 'details', 'people', 'jurisdiction']) if (p[k] !== undefined) profile[k] = p[k];
     if (p.type === 'allow') { allowed.add(p.key); for (let i = revokes.length - 1; i >= 0; i--) if (revokes[i].key === p.key) revokes.splice(i, 1); }   // allowing again unblocks
     if (p.type === 'relay') { if (p.on) relays.add(p.key); else relays.delete(p.key); }
     if (p.type === 'revoke') { allowed.delete(p.key); revokes.push({ key: p.key, before: c.ancestors([b.hash]) }); }
@@ -1999,7 +2003,7 @@ async function createEngine(o) {
   });
 }
 
-globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, LISTING_TYPES, XCHG, noteUnlock, mediaRefShape, placeShape, domainOf, MAIL, ORG, orgRoles, orderPreimage, courtPreimage, bindPreimage, retirePreimage, rekeyPreimage, SQUARE, SEAL, monthKey, squareMonths, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
+globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, ORG_TYPES, LISTING_TYPES, XCHG, noteUnlock, mediaRefShape, placeShape, domainOf, MAIL, ORG, orgRoles, orderPreimage, courtPreimage, bindPreimage, retirePreimage, rekeyPreimage, SQUARE, SEAL, monthKey, squareMonths, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
 })();
 </script>
 
@@ -4111,22 +4115,76 @@ const fileInto = (caseId, b) => append(caseId, { type: 'filing', what: b.payload
 async function createSubCourt(parentId, name, jurisdiction) {   // a child org with its own key; appeals from it go to the parent
   const key = await newIdentity(); await addChannelKey({ ...key, name });
   const sg = ownedSigners.get(key.pub), parentKey = derive(parentId).owner;
-  const g = await E.createChild(parentId, { type: 'genesis', kind: 'org', name, about: '', avatar: '', ...(jurisdiction ? { jurisdiction } : {}) }, sg);
+  const g = await E.createChild(parentId, { type: 'genesis', kind: 'org', name, about: '', avatar: '', orgType: 'arbitration', ...(jurisdiction ? { jurisdiction } : {}) }, sg);
   await addChannelKey({ ...key, chain: g.hash }); bindMyKeys();
   await E.submitTx({ court: { parent: parentKey, sig: await signerFor(parentKey).sign(courtPreimage(key.pub, parentKey)) } }, sg);
   return g;
 }
+const ORG_KINDS = {
+  corporation: { name: 'Corporation', fields: [['registration', 'Registration number'], ['founded', 'Incorporated (date)', 'date'], ['incorporatedIn', 'Incorporated in'], ['shares', 'Shares issued', 'number'], ['website', 'Website']], people: 'Officers and shareholders' },
+  llc: { name: 'LLC / limited company', fields: [['registration', 'Registration number'], ['founded', 'Formed (date)', 'date'], ['website', 'Website']], people: 'Members and managers' },
+  partnership: { name: 'Partnership', fields: [['form', 'Form', ['general', 'limited', 'limited liability']], ['registration', 'Registration number'], ['founded', 'Founded (date)', 'date'], ['website', 'Website']], people: 'Partners' },
+  sole: { name: 'Sole proprietorship', fields: [['registration', 'Business registration'], ['website', 'Website']], people: 'Owner' },
+  nonprofit: { name: 'Nonprofit / charity', fields: [['taxId', 'Charity / tax-exempt number'], ['founded', 'Founded (date)', 'date'], ['mission', 'Mission'], ['website', 'Website']], people: 'Board and officers' },
+  cooperative: { name: 'Cooperative', fields: [['registration', 'Registration number'], ['members', 'Members (count)', 'number'], ['website', 'Website']], people: 'Board' },
+  government: { name: 'Government body', fields: [['level', 'Level', ['national', 'state / province', 'county', 'city', 'district', 'agency']], ['website', 'Website']], people: 'Officials' },
+  club: { name: 'Club / association', fields: [['founded', 'Founded (date)', 'date'], ['members', 'Members (count)', 'number'], ['website', 'Website']], people: 'Officers' },
+  arbitration: { name: 'Arbitration body', fields: [['rules', 'Rules it follows'], ['website', 'Website']], people: 'Arbitrators and staff' },
+  other: { name: 'Other', fields: [['website', 'Website']], people: 'People' }
+};
+// Jurisdiction suggestions: what organizations on the network already use, plus countries and their main subdivisions.
+const PLACES = { 'United States': ['Alabama', 'Alaska', 'Arizona', 'Arkansas', 'California', 'Colorado', 'Connecticut', 'Delaware', 'District of Columbia', 'Florida', 'Georgia', 'Hawaii', 'Idaho', 'Illinois', 'Indiana', 'Iowa', 'Kansas', 'Kentucky', 'Louisiana', 'Maine', 'Maryland', 'Massachusetts', 'Michigan', 'Minnesota', 'Mississippi', 'Missouri', 'Montana', 'Nebraska', 'Nevada', 'New Hampshire', 'New Jersey', 'New Mexico', 'New York', 'North Carolina', 'North Dakota', 'Ohio', 'Oklahoma', 'Oregon', 'Pennsylvania', 'Rhode Island', 'South Carolina', 'South Dakota', 'Tennessee', 'Texas', 'Utah', 'Vermont', 'Virginia', 'Washington', 'West Virginia', 'Wisconsin', 'Wyoming'],
+  'Canada': ['Alberta', 'British Columbia', 'Manitoba', 'New Brunswick', 'Newfoundland and Labrador', 'Nova Scotia', 'Ontario', 'Prince Edward Island', 'Quebec', 'Saskatchewan', 'Northwest Territories', 'Nunavut', 'Yukon'],
+  'United Kingdom': ['England', 'Scotland', 'Wales', 'Northern Ireland'], 'Australia': ['New South Wales', 'Victoria', 'Queensland', 'Western Australia', 'South Australia', 'Tasmania', 'Australian Capital Territory', 'Northern Territory'],
+  'Germany': ['Baden-Württemberg', 'Bavaria', 'Berlin', 'Brandenburg', 'Bremen', 'Hamburg', 'Hesse', 'Lower Saxony', 'Mecklenburg-Vorpommern', 'North Rhine-Westphalia', 'Rhineland-Palatinate', 'Saarland', 'Saxony', 'Saxony-Anhalt', 'Schleswig-Holstein', 'Thuringia'],
+  'India': [], 'Brazil': [], 'Mexico': [], 'France': [], 'Spain': [], 'Italy': [], 'Portugal': [], 'Netherlands': [], 'Belgium': [], 'Switzerland': [], 'Austria': [], 'Ireland': [], 'Sweden': [], 'Norway': [], 'Denmark': [], 'Finland': [], 'Poland': [], 'Japan': [], 'South Korea': [], 'China': [], 'Singapore': [], 'New Zealand': [], 'South Africa': [], 'Nigeria': [], 'Kenya': [], 'Argentina': [], 'Chile': [], 'Colombia': [], 'Philippines': [], 'Indonesia': [], 'Israel': [], 'United Arab Emirates': [], 'Turkey': [], 'Ukraine': [] };
+function jurisdictionInput(value = '', parent = '') {   // a text box with suggestions (datalist), nested with ›
+  const id = 'jur-' + Math.random().toString(36).slice(2), list = h('datalist', { id });
+  const known = new Set(); for (const e of [...E.directory.values(), ...[...E.childGenesis.values()].map(genesis => ({ genesis }))]) { const j = (chains.has(e.genesis.hash) ? derive(e.genesis.hash)?.profile.jurisdiction : null) || e.genesis.payload.jurisdiction; if (j) known.add(j); }
+  for (const [c, subs_] of Object.entries(PLACES)) { known.add(c); for (const x of subs_) known.add(`${c} › ${x}`); }
+  const opts = [...known].filter(j => !parent || j.startsWith(parent + ' › ')).sort();
+  list.replaceChildren(...opts.slice(0, 400).map(j => h('option', { value: j })));
+  const input = h('input', { type: 'text', value: value || (parent ? parent + ' › ' : ''), maxLength: 120, placeholder: parent ? `${parent} › …` : 'Jurisdiction, e.g. United States › California › Los Angeles County', style: 'flex:1' });
+  input.setAttribute('list', id);   // (a read-only property: set as an attribute)
+  const wrap = h('span', { style: 'display:contents' }, input, list); wrap.input = input; return wrap;
+}
+function orgDetailsForm(initial = {}) {   // the type, its fields and the people behind it
+  const type = h('select', {}, Object.entries(ORG_KINDS).map(([k, v]) => h('option', { value: k, selected: (initial.orgType || 'other') === k }, v.name)));
+  const box = h('div', { class: 'split', style: 'gap:10px' }), inputs = new Map(), people = [...(initial.people || [])], plist = h('div');
+  const pKey = h('input', { type: 'text', placeholder: 'Their user ID', style: 'flex:2' }), pRole = h('input', { type: 'text', placeholder: 'Title, e.g. CEO, partner', maxLength: 60, style: 'flex:1' }), pShare = h('input', { type: 'number', min: 0, max: 100, placeholder: '% (optional)', style: 'width:110px' });
+  const drawPeople = () => plist.replaceChildren(...people.map((q, i) => h('div', { class: 'row', style: 'justify-content:space-between' }, h('span', {}, personLink(q.key), ' · ', q.role, q.share !== undefined ? ` · ${q.share}%` : ''), h('button', { class: 'small', type: 'button', onclick: () => { people.splice(i, 1); drawPeople(); } }, 'Remove'))));
+  const peopleLabel = h('label', {});
+  const draw = () => { const K = ORG_KINDS[type.value]; inputs.clear(); peopleLabel.textContent = K.people;
+    box.replaceChildren(...K.fields.map(([key, label, t]) => { const el = Array.isArray(t) ? h('select', {}, h('option', { value: '' }, label + '…'), t.map(o => h('option', { value: o, selected: initial.details?.[key] === o }, o))) : h('input', { type: t === 'number' ? 'number' : t === 'date' ? 'date' : 'text', placeholder: label, maxLength: 160, value: initial.details?.[key] !== undefined ? (t === 'date' ? new Date(initial.details[key]).toISOString().slice(0, 10) : initial.details[key]) : '' }); inputs.set(key, [el, t]); return h('div', {}, h('label', {}, label), el); })); };
+  type.onchange = draw; draw(); drawPeople();
+  const el = h('div', {}, h('label', {}, 'Type'), type, box, peopleLabel, plist, h('div', { class: 'row', style: 'margin-top:6px' }, pKey, pRole, pShare, h('button', { class: 'small', type: 'button', onclick: () => {
+    const k = pKey.value.trim(); if (!isKey(k)) return toast('Paste their user ID'); if (!pRole.value.trim()) return toast('Give a title');
+    people.push({ key: k, role: pRole.value.trim(), ...(pShare.value !== '' ? { share: Math.max(0, Math.min(100, Number(pShare.value))) } : {}) }); pKey.value = pRole.value = pShare.value = ''; drawPeople();
+  } }, 'Add')));
+  el.value = () => { const details = {}; for (const [key, [inp, t]] of inputs) { const v = inp.value.trim(); if (!v) continue; details[key] = t === 'number' ? Number(v) : t === 'date' ? new Date(v).getTime() : v; }
+    return { orgType: type.value, ...(Object.keys(details).length ? { details } : {}), ...(people.length ? { people } : {}) }; };
+  return el;
+}
+function orgFacts(d) {   // the About page's facts for an organization
+  const p = d.profile, K = ORG_KINDS[p.orgType]; if (!K && !p.jurisdiction && !p.people?.length) return null;
+  const facts = [];
+  if (K) facts.push(['Type', K.name]);
+  if (p.jurisdiction) facts.push(['Jurisdiction', p.jurisdiction]);
+  for (const [key, label, t] of K?.fields || []) { const v = p.details?.[key]; if (v === undefined || v === '') continue; facts.push([label, t === 'date' ? new Date(v).toLocaleDateString() : key === 'website' && /^https:\/\//.test(v) ? h('a', { href: v, target: '_blank', rel: 'noopener noreferrer nofollow' }, v) : String(v)]); }
+  return h('div', { class: 'panel', style: 'margin-top:12px' }, h('div', { class: 'kv' }, facts.flatMap(([k, v]) => [h('div', {}, k), h('div', {}, v)])),
+    p.people?.length ? h('div', { style: 'margin-top:10px' }, h('b', {}, K?.people || 'People'), p.people.map(q => h('div', {}, personLink(q.key), ' · ', q.role, q.share !== undefined ? ` · ${q.share}%` : ''))) : null);
+}
 views.orgs = { render() {
   const all = [...E.directory.values()].filter(e => e.genesis.payload.kind === 'org').map(e => e.genesis.hash);
-  const name = h('input', { type: 'text', placeholder: 'Name', maxLength: LIMITS.name, style: 'flex:1' }), jur = h('input', { type: 'text', placeholder: 'Jurisdiction (optional), e.g. United States', style: 'flex:1' }), about = h('textarea', { placeholder: 'What it does (moderation, arbitration…)', maxLength: LIMITS.about }), st = h('span', { class: 'sub' });
+  const name = h('input', { type: 'text', placeholder: 'Name', maxLength: LIMITS.name, style: 'flex:1' }), jurW = jurisdictionInput(), jur = jurW.input, about = h('textarea', { placeholder: 'What it does', maxLength: LIMITS.about }), st = h('span', { class: 'sub' }), det = orgDetailsForm();
   return h('div', { style: 'max-width:900px' }, h('h2', { style: 'margin-top:0' }, 'Organizations'),
     h('p', { class: 'sub' }, 'Organizations moderate and arbitrate. Follow one to see what it flags (you choose what a flag does). Arbitration bodies take filings, run cases and rule on marketplace disputes; they nest in levels, and appeals go to the next level up, inside the network.'),
     (() => { for (const id of all) if (!chains.has(id)) E.requestChain(openChain(id)); const pts = placedThings().filter(x => x.kind === 'org'); return pts.length ? h('div', { style: 'margin-bottom:12px' }, mapView(pts, { height: 300 })) : null; })(),
     h('div', { class: 'grid' }, all.length ? all.map(channelCard) : h('div', { class: 'empty' }, 'No organizations yet.')),
     h('details', { class: 'panel', style: 'margin-top:14px' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Create an organization'),
-      h('div', { class: 'row', style: 'margin-top:8px' }, name, jur), about, h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { class: 'primary', onclick: async () => {
+      h('div', { class: 'row', style: 'margin-top:8px' }, name, jurW), about, det, h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { class: 'primary', onclick: async () => {
         if (!name.value.trim()) return toast('Name it'); st.textContent = 'Registering…';
-        try { const key = await newIdentity(); await addChannelKey({ ...key, name: name.value.trim() }); const g = await E.createGenesis({ type: 'genesis', kind: 'org', name: name.value.trim(), about: about.value.trim(), avatar: '', ...(jur.value.trim() ? { jurisdiction: jur.value.trim() } : {}) }, ownedSigners.get(key.pub)); await addChannelKey({ ...key, chain: g.hash }); location.hash = `#/c/${g.hash}/rules`; }
+        try { const key = await newIdentity(); await addChannelKey({ ...key, name: name.value.trim() }); const g = await E.createGenesis({ type: 'genesis', kind: 'org', name: name.value.trim(), about: about.value.trim(), avatar: '', ...(jur.value.trim() ? { jurisdiction: jur.value.trim() } : {}), ...det.value() }, ownedSigners.get(key.pub)); await addChannelKey({ ...key, chain: g.hash }); location.hash = `#/c/${g.hash}/rules`; }
         catch (e) { st.textContent = 'Failed: ' + e.message; }
       } }, 'Create'), st)));
 } };
@@ -5138,6 +5196,7 @@ const chainTab = {
       d.profile.place ? h('div', { style: 'margin-top:10px;max-width:640px' }, mapView([{ ...d.profile.place, title: d.profile.name, sub: d.profile.place.label, kind: d.kind === 'org' ? 'org' : 'channel' }], { height: 240, zoom: 15 })) : null,
       links.length ? h('div', { class: 'row', style: 'gap:8px;margin-top:8px;flex-wrap:wrap' }, links.map(l => h('a', { class: 'tagbox', style: 'padding:4px 12px', href: l.url, target: '_blank', rel: 'noopener noreferrer nofollow' }, '🔗 ' + l.label))) : null,
       owner && owner !== d.owner ? h('div', { class: 'sub', style: 'margin-top:8px' }, 'Owned by ', personLink(owner), ' (coins paid to this channel go to them)') : null,
+      d.kind === 'org' ? orgFacts(d) : null,
       h('div', { class: 'kv', style: 'margin-top:16px' },
         h('div', {}, 'Chain ID'), h('div', { class: 'mono' }, id),
         h('div', {}, 'Channel key'), h('div', { class: 'mono' }, d.owner),
@@ -5169,8 +5228,10 @@ const chainTab = {
       links.push({ label: lb.slice(0, 40), url: u }); lLabel.value = ''; lUrl.value = ''; drawLinks();
     } }, 'Add link');
     const keyStatus = h('span', { class: 'sub' });
+    const orgForm = d.kind === 'org' ? orgDetailsForm(d.profile) : null, orgJur = d.kind === 'org' ? jurisdictionInput(d.profile.jurisdiction || genesisFor(id)?.payload.jurisdiction || '') : null;
     const changes = async () => {
       const p = { type: 'profile' };
+      if (orgForm) { const v = orgForm.value(); if (JSON.stringify(v) !== JSON.stringify({ orgType: d.profile.orgType || 'other', ...(d.profile.details ? { details: d.profile.details } : {}), ...(d.profile.people?.length ? { people: d.profile.people } : {}) })) Object.assign(p, v); if (orgJur.input.value.trim() !== (d.profile.jurisdiction || '')) p.jurisdiction = orgJur.input.value.trim(); }
       if (avatarIn.files[0]) p.avatar = await imageFileToDataUrl(avatarIn.files[0]);
       if ((location_.value.trim() || '') !== (d.profile.location || '')) p.location = location_.value.trim();
       if (JSON.stringify(links) !== JSON.stringify(d.profile.links || [])) p.links = links;
@@ -5196,6 +5257,7 @@ const chainTab = {
         h('label', {}, 'Name'), name, h('label', {}, 'About'), about,
         d.kind !== 'list' ? [h('label', {}, 'Avatar'), h('div', { class: 'row' }, avatar(d.profile.avatar, d.profile.name, 'sm'), avatarIn)] : null,
         h('label', {}, 'Location'), location_,
+        orgForm ? [h('label', {}, 'Jurisdiction'), h('div', { class: 'row' }, orgJur), orgForm] : null,
         d.kind !== 'list' ? [h('label', {}, d.kind === 'org' ? 'On the map (where this organization is)' : 'On the map (for a business or venue; optional)'), picker] : null,
         h('label', {}, 'Links (shown on the About page)'), linkList, h('div', { class: 'row', style: 'margin-top:6px' }, lLabel, lUrl, addLink),
         d.kind === 'channel' ? [h('label', {}, 'Default comment setting (each video can override it)'), policy] : null,
@@ -5889,12 +5951,12 @@ Object.assign(chainTab, {
   },
   courts(id, d) {   // the jurisdiction tree: this org's parent and its sub-jurisdictions
     const st = orgState(id), parent = genesisFor(id)?.payload.parent;
-    const name = h('input', { type: 'text', placeholder: 'Name, e.g. Superior Court of Los Angeles County', style: 'flex:1' }), jur = h('input', { type: 'text', placeholder: 'Jurisdiction, e.g. United States › California › Los Angeles County', style: 'flex:1' }), cst = h('span', { class: 'sub' });
+    const name = h('input', { type: 'text', placeholder: 'Name, e.g. Superior Court of Los Angeles County', style: 'flex:1' }), jurW = jurisdictionInput('', d.profile.jurisdiction || ''), jur = jurW.input, cst = h('span', { class: 'sub' });
     return h('div', { class: 'panel' }, h('p', { class: 'sub', style: 'margin-top:0' }, 'Arbitration levels nest (for example by region). Appeals stay inside the network: they go to the next level up, with more senior arbitrators. The coins stay held until a ruling stands.'),
       parent ? h('div', {}, 'Above: ', chainLink(parent)) : h('div', { class: 'sub' }, 'This is a top-level organization.'),
       d.profile.jurisdiction ? h('div', { class: 'sub' }, 'Jurisdiction: ', d.profile.jurisdiction) : null,
       h('h4', {}, 'Below'), st.courts.length ? st.courts.map(g => h('div', {}, chainLink(g.hash), h('span', { class: 'sub' }, ' · ' + (g.payload.jurisdiction || '')))) : h('div', { class: 'sub' }, 'None.'),
-      isMine(d.owner) ? h('div', { style: 'margin-top:10px' }, h('div', { class: 'row' }, name, jur), h('div', { class: 'row', style: 'margin-top:6px' }, h('button', { onclick: async () => {
+      isMine(d.owner) ? h('div', { style: 'margin-top:10px' }, h('div', { class: 'row' }, name, jurW), h('div', { class: 'row', style: 'margin-top:6px' }, h('button', { onclick: async () => {
         if (!name.value.trim()) return toast('Name it'); cst.textContent = 'Creating…';
         try { await createSubCourt(id, name.value.trim(), jur.value.trim()); cst.textContent = 'Created. It will appear here when its block is in.'; } catch (e) { cst.textContent = 'Failed: ' + e.message; }
       } }, 'Add a level below this one'), cst)) : null);

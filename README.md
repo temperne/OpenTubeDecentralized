@@ -323,6 +323,14 @@ An **organization** is a chain (create one under *Orgs*). Its owner can do three
 
 Courts below an org are **child chains**: they're registered by a `child` block on their parent's chain, not on the main chain, so jurisdictions nest like the places they serve (United States › California › Los Angeles County). A browser syncs a child chain only when you open it; nodes keep them all.
 
+**What an organization is**
+
+- **Type:** corporation, LLC or limited company, partnership, sole proprietorship, nonprofit or charity, cooperative, government body, club or association, arbitration body, or other.
+- **Details for its type:** registration number, date founded or incorporated, partnership form, tax-exempt number, members, level of government, website, and so on.
+- **People:** officers, partners, members or owners, each with a title and an optional ownership share. They're declared by the organization and linked to their profiles.
+- **Jurisdiction:** suggested as you type, from what organizations on the network already use plus countries and their states and provinces, nested with ›. A level added below starts with its parent's jurisdiction.
+- **Editing:** all of it can be changed under *Manage*, and it appears on the organization's *About* page.
+
 **Moderation**
 
 - **Reporting:** anyone can report a video to an org (*⚑ Report* on the video).
