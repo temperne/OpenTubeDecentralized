@@ -3083,18 +3083,22 @@ function retarget(kids, media) {
 // ---- broadcasting
 const broadcasts = new Map();   // chainId -> session
 async function startLive(chainId, media, title) {
-  if (!canHost()) throw new Error('Going live needs a video folder (it records the stream there).');
+  const viaNode = !canHost() && storageNodes()[0];   // no folder here: a computer you may use records it
+  if (!canHost() && !viaNode) throw new Error('Going live needs a video folder (it records the stream there), or a computer running OpenTube that you may use.');
   if (!LIVE_MIME) throw new Error('This browser can’t record video for streaming. Use Chrome, Edge or Firefox.');
   const hub = await liveNet.connect();   // a hub helps (WebRTC tree, more viewers), but the mesh carries the stream without one
   const d = derive(chainId), signer = signerFor(d.owner);
   if (hub) await liveNet.auth(signer);
   const stream = toHex(crypto.getRandomValues(new Uint8Array(32)));
-  const ch = await channelFolder(chainId);
-  const file = await uniqueFileName(ch, cleanName(title, 'Live') + '.webm');
-  const fh = await ch.dir.getFileHandle(file, { create: true });
-  (ch.meta.lives ||= {})[stream] = { file, title, own: true, started: Date.now() }; saveMeta(ch);
-  const sess = { chainId, stream, title, media, file, fh, signer, n: 0, o: 0, kids: new Map(), viewers: null, started: Date.now(), queue: Promise.resolve(), ended: false, block: null };
-  sess.rec = new (fileStore(fh, false))(1, { length: Number.MAX_SAFE_INTEGER });   // writes each chunk at its offset
+  let file = null, fh = null;
+  if (!viaNode) {
+    const ch = await channelFolder(chainId);
+    file = await uniqueFileName(ch, cleanName(title, 'Live') + '.webm');
+    fh = await ch.dir.getFileHandle(file, { create: true });
+    (ch.meta.lives ||= {})[stream] = { file, title, own: true, started: Date.now() }; saveMeta(ch);
+  } else if (!derive(chainId)?.relays?.has(viaNode.node)) await append(chainId, { type: 'relay', key: viaNode.node, on: true });   // lets it end the stream and offer the recording
+  const sess = { chainId, stream, title, media, file, fh, signer, n: 0, o: 0, kids: new Map(), viewers: null, started: Date.now(), queue: Promise.resolve(), ended: false, block: null, viaNode: viaNode?.node || null };
+  if (fh) sess.rec = new (fileStore(fh, false))(1, { length: Number.MAX_SAFE_INTEGER });   // writes each chunk at its offset
   broadcasts.set(chainId, sess);
   liveNet.on(stream, (m) => {
     if (m.t === 'child') offerTo(stream, m.peer, media, sess.kids);
@@ -3107,7 +3111,7 @@ async function startLive(chainId, media, title) {
   liveNet.send({ t: 'broadcast', stream, chain: chainId, mime: LIVE_MIME, slots: 4 });
   sess.block = await append(chainId, { type: 'live', title, stream, mime: LIVE_MIME });
   // your computers (and ones shared with you for hosting) join the stream and serve viewers over WebRTC
-  for (const n of usableNodes('h').filter(n => Date.now() - n.at < 120000)) nodeCtl(n, 'relay', { stream, chain: chainId }).catch(() => {});
+  for (const n of usableNodes('h').filter(n => Date.now() - n.at < 120000)) nodeCtl(n, 'relay', { stream, chain: chainId, ...(n.node === sess.viaNode ? { record: true, title } : {}) }).catch(() => {});
   const opts = { mimeType: LIVE_MIME, videoBitsPerSecond: 2_000_000, audioBitsPerSecond: 128_000, videoKeyFrameIntervalDuration: 2000 };
   const recorder = sess.recorder = new MediaRecorder(media, opts);
   recorder.ondataavailable = (e) => { if (e.data.size) sess.queue = sess.queue.then(() => pushSegment(sess, e.data)).catch(err => console.warn('live segment', err)); };
@@ -3122,13 +3126,14 @@ async function pushSegment(sess, blob) {
   g.d = b64.enc(u8);
   liveNet.send({ t: 'seg', seg: g });
   E.liveMesh.publish(g);   // and over the mesh, to everyone who wants it
-  await new Promise((res, rej) => sess.rec.put(g.o, u8, (e) => e ? rej(e) : res()));
+  if (sess.rec) await new Promise((res, rej) => sess.rec.put(g.o, u8, (e) => e ? rej(e) : res()));
 }
 async function stopLive(chainId) {
   const sess = broadcasts.get(chainId); if (!sess || sess.ended) return;
   sess.ended = true;
   await new Promise((res) => { sess.recorder.onstop = res; try { sess.recorder.stop(); } catch { res(); } });
-  await sess.queue; await sess.rec.finish();
+  await sess.queue; await sess.rec?.finish();
+  if (sess.viaNode) toast(`${E.nodes.get(sess.viaNode)?.info?.name || 'Your computer'} recorded it: it appears on the channel page to publish or discard in a moment.`);
   liveNet.send({ t: 'leave', stream: sess.stream }); liveNet.off(sess.stream);
   for (const pc of sess.kids.values()) pc.close();
   sess.thumb = sess.preview ? makeThumb(sess.preview) : '';
@@ -5262,7 +5267,7 @@ function liveStudio(chainId) {
     // OBS through one of your computers (or one shared with you) needs nothing in this browser: the computer records
     // and streams. Only streaming from this browser (camera, screen) needs a video folder and in-browser recording.
     if (!LIVE_MIME) return [head, viaComputer, h('p', { class: 'sub' }, 'To stream from this browser (camera or screen), use Chrome, Edge or Firefox on a computer.')];
-    if (!canHost()) return [head, meshNote, viaComputer, folderPrompt('Streaming from this browser (camera or screen; the recording is kept in your video folder)')];
+    if (!canHost() && !storageNodes().length) return [head, meshNote, viaComputer, folderPrompt('Streaming from this browser (camera or screen; the recording is kept in your video folder)'), h('p', { class: 'sub' }, 'Or use a computer running OpenTube (yours, or one shared with you): it records the stream, and this browser needs no folder.')];
     return [head, meshNote, viaComputer,
       h('p', { class: 'sub', style: 'margin-top:0' }, 'Or stream from this browser: a camera, your screen, or OBS’s “Start Virtual Camera” (pick “OBS Virtual Camera” below). Your stream is recorded into this channel’s folder; when you end it you choose whether to publish the recording.'),
       ask, h('div', { class: 'split', style: 'margin-top:8px' }, h('div', {}, h('label', {}, 'Video'), source), h('div', {}, h('label', {}, 'Audio'), mic)),
@@ -5619,21 +5624,41 @@ function uploadForm(chainId) {
   drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('over'); };
   drop.ondragleave = () => drop.classList.remove('over');
   drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); pick(e.dataTransfer.files[0]); };
+  const nodes = storageNodes(), nodeSel = h('select', { style: 'width:auto' }, nodes.map(n => h('option', { value: n.node }, (n.info?.name || n.grant.label || 'computer') + (n.grant.user === me.pub ? '' : ' (shared with you)'))));
   btn.onclick = async () => {
     if (!file || !title.value.trim()) return toast('Choose a file and add a title');
     btn.disabled = true;
+    const viaNode = !canHost() && nodes.find(n => n.node === nodeSel.value);
     try {
-      const t = await addUpload(chainId, file, (m) => { status.textContent = m; });
+      const t = viaNode ? await new Promise((res) => { status.textContent = 'Preparing the file…'; wt.seed(file, { announce: TRACKERS, name: file.name }, (t) => { hosting.set(t.infoHash, { chain: chainId, size: file.size }); res(t); }); })
+        : await addUpload(chainId, file, (m) => { status.textContent = m; });
       const b = await append(chainId, { type: 'video', title: title.value.trim(), desc: desc.value.trim(), infohash: t.infoHash, file: file.name.slice(0, 200), size: file.size, mime: file.type.slice(0, 60), thumb: thumb || makeThumb(prev), comments: vpol.value || undefined, ...(parseTags(tagsIn.value).length ? { tags: parseTags(tagsIn.value) } : {}) });
       status.textContent = 'Paying the posting fee…';
       try { await payPost(chainId, b, file.size); } catch (e) { toast(`Uploaded, but not published yet: ${e.message}. Pay from your channel's Videos tab.`); }
-      toast('Published. Members of your channel will start hosting it.');
+      if (viaNode) {   // hand it to the computer, and stay until it has all of it
+        const name = viaNode.info?.name || 'your computer';
+        status.textContent = `Sending it to ${name}… keep this tab open`;
+        let p = null;
+        for (let i = 0; i < 20 && !p; i++) { try { p = (await nodeCtl(viaNode, 'store', { chain: chainId, ih: t.infoHash, ...(await chanProof(viaNode, chainId)) })).data || {}; } catch (e) { status.textContent = `${name}: ${e.message} (retrying)`; await new Promise(r => setTimeout(r, 3000)); } }
+        if (!p) throw new Error(`${name} didn’t take the video`);
+        for (;;) {
+          if (p?.done) break;
+          status.textContent = `${name} has ${Math.round((p?.progress || 0) * 100)}% of it… keep this tab open until it’s done`;
+          await new Promise(r => setTimeout(r, 3000));
+          try { p = (await nodeCtl(viaNode, 'store.status', { ih: t.infoHash })).data; } catch {}
+        }
+        toast(`${name} has the whole video and shares it from now on. You can close this tab.`);
+      } else toast('Published. Members of your channel will start hosting it.');
       kept.delete('upload:' + chainId);  // a fresh form next time
       location.hash = `#/v/${chainId}/${b.hash}`;
     } catch (e) { console.error(e); status.textContent = 'Failed: ' + (e.message || e); btn.disabled = false; }
   };
+  if (!canHost() && !nodes.length) return h('details', { class: 'panel' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Upload a video'),
+    h('div', { style: 'margin-top:12px' }, folderPrompt('Uploading'), h('p', { class: 'sub' }, 'Or use a computer running OpenTube (yours, or one a friend shared with you): it keeps your videos, and this browser needs no folder.')));
   if (!canHost()) return h('details', { class: 'panel' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Upload a video'),
-    h('div', { style: 'margin-top:12px' }, folderPrompt('Uploading')));
+    h('div', { style: 'margin-top:12px' }, h('p', { class: 'sub', style: 'margin-top:0' }, 'This browser has no video folder, so the video is kept on a computer you may use. Keep this tab open until it has the whole file.'),
+      h('div', { class: 'row' }, h('span', {}, 'Store on'), nodeSel), h('div', { style: 'margin-top:10px' }, input, drop), prev, h('label', {}, 'Title'), title, h('label', {}, 'Description'), desc, h('label', {}, 'Tags'), tagsIn, h('label', {}, 'Comments'), vpol,
+      h('div', { class: 'row', style: 'margin-top:12px' }, btn, status)));
   return h('details', { class: 'panel' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Upload a video'),
     h('div', { style: 'margin-top:12px' }, h('p', { class: 'sub', style: 'margin-top:0' }, `The file is copied into “${folder.kind === 'disk' ? folder.root.name + '/' : ''}${folder.channels.get(chainId)?.folderName || cleanName(channelTitle(chainId), 'Channel')}/” and shared from there.`), drop, input, prev, h('label', {}, 'Title'), title, h('label', {}, 'Description'), desc, h('label', {}, 'Tags'), tagsIn, h('label', {}, 'Comments on this video'), vpol,
       h('div', { class: 'row', style: 'margin-top:12px' }, btn, status)));
@@ -6650,6 +6675,13 @@ const myNodes = () => [...E.nodes.values()].filter(n => n.grant.user === me.pub)
 const nodePerms = (n) => n.grant.user === me.pub ? 'ohm' : (typeof n.info?.users?.[me.pub] === 'string' ? n.info.users[me.pub] : '');
 const sharedNodes = () => [...E.nodes.values()].filter(n => n.grant.user !== me.pub && nodePerms(n)).sort((a, b) => b.at - a.at);
 const usableNodes = (what) => [...myNodes(), ...sharedNodes()].filter(n => nodePerms(n).includes(what));
+// computers you may keep videos on (yours, or shared with you for hosting) that are online: your storage when this
+// browser has no video folder
+const storageNodes = () => usableNodes('h').filter(n => n.roles.includes('host') && Date.now() - n.at < 120000);
+async function chanProof(n, chain) {   // "this channel is mine", signed by the channel's key, for that computer
+  const sg = chain && signerFor(derive(chain)?.owner);
+  return sg ? { channelSig: await sg.sign(globalThis.OpenTubeCore.obsChannelPreimage(n.node, me.pub, chain)) } : {};
+}
 // The owner chooses who else may use a computer: stream through its OBS (each person gets their own stream key, so the
 // computer knows who is streaming and goes live on their channel), host their joined channels, manage its files.
 const PERMS = [['obs', '🎥 Stream with OBS'], ['host', '📦 Host their channels'], ['manage', '🗂 Manage files']];

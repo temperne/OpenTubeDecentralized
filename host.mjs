@@ -217,10 +217,10 @@ export async function startHost({ engine, nodeKey, user, users = () => [], video
   }
   // ---- live recordings: an OBS stream this node received is written into the channel's folder and shared like any
   // video. The channel's owner then publishes it (a video block) or discards it (deleted here).
-  async function recordingPath(chain, title) {
+  async function recordingPath(chain, title, ext = '.mp4') {
     const f = await folderFor(chain), base = cleanName(title, 'Live');
-    let name = base + '.mp4';
-    for (let i = 2; fs.existsSync(path.join(f.dir, name)); i++) name = `${base} (${i}).mp4`;
+    let name = base + ext;
+    for (let i = 2; fs.existsSync(path.join(f.dir, name)); i++) name = `${base} (${i})${ext}`;
     return { full: path.join(f.dir, name), file: name };
   }
   async function seedRecording(chain, file, title, stream) {
@@ -248,6 +248,23 @@ export async function startHost({ engine, nodeKey, user, users = () => [], video
     }
   }
   setInterval(settleRecordings, 15000);
+  // "keep this video": someone allowed to use this computer uploaded from a browser without a video folder. This
+  // computer downloads it from their browser right away (no waiting for the posting fee to be confirmed) and keeps it.
+  async function storeVideo(chain, ih) {
+    const c = engine.openChain(chain); if (c) engine.requestChain(c);
+    for (let i = 0; i < 60; i++) {
+      const b = engine.derive(chain)?.videos?.find(v => v.payload.infohash === ih);
+      if (b) {
+        if (!ov.videos.some(v => v.ih === ih)) ov.videos.push({ chain, ih });
+        if (!ov.pinned.includes(ih)) ov.pinned.push(ih);
+        ov.dropped = ov.dropped.filter(x => x !== ih); saveOv();
+        await ensure(chain, b); return true;
+      }
+      await new Promise(r => setTimeout(r, 500));
+    }
+    throw new Error('this computer hasn’t received the video’s block yet: try again in a moment');
+  }
+  const progressOf = (ih) => { const t = torrents.get(ih)?.t; return t ? { progress: t.progress, peers: t.numPeers, done: !!t.done, size: t.length || null } : null; };
   // live chunks (see liveChunkPreimage in the core): a few seconds of a stream as one small torrent, shared for 6 hours
   function seedChunk(buf, name) {
     return new Promise((res, rej) => {
@@ -256,7 +273,7 @@ export async function startHost({ engine, nodeKey, user, users = () => [], video
     });
   }
   return {
-    recordingPath, seedRecording, seedChunk,
+    recordingPath, seedRecording, seedChunk, storeVideo, progressOf,
     follow, piece, complete, command, files,
     noteProof(ih, key, ok) { const m = proven.get(ih) || proven.set(ih, new Map()).get(ih); if (ok) m.set(key, Date.now()); else m.delete(key); },
     status: () => {

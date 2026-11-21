@@ -225,9 +225,10 @@ function liveRelays() {
     if (relaying.has(stream) || relaying.size >= 6) continue;
     const kids = liveKids(stream, (m) => hub.send(m));
     const chunks = fromBrowser(stream, chain) ? chunker(stream, (c) => hub.send({ t: 'lchunk', stream, chunk: c })) : null;
+    const ask = relayAsked.get(stream), rec = ask?.record ? relayRecorder(chain, stream, ask.title) : null;   // their browser has no folder: we keep the recording
     let got = 0;
     const hub = hubSocket((m) => {
-      if (m.t === 'seg' && m.seg?.stream === stream) { kids.seg(m.seg); chunks?.seg(m.seg); if (!got++) log(`[live] relaying “${engine.derive(chain)?.streams.find(b => b.payload.stream === stream)?.payload.title || 'a stream'}” on ${engine.derive(chain)?.profile.name || chain.slice(0, 8)} to viewers over WebRTC`); }
+      if (m.t === 'seg' && m.seg?.stream === stream) { kids.seg(m.seg); chunks?.seg(m.seg); rec?.seg(m.seg); if (!got++) log(`[live] relaying “${engine.derive(chain)?.streams.find(b => b.payload.stream === stream)?.payload.title || 'a stream'}” on ${engine.derive(chain)?.profile.name || chain.slice(0, 8)} to viewers over WebRTC`); }
       else if (m.t === 'child' && m.dc) kids.child(m.peer);
       else if (m.t === 'unchild') kids.unchild(m.peer);
       else if (m.t === 'signal') kids.signal(m.from, m.data);
@@ -235,11 +236,31 @@ function liveRelays() {
       else if (m.t === 'viewers') liveStats.set(stream, m);
     }, () => { kids.close(); if (RTCPC) hub.send({ t: 'watch', stream, segOnly: true, media: false, dcSlots: 16, slots: 0, relay: true }); });
     const alive = setInterval(() => hub.send({ t: 'alive', stream }), 15000);
-    const r = { close: () => { clearInterval(alive); (chunks?.end() || Promise.resolve()).then(() => { hub.send({ t: 'leave', stream }); kids.close(); hub.close(); }); } };
+    const r = { close: () => { clearInterval(alive); rec?.finish(); (chunks?.end() || Promise.resolve()).then(() => { hub.send({ t: 'leave', stream }); kids.close(); hub.close(); }); } };
     relaying.set(stream, r);
   }
 }
 setInterval(liveRelays, 10000);
+// Recording a stream we relay (someone without a video folder went live through this computer): every segment is
+// written at its offset, so the file is the streamer's recording byte for byte. When it ends: shared over BitTorrent and
+// offered on the channel (liveend with the recording), like an OBS recording.
+function relayRecorder(chain, stream, title) {
+  let fd = null, file = null, size = 0, done = false;
+  const ready = (async () => { const p = await globalThis.openTubeHost.recordingPath(chain, title, '.webm'); file = p; fd = fs.openSync(p.full, 'w'); log(`[live] recording “${title}” to ${p.full}`); })().catch(e => log('[live] can’t record:', e.message));
+  return {
+    seg(g) { ready.then(() => { if (!fd || done || !g?.d) return; const b = Buffer.from(g.d, 'base64'); try { fs.writeSync(fd, b, 0, b.length, g.o); size = Math.max(size, g.o + b.length); } catch (e) { log('[live] recording:', e.message); } }); },
+    finish() {
+      if (done) return; done = true;
+      ready.then(async () => {
+        if (!fd) return; fs.closeSync(fd);
+        if (size < 1000) return fs.rmSync(file.full, { force: true });
+        const r = await globalThis.openTubeHost.seedRecording(chain, file.file, title, stream);
+        await engine.append(chain, { type: 'liveend', stream, outcome: 'ended', rec: { infohash: r.infohash, file: r.file.slice(0, 200), size: r.size, mime: 'video/webm', thumb: await thumbOf(file.full) } });
+        log(`[live] recording ready: the channel’s owner can publish it from the site`);
+      }).catch(e => log('[live] recording failed:', e.message));
+    }
+  };
+}
 function liveSink(chain, stream, mime) {
   let n = 0, o = 0, queue = Promise.resolve(), ended = false;
   const seg = (bytes, k) => (queue = queue.then(async () => {
@@ -606,11 +627,27 @@ async function control(c) {
   try {
     let data;
     const owner = c.user === GRANT.user;
+    if (c.cmd === 'store' || c.cmd === 'store.status') {   // keep a video someone uploaded from a browser (their storage is this computer)
+      const a = c.args || {};
+      if (!owner && !may(c.user, 'host')) return fail('you may not store videos on this computer');
+      if (!globalThis.openTubeHost?.storeVideo) return fail('video hosting is off on this computer');
+      if (!/^[0-9a-f]{40}$/.test(a.ih || '')) return fail('bad video');
+      if (c.cmd === 'store') {
+        if (!/^[0-9a-f]{64}$/.test(a.chain || '')) return fail('bad channel');
+        let ok = owner || ownsChannel(c.user, a.chain);
+        if (!ok && typeof a.channelSig === 'string') { const key = engine.derive(a.chain)?.owner || engine.directory.get(a.chain)?.genesis.author; ok = !!key && await core.verify(key, core.obsChannelPreimage(signer.pub, c.user, a.chain), a.channelSig).catch(() => false); }
+        if (!ok) return fail('that channel isn’t yours');
+        try { await globalThis.openTubeHost.storeVideo(a.chain, a.ih); } catch (e) { return fail(e.message); }
+        log(`[host] storing a video for ${owner ? 'the owner' : obsStore.users[c.user]?.name || c.user.slice(0, 8)}`);
+      }
+      return signed({ v: 1, kind: 'nodectlr', node: signer.pub, re: c.nonce, at: Date.now(), ok: true, data: globalThis.openTubeHost.progressOf(a.ih) });
+    }
     if (c.cmd === 'relay') {   // "I just went live: help serve it" (from the owner's or a sharing person's browser)
       const a = c.args || {};
       if (!owner && !may(c.user, 'host')) return fail('you may not use this computer for relaying');
       if (!/^[0-9a-f]{64}$/.test(a.stream || '') || !/^[0-9a-f]{64}$/.test(a.chain || '')) return fail('bad stream');
-      relayAsked.set(a.stream, { chain: a.chain, at: Date.now() }); setTimeout(liveRelays, 500);
+      if (a.record === true && relaying.has(a.stream)) { relaying.get(a.stream).close(); relaying.delete(a.stream); }   // already relaying it: restart, recording this time
+      relayAsked.set(a.stream, { chain: a.chain, at: Date.now(), record: a.record === true && !!globalThis.openTubeHost?.seedRecording, title: String(a.title || 'Live').slice(0, 100) }); setTimeout(liveRelays, 500);
       return signed({ v: 1, kind: 'nodectlr', node: signer.pub, re: c.nonce, at: Date.now(), ok: true, data: { relaying: !!RTCPC } });
     }
     if (c.cmd === 'update') {   // download the site's current code and restart (needs the one-command launcher, which restarts us)
