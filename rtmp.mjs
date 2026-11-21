@@ -134,6 +134,35 @@ function fragment(seq, vs, as) {
 }
 
 // ---------------------------------------------------------------- RTMP server
+// Linux: which processes listen on a TCP port (from /proc), so a port taken by an older OpenTube can be named or freed.
+import fs from 'node:fs';
+const cmdOf = (pid) => { try { return fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').join(' ').trim(); } catch { return ''; } };
+function portHolders(port) {
+  if (process.platform !== 'linux') return [];
+  const want = new Map();   // socket inode -> address
+  for (const f of ['/proc/net/tcp', '/proc/net/tcp6']) {
+    let t = ''; try { t = fs.readFileSync(f, 'utf8'); } catch { continue; }
+    for (const line of t.split('\n').slice(1)) {
+      const c = line.trim().split(/\s+/); if (c.length < 10 || c[3] !== '0A') continue;   // 0A = LISTEN
+      const [hex, ph] = c[1].split(':'); if (parseInt(ph, 16) !== port) continue;
+      const addr = hex.length === 8 ? hex.match(/../g).reverse().map(x => parseInt(x, 16)).join('.') : (/^0+$/.test(hex) ? '::' : hex === '00000000000000000000000001000000' ? '::1' : 'IPv6 ' + hex);
+      want.set(c[9], addr);
+    }
+  }
+  const out = [];
+  if (!want.size) return out;
+  for (const d of fs.readdirSync('/proc').filter(x => /^\d+$/.test(x))) {
+    let fds = []; try { fds = fs.readdirSync(`/proc/${d}/fd`); } catch { continue; }
+    for (const fd of fds) {
+      let l = ''; try { l = fs.readlinkSync(`/proc/${d}/fd/${fd}`); } catch { continue; }
+      const m = /^socket:\[(\d+)\]$/.exec(l); if (!m || !want.has(m[1])) continue;
+      let ppid = 0; try { ppid = Number(/PPid:\s*(\d+)/.exec(fs.readFileSync(`/proc/${d}/status`, 'utf8'))[1]); } catch {}
+      out.push({ pid: Number(d), ppid, cmd: cmdOf(d), addr: want.get(m[1]) }); break;
+    }
+  }
+  return out;
+}
+
 export function startRtmp({ port = 1935, host = '::', onPublish, log = () => {} }) {   // all addresses: OBS may be on another machine
   const state = { port, live: 0, bytes: 0, sessions: new Set() };
   const server = net.createServer((sock) => {
@@ -267,10 +296,27 @@ export function startRtmp({ port = 1935, host = '::', onPublish, log = () => {} 
   server.on('error', (e) => log(`OBS receiver couldn’t listen on ${host}:${port}: ${e.message}`));
   // Listen on IPv6 and IPv4 together ('::'): on Windows and macOS "localhost" means ::1 first, and OBS only tries the
   // first address, so an IPv4-only receiver leaves OBS stuck at "Connecting…". Falls back to IPv4 where IPv6 is off.
-  const listen = (h) => { server.removeAllListeners('listening'); server.listen({ port, host: h, ipv6Only: false }); server.once('listening', () => { state.listening = true; state.error = null; state.host = h; log(`OBS receiver on rtmp://${h === '127.0.0.1' || h === '::1' ? 'localhost' : 'this-computer'}:${port}/live (listening on ${h === '::' ? 'all addresses, IPv4 and IPv6' : h === '0.0.0.0' ? 'all IPv4 addresses' : h})`); }); };
-  server.on('error', (e) => {
+  const listen = (h) => { state.trying = h; server.removeAllListeners('listening'); server.listen({ port, host: h, ipv6Only: false }); server.once('listening', () => { state.listening = true; state.error = null; state.host = h; log(`OBS receiver on rtmp://${h === '127.0.0.1' || h === '::1' ? 'localhost' : 'this-computer'}:${port}/live (listening on ${h === '::' ? 'all addresses, IPv4 and IPv6' : h === '0.0.0.0' ? 'all IPv4 addresses' : h})`); }); };
+  server.on('error', async (e) => {
     if (host === '::' && ['EAFNOSUPPORT', 'EADDRNOTAVAIL', 'EINVAL'].includes(e.code) && !state.fellBack) { state.fellBack = true; return listen('0.0.0.0'); }
-    state.error = e.code === 'EADDRINUSE' ? `port ${port} is already taken by another program, so OBS can’t reach this OpenTube. Probably an older OpenTube still running: stop it (or restart the computer), then start OpenTube again. To see which program: sudo ss -ltnp | grep :${port}` : e.message; log('OBS receiver: ' + state.error);
+    if (e.code === 'EADDRINUSE') {
+      // Someone else has the port, often only on 127.0.0.1 (an older OpenTube), which also stops us listening on all
+      // addresses: OBS on this computer then reaches the old one and OBS elsewhere reaches nothing. If it's an older
+      // OpenTube, stop it and take the port.
+      const holders = portHolders(port);
+      const ours = holders.filter(x => x.pid !== process.pid && x.pid !== process.ppid && /server\.mjs|opentube/i.test(x.cmd));
+      if (ours.length && !state.reclaimed) {
+        state.reclaimed = true;
+        log(`port ${port} is held by an older OpenTube (process ${ours.map(x => `${x.pid} on ${x.addr}`).join(', ')}): stopping it and taking the port on all addresses`);
+        for (const x of ours) { for (const pid of [x.pid, x.ppid]) if (pid > 1 && pid !== process.pid && pid !== process.ppid && (pid === x.pid || /opentube/i.test(cmdOf(pid)))) try { process.kill(pid, 'SIGTERM'); } catch {} }
+        await new Promise(r => setTimeout(r, 2500));
+        for (const x of ours) try { process.kill(x.pid, 'SIGKILL'); } catch {}
+        await new Promise(r => setTimeout(r, 500));
+        return listen(state.trying || host);
+      }
+      state.error = `port ${port} is already taken by another program` + (holders.length ? ` (${holders.map(x => `process ${x.pid} “${x.cmd.slice(0, 80)}” on ${x.addr}`).join('; ')})` : '') + `, so OBS can’t reach this OpenTube. Stop that program, then start OpenTube again. To see it: sudo ss -ltnp | grep :${port}`;
+    } else state.error = e.message;
+    log('OBS receiver: ' + state.error);
   });
   listen(host);
   return { status: () => ({ port, host: state.host || host, listening: !!state.listening, error: state.error || null, live: state.live > 0, bytes: state.bytes, lastConn: state.lastConn || null }), close: () => server.close() };
