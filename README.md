@@ -494,6 +494,14 @@ Many VPS providers only let a few ports in from the internet (often 22 and 80), 
 - **Open the port:** in the provider's control panel (Firewall or Security group), and on the server with `sudo iptables -I INPUT -p tcp --dport 1935 -j ACCEPT`.
 - **Or use a port that's already open:** add `--obs-port=80` to the command, or set "OBS port" when you create it on Devices. In OBS, use `rtmp://<its-ip>:80/live`. Only one program can use a port, so pick one nothing else on the server is using.
 
+### Entry nodes: the site only serves the page
+
+A computer reachable from the internet (started with `--public`, which sets up HTTPS, or with `ENTRY=1`) is an **entry node**. Its signed status says so, and it is a tracker, a live hub and a way into the network for browsers.
+
+- **Browsers** connect to entry nodes first, and remember them for the next visit. They use the site's own node (on Cloudflare, a Durable Object) only while no entry node answers. Entry nodes' trackers replace the site's for new torrents.
+- **Live streams** live on one hub, named in the live block (`hub`). A browser going live picks an entry node that answers. A computer that is an entry node uses its own hub for its streams. Viewers, relays and group streams connect to the hub the block names.
+- **Scratch pad:** every 15 s, each entry node sends the others what's live on its hub (viewer counts, who's watching), signed. This is held in memory only and expires after a minute. So any entry node's `/status` shows the whole network's live streams, and a browser needs to ask only one.
+
 ### Group streams (several people in one picture)
 
 Under Devices → 🎥 OBS & streaming → **Group**, or on the live page of your own stream, switch the group stream **on**. Everyone connected is combined into one 1280×720 picture, arranged by how many are in it: one fills the screen, two sit side by side, three or four go in a 2×2 grid, and five to nine in 3×3. Audio is mixed.

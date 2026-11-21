@@ -192,10 +192,22 @@ function chunker(stream, announce) {
   };
 }
 // The site's live hub over a WebSocket, as this node's key: for broadcasting (OBS) or relaying (watch).
-function hubSocket(onMsg, onOpen) {
+// An entry node (reachable from the internet: PUBLIC_URL, or ENTRY=1) is a tracker, a live hub and a way into the
+// network for browsers, so the site itself only needs to serve the page. Its own streams use its own hub.
+const isEntry = () => !!process.env.PUBLIC_URL || process.env.ENTRY === '1';   // --public sets PUBLIC_URL once HTTPS is up
+const ownHubUrl = () => `ws://127.0.0.1:${PORT}/live`;
+const defaultHubUrl = () => isEntry() || !process.env.NODE_SITE ? ownHubUrl() : process.env.NODE_SITE.replace(/^http/, 'ws') + '/live';
+function hubUrlFor(chain, stream) {   // the hub a stream lives on: named in its live block (its `hub` node), else the site's
+  const lb = engine.chains.has(chain) && engine.derive(chain)?.streams?.find(b => b.payload.stream === stream), hub = lb?.payload?.hub;
+  if (!hub) return process.env.NODE_SITE ? process.env.NODE_SITE.replace(/^http/, 'ws') + '/live' : ownHubUrl();
+  if (hub === signer.pub) return ownHubUrl();
+  const n = engine.nodes.get(hub), a = (n?.addrs || []).find(x => /^https:/.test(x)) || (n?.addrs || []).find(x => !/localhost|127\./.test(x)) || n?.addrs?.[0];
+  return a ? a.replace(/^http/, 'ws').replace(/\/+$/, '') + '/live' : defaultHubUrl();
+}
+function hubSocket(onMsg, onOpen, url = defaultHubUrl()) {
   let ws = null, ready = false, closed = false;
   const connect = () => {
-    ready = false; ws = new WebSocket(process.env.NODE_SITE.replace(/^http/, 'ws') + '/live');
+    ready = false; ws = new WebSocket(url);
     ws.onmessage = async (e) => {
       let m; try { m = JSON.parse(e.data); } catch { return; }
       if (m.t === 'hi') { await rtcReady; ws.send(JSON.stringify({ t: 'auth', key: signer.pub, sig: await signer.sign(core.liveAuthPreimage(m.nonce)) })); ready = true; onOpen(); }
@@ -234,7 +246,7 @@ function liveRelays() {
       else if (m.t === 'signal') kids.signal(m.from, m.data);
       else if (m.t === 'ended' || m.t === 'nostream') { r.close(); relaying.delete(stream); }
       else if (m.t === 'viewers') liveStats.set(stream, m);
-    }, () => { kids.close(); if (RTCPC) hub.send({ t: 'watch', stream, segOnly: true, media: false, dcSlots: 16, slots: 0, relay: true }); });
+    }, () => { kids.close(); if (RTCPC) hub.send({ t: 'watch', stream, segOnly: true, media: false, dcSlots: 16, slots: 0, relay: true }); }, hubUrlFor(chain, stream));
     const alive = setInterval(() => hub.send({ t: 'alive', stream }), 15000);
     const r = { close: () => { clearInterval(alive); rec?.finish(); (chunks?.end() || Promise.resolve()).then(() => { hub.send({ t: 'leave', stream }); kids.close(); hub.close(); }); } };
     relaying.set(stream, r);
@@ -299,7 +311,7 @@ function liveSink(chain, stream, mime) {
   }).catch(e => log('[obs] segment failed:', e.message)));
   let send, finish;
   const site = process.env.NODE_SITE;
-  if (!site) {   // this node is the site: feed its own hub
+  if (!site && !isEntry()) {   // this node is the site: feed its own hub
     const src = liveHub.local(stream, chain, mime), chunks = chunker(stream, (c) => src.chunk(c));
     send = (g) => { src.seg(g); chunks.seg(g); }; finish = () => chunks.end().then(() => src.end());
   } else {       // relay to the site's hub as the broadcaster, and feed the segment tree ourselves
@@ -441,7 +453,7 @@ function goLiveSink(log, obsCfg) {
       else {
         chain = obsCfg.channel; if (!chain || !engine.chains.get(chain)) throw new Error('no channel linked to this computer');
         stream = crypto.randomBytes(32).toString('hex');
-        await engine.append(chain, { type: 'live', title: (obsCfg.title || 'Live').slice(0, 140), stream, mime });
+        await engine.append(chain, { type: 'live', title: (obsCfg.title || 'Live').slice(0, 140), stream, mime, ...(isEntry() ? { hub: signer.pub } : {}) });
         log(`[obs] live on ${engine.derive(chain)?.profile.name || chain.slice(0, 8)}: “${obsCfg.title}”`);
       }
       real = liveSink(chain, stream, mime); real.init(bytes); yt?.write(bytes);
@@ -535,7 +547,7 @@ function groupInput(hostCfg, { id, label, user, kind, fmt = 'mp4', close = null 
   };
 }
 // A browser stream sent into the group: watched from the hub like a relay, its segments (WebM) fed to ffmpeg in order.
-function pullIntoGroup(hostCfg, stream, user, label) {
+function pullIntoGroup(hostCfg, stream, user, label, chainOf = null) {
   if (!process.env.NODE_SITE) return 'this computer has no site hub to pull the stream from';
   let sink = null, last = -1, hub = null;
   sink = groupInput(hostCfg, { id: 'web:' + user, label, user, kind: 'web', fmt: 'webm', close: () => { hub?.send({ t: 'leave', stream }); hub?.close(); } }, log);
@@ -545,7 +557,7 @@ function pullIntoGroup(hostCfg, stream, user, label) {
       const b = Buffer.from(m.seg.d, 'base64');
       if (m.seg.n === 0) { last = 0; sink.init(b); } else if (last >= 0) { last = m.seg.n; sink.fragment(b); }
     } else if (m.t === 'ended' || m.t === 'nostream') { sink.end(); hub.close(); }
-  }, () => hub.send({ t: 'watch', stream, segOnly: true, media: false, dcSlots: 0, slots: 0, relay: true }));
+  }, () => hub.send({ t: 'watch', stream, segOnly: true, media: false, dcSlots: 0, slots: 0, relay: true }), hubUrlFor(chainOf, stream));
   const alive = setInterval(() => { if (sink.input.ended) { clearInterval(alive); hub.close(); } else hub.send({ t: 'alive', stream }); }, 15000);
   log(`[group] pulling ${label}’s browser stream into the picture`);
   return sink;
@@ -684,11 +696,30 @@ function pieceTabs() {
 // ---- control from the owner's console, and storage proofs. Both arrive as routed messages (engine.route): over a
 // direct WebSocket when the console can reach this node's address, otherwise hop by hop over the mesh.
 const ctlSeen = new Map();   // nonce -> time (replay protection)
+// ---- the scratch pad: short-lived coordination shared between entry nodes, in memory only. Each entry node sends the
+// others what's live on its hub (viewer counts, who watches) every 15 s, signed; entries expire after a minute. So any
+// entry node's /status shows the network's live streams, and a browser needs to ask only one.
+const pad = new Map();   // entry node key -> { at, items }
+const padPreimage = (b) => 'opentube-pad:' + core.canon({ from: b.from, at: b.at, items: b.items });
+async function padTake(b) {
+  if (!b || typeof b.from !== 'string' || !Array.isArray(b.items) || b.items.length > 200 || Math.abs(Date.now() - b.at) > 60000) return { ok: false };
+  if (!engine.nodes.get(b.from)?.roles?.includes('entry') || !(await core.verify(b.from, padPreimage(b), b.sig).catch(() => false))) return { ok: false };
+  pad.set(b.from, { at: b.at, items: b.items.filter(x => x && /^[0-9a-f]{64}$/.test(x.stream)).slice(0, 200) });
+  return { ok: true };
+}
+const padStreams = () => { const now = Date.now(), out = []; for (const [k, x] of pad) { if (now - x.at > 60000) { pad.delete(k); continue; } for (const it of x.items) out.push({ ...it, hub: k }); } return out; };
+setInterval(async () => {
+  if (!isEntry()) return;
+  const b = { kind: 'pad', from: signer.pub, at: Date.now(), items: liveHub.live().slice(0, 100) };
+  b.sig = await signer.sign(padPreimage(b));
+  for (const n of engine.nodes.values()) if (n.node !== signer.pub && n.roles?.includes('entry') && Date.now() - n.at < 120000) engine.route(n.node, b, 10000).catch(() => {});
+}, 15000);
 async function onRoute(body, reply) {
   if (!body || typeof body !== 'object') return;
   if (body.kind === 'nodectl') return reply(await control(body));
   if (body.kind === 'pchal') return reply(await answerChallenge(body));
   if (body.kind === 'reach') return reply(await reachProbe(body));
+  if (body.kind === 'pad') return reply(await padTake(body));
 }
 // ---- "can the internet reach that computer?": another node asks us to connect to its OBS and web ports from here.
 // A computer can't test this itself: its public address is on its own network card, so the connection never leaves
@@ -753,7 +784,7 @@ async function control(c) {
         let ok = ownsChannel(c.user, a.chain);
         if (!ok && typeof a.channelSig === 'string') { const key = engine.derive(a.chain)?.owner || engine.directory.get(a.chain)?.genesis.author; ok = !!key && await core.verify(key, core.obsChannelPreimage(signer.pub, c.user, a.chain), a.channelSig).catch(() => false); }
         if (!ok) return fail('that stream’s channel isn’t yours');
-        const r = pullIntoGroup(hostCfg, a.stream, c.user, label(c.user) + ' (browser)'); if (typeof r === 'string') return fail(r);
+        const r = pullIntoGroup(hostCfg, a.stream, c.user, label(c.user) + ' (browser)', a.chain); if (typeof r === 'string') return fail(r);
       }
       const now = Date.now();
       data = { on: !!hostCfg.tile.on, host: isHost, live: !!g.out, ffmpeg: ffmpegOk,
@@ -915,7 +946,8 @@ setTimeout(async () => {
 if (process.env.NODE_GRANT && !(GRANT && core.validNodeGrant(GRANT))) log('NODE_GRANT is not a valid grant; not announcing this node');
 else if (GRANT) {
   const os = await import('node:os');
-  const roles = (process.env.NODE_ROLES || 'node').split(',').filter(Boolean).slice(0, 8);
+  const baseRoles = (process.env.NODE_ROLES || 'node').split(',').filter(Boolean);
+  const rolesNow = () => [...new Set([...baseRoles, ...(isEntry() ? ['entry'] : [])])].slice(0, 8);   // entry once --public's HTTPS is up
   const addrs = () => [...(process.env.PUBLIC_URL ? [process.env.PUBLIC_URL] : []), ...Object.values(os.networkInterfaces()).flat()
     .filter(i => i && i.family === 'IPv4' && !i.internal).map(i => `http://${i.address}:${PORT}`), `http://localhost:${PORT}`].slice(0, 8);
   const announce = async () => {
@@ -924,9 +956,9 @@ else if (GRANT) {
     const info = { publicIp: (await publicIp()) || null, users: Object.fromEntries(Object.entries(obsStore.users).filter(([, u]) => !(u.until < Date.now())).slice(0, 20).map(([k, u]) => [k, u.can.map(x => x[0]).join('') + (u.guestOf ? 'g' : '')])),   // who may use it: o(bs) h(ost) m(anage)
       version: { name: core.VERSION, build: BUILD, files: FILES }, peerId: nodePeerId(signer.pub), name: (process.env.NODE_LABEL || os.hostname()).slice(0, 60), os: `${os.platform()} ${os.arch()}`, node: process.version, height: engine.main.best.height,
       peers: peers.size, chains: engine.chains.size, site: process.env.NODE_SITE || null, host, obs: globalThis.openTubeRtmp?.status?.() || null };
-    try { await engine.publishNodeInfo({ grant: GRANT, roles, addrs: addrs(), info }); } catch (e) { log('announce failed:', e.message); }
+    try { await engine.publishNodeInfo({ grant: GRANT, roles: rolesNow(), addrs: addrs(), info }); } catch (e) { log('announce failed:', e.message); }
   };
-  log(`this node belongs to user ${GRANT.user.slice(0, 8)}… (${roles.join(', ')}); it will show up on their My node page`);
+  log(`this node belongs to user ${GRANT.user.slice(0, 8)}… (${rolesNow().join(', ')}); it will show up on their My node page`);
   setTimeout(announce, 4000); setInterval(announce, 30000); announceSoon = () => setTimeout(announce, 500);
 }
 
@@ -1104,7 +1136,7 @@ function handle(req, res) {
   if (url.pathname.startsWith('/ingest/') && (req.method === 'POST' || req.method === 'PUT')) return ingest(req, res, url.pathname.slice(8));
   if (url.pathname === '/status') {
     res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
-    return res.end(JSON.stringify({ version: core.VERSION, build: BUILD, network: engine.MAIN_ID, height: engine.main.best.height, tip: engine.main.best.hash, registered: engine.directory.size, pending: engine.mempool.size, chains: engine.chains.size, peers: peers.size, mining: !!engine.miner, node: signer.pub, now: Date.now(), ranker: RANKER_ID, tracker: tracker.stats(), live: liveHub.stats(), liveStreams: liveHub.live().slice(0, 50), ingest: true, memberships: engine.memberships.size }));
+    return res.end(JSON.stringify({ version: core.VERSION, build: BUILD, network: engine.MAIN_ID, height: engine.main.best.height, tip: engine.main.best.hash, registered: engine.directory.size, pending: engine.mempool.size, chains: engine.chains.size, peers: peers.size, mining: !!engine.miner, node: signer.pub, now: Date.now(), ranker: RANKER_ID, tracker: tracker.stats(), live: liveHub.stats(), liveStreams: [...liveHub.live().map(x => ({ ...x, hub: isEntry() ? signer.pub : null })), ...padStreams().filter(x => !liveHub.live().some(y => y.stream === x.stream))].slice(0, 100), ingest: true, memberships: engine.memberships.size }));
   }
   res.writeHead(404); res.end('not found');
 }
