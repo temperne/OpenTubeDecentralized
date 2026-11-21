@@ -207,6 +207,11 @@ function meetPlaces() {
   return [...new Set(out)].slice(0, 16);
 }
 const defaultHubUrl = () => isEntry() || !process.env.NODE_SITE ? ownHubUrl() : process.env.NODE_SITE.replace(/^http/, 'ws') + '/live';
+function hubUrlOfNode(hub) {   // a node's live hub: ours, or its public (else any) address
+  if (hub === signer.pub) return ownHubUrl();
+  const n = engine.nodes.get(hub), a = (n?.addrs || []).find(x => /^https:/.test(x)) || (n?.addrs || []).find(x => !/localhost|127\./.test(x)) || n?.addrs?.[0];
+  return a ? a.replace(/^http/, 'ws').replace(/\/+$/, '') + '/live' : defaultHubUrl();
+}
 function hubUrlFor(chain, stream) {   // the hub a stream lives on: named in its live block (its `hub` node), else the site's
   const lb = engine.chains.has(chain) && engine.derive(chain)?.streams?.find(b => b.payload.stream === stream), hub = lb?.payload?.hub;
   if (!hub) return process.env.NODE_SITE ? process.env.NODE_SITE.replace(/^http/, 'ws') + '/live' : ownHubUrl();
@@ -557,17 +562,22 @@ function groupInput(hostCfg, { id, label, user, kind, fmt = 'mp4', close = null 
   };
 }
 // A browser stream sent into the group: watched from the hub like a relay, its segments (WebM) fed to ffmpeg in order.
-function pullIntoGroup(hostCfg, stream, user, label, chainOf = null) {
-  if (!process.env.NODE_SITE) return 'this computer has no site hub to pull the stream from';
-  let sink = null, last = -1, hub = null;
-  sink = groupInput(hostCfg, { id: 'web:' + user, label, user, kind: 'web', fmt: 'webm', close: () => { hub?.send({ t: 'leave', stream }); hub?.close(); } }, log);
+function pullIntoGroup(hostCfg, stream, user, label, chainOf = null, hubNode = null) {
+  let sink = null, last = -1, hub = null, missing = 0;
+  // one input per browser stream (the same person can send two webcams, from two browsers)
+  sink = groupInput(hostCfg, { id: 'web:' + user + ':' + stream.slice(0, 8), label, user, kind: 'web', fmt: 'webm', close: () => { hub?.send({ t: 'leave', stream }); hub?.close(); } }, log);
   if (typeof sink === 'string') return sink;
+  const watch = () => hub.send({ t: 'watch', stream, segOnly: true, media: false, dcSlots: 0, slots: 0, relay: true });
+  const url = hubNode ? hubUrlOfNode(hubNode) : hubUrlFor(chainOf, stream);
   hub = hubSocket((m) => {
     if (m.t === 'seg' && m.seg?.stream === stream && m.seg.n > last) {
-      const b = Buffer.from(m.seg.d, 'base64');
+      missing = 0; const b = Buffer.from(m.seg.d, 'base64');
       if (m.seg.n === 0) { last = 0; sink.init(b); } else if (last >= 0) { last = m.seg.n; sink.fragment(b); }
-    } else if (m.t === 'ended' || m.t === 'nostream') { sink.end(); hub.close(); }
-  }, () => hub.send({ t: 'watch', stream, segOnly: true, media: false, dcSlots: 0, slots: 0, relay: true }), hubUrlFor(chainOf, stream));
+    } else if (m.t === 'ended') { log(`[group] ${label} stopped`); sink.end(); hub.close(); }
+    else if (m.t === 'nostream') {   // the browser has only just started: ask again for a minute
+      if (++missing > 20) { log(`[group] ${label}: the hub (${url}) doesn’t have their stream; giving up`); sink.end(); hub.close(); } else setTimeout(() => !sink.input.ended && watch(), 3000);
+    }
+  }, watch, url);
   const alive = setInterval(() => { if (sink.input.ended) { clearInterval(alive); hub.close(); } else hub.send({ t: 'alive', stream }); }, 15000);
   log(`[group] pulling ${label}’s browser stream into the picture`);
   return sink;
@@ -776,19 +786,23 @@ async function control(c) {
     let data;
     const owner = c.user === GRANT.user;
     if (c.cmd.startsWith('group')) {   // the group stream: yours (or, for a guest, the one you were invited to)
-      const a = c.args || {}, me_ = obsStore.users[c.user], guestOf = me_?.guestOf, hostUser = guestOf || c.user;
+      const a = c.args || {}, me_ = obsStore.users[c.user], guestOf = me_?.guestOf;
+      // someone this computer is shared with may also join another user's group here (the owner's, usually): `host`
+      const joinHost = !guestOf && typeof a.host === 'string' && a.host !== c.user && (a.host === GRANT.user || (obsStore.users[a.host] && !obsStore.users[a.host].guestOf)) ? a.host : null;
+      const hostUser = guestOf || joinHost || c.user;
       if (!may(c.user, 'obs')) return fail('you may not stream through this computer');
+      if (joinHost && !['group', 'group.join', 'group.kick'].includes(c.cmd)) return fail('only the host can change their group stream');
       const hostCfg = Object.assign(profileOf(hostUser), { owner: hostUser === GRANT.user }), g = groupOf(hostCfg);
-      const isHost = !guestOf, label = (u) => u === hostUser ? 'host' : obsStore.users[u]?.name || u.slice(0, 8);
+      const isHost = !guestOf && !joinHost, label = (u) => u === hostUser ? 'host' : obsStore.users[u]?.name || u.slice(0, 8);
       if (c.cmd === 'group.set') { if (!isHost) return fail('only the host can switch the group stream'); if (typeof a.on === 'boolean') { hostCfg.tile.on = a.on; saveObs(); } }
       else if (c.cmd === 'group.invite') {
         if (!isHost) return fail('only the host can invite');
         if (!/^[A-Za-z0-9_-]{43}$/.test(a.key || '') || a.key === GRANT.user || a.key === c.user) return fail('not a user ID');
-        if (obsStore.users[a.key] && !obsStore.users[a.key].guestOf) return fail('they already use this computer: they can stream into your group from their browser');
-        const hours = Math.min(Math.max(Number(a.hours) || 6, 0.25), 24 * 14);
+        if (obsStore.users[a.key] && !obsStore.users[a.key].guestOf) { if (!obsStore.users[a.key].can.includes('obs')) { obsStore.users[a.key].can.push('obs'); saveObs(); announceSoon?.(); } log(`[group] ${a.name || a.key.slice(0, 8)} shares this computer: they can join the group from the live page`); }
+        else { const hours = Math.min(Math.max(Number(a.hours) || 6, 0.25), 24 * 14);
         obsStore.users[a.key] = { can: ['obs'], name: String(a.name || '').slice(0, 60), guestOf: c.user, until: Date.now() + hours * 3600000 };
         profileOf(a.key); saveObs(); announceSoon?.();
-        log(`[group] the host invited ${a.name || a.key.slice(0, 8)} for ${hours} h`);
+        log(`[group] the host invited ${a.name || a.key.slice(0, 8)} for ${hours} h`); }
       }
       else if (c.cmd === 'group.uninvite') {   // hang up: disconnect and end their access
         const u = obsStore.users[a.key]; if (!u?.guestOf || (u.guestOf !== c.user && !owner)) return fail('not your guest');
@@ -806,13 +820,14 @@ async function control(c) {
         let ok = ownsChannel(c.user, a.chain);
         if (!ok && typeof a.channelSig === 'string') { const key = engine.derive(a.chain)?.owner || engine.directory.get(a.chain)?.genesis.author; ok = !!key && await core.verify(key, core.obsChannelPreimage(signer.pub, c.user, a.chain), a.channelSig).catch(() => false); }
         if (!ok) return fail('that stream’s channel isn’t yours');
-        const r = pullIntoGroup(hostCfg, a.stream, c.user, label(c.user) + ' (browser)', a.chain); if (typeof r === 'string') return fail(r);
+        const hubNode = /^[A-Za-z0-9_-]{43}$/.test(a.hub || '') ? a.hub : null;   // the hub the browser streams on (its live block may not have reached us yet)
+        const r = pullIntoGroup(hostCfg, a.stream, c.user, label(c.user) + ' (browser)', a.chain, hubNode); if (typeof r === 'string') return fail(r);
       }
       const now = Date.now();
       data = { on: !!hostCfg.tile.on, host: isHost, live: !!g.out, ffmpeg: ffmpegOk,
         inputs: [...g.inputs.values()].filter(x => !x.ended).map(x => ({ id: x.id, label: x.label, user: x.user, kind: x.kind, since: x.at, guest: !!obsStore.users[x.user]?.guestOf })),
         guests: Object.entries(obsStore.users).filter(([, u]) => u.guestOf === hostUser && !(u.until < now)).map(([k, u]) => ({ key: k, name: u.name, until: u.until })),
-        ...(isHost ? {} : { invitedBy: label(hostUser), until: me_.until, key: profileOf(c.user).key, port: Number(process.env.RTMP_PORT) || null }) };
+        ...(isHost ? {} : { invitedBy: label(hostUser), until: guestOf ? me_.until : null, joined: !!joinHost, key: profileOf(c.user).key, port: Number(process.env.RTMP_PORT) || null }) };
       return signed({ v: 1, kind: 'nodectlr', node: signer.pub, re: c.nonce, at: Date.now(), ok: true, data });
     }
     if (c.cmd === 'store' || c.cmd === 'store.status') {   // keep a video someone uploaded from a browser (their storage is this computer)

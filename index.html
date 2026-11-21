@@ -3127,7 +3127,8 @@ const liveNet = (() => {
     return c.ready;
   }
   // a hub to broadcast on: an entry node that answers (spread over them by a random start), else this site
-  async function pickHub() {
+  async function pickHub(prefer = null) {
+    if (prefer) { const u = nodeHubUrl(prefer) || linkedHubs().find(x => x.node === prefer)?.url; if (u && await connect(u)) return { node: prefer, url: u }; }   // a group stream: the computer that combines it
     for (const h_ of entryHubs().sort(() => Math.random() - 0.5)) if (await connect(h_.url)) return h_;
     const u = homeUrl(); if (u && await connect(u)) return { node: null, url: u };
     for (const h_ of linkedHubs().filter(x => x.node)) if (await connect(h_.url)) return h_;   // the site is down: your own computer (others get the stream over the mesh)
@@ -3217,7 +3218,7 @@ async function startLive(chainId, media, title, how = {}) {
   const viaNode = !group && !canHost() && storageNodes()[0];   // no folder here: a computer you may use records it
   if (!group && !canHost() && !viaNode) throw new Error('Going live needs a video folder (it records the stream there), or a computer running OpenTube that you may use.');
   if (!LIVE_MIME) throw new Error('This browser can’t record video for streaming. Use Chrome, Edge or Firefox.');
-  const hubPick = await liveNet.pickHub();   // an entry node, else this site; a hub helps (trees, counts), but the mesh carries the stream without one
+  const hubPick = await liveNet.pickHub(group?.node);   // an entry node, else this site; a hub helps (trees, counts), but the mesh carries the stream without one
   const hub = !!hubPick;
   const d = derive(chainId), signer = signerFor(d.owner);
   if (hub) await liveNet.auth(signer);
@@ -3244,7 +3245,7 @@ async function startLive(chainId, media, title, how = {}) {
   sess.block = await append(chainId, { type: 'live', title, stream, mime: LIVE_MIME, ...(group ? { group: group.node } : {}), ...(hubPick?.node ? { hub: hubPick.node } : {}) });
   if (group) {   // the computer pulls it into the picture
     sess.group = group.node;
-    nodeCtl(group, 'group.join', { stream, chain: chainId, ...(await chanProof(group, chainId)) })
+    nodeCtl(group, 'group.join', { stream, chain: chainId, hub: hubPick?.node || null, ...(how.groupHost ? { host: how.groupHost } : {}), ...(await chanProof(group, chainId)) })
       .then(() => toast(`You’re in the group stream on ${group.info?.name || 'that computer'}.`))
       .catch(e => toast('Group stream: ' + e.message));
   }
@@ -5366,9 +5367,13 @@ function liveStudio(chainId) {
       const now = usableNodes('o').filter(n => n.roles.includes('obs') && Date.now() - n.at < 120000);
       if (now.map(n => n.node).join() === groupNodes.map(n => n.node).join() && intoSel.options.length) return;
       groupNodes = now; const keep = intoSel.value;
-      intoSel.replaceChildren(h('option', { value: '' }, 'Live on this channel'), ...groupNodes.map(n => h('option', { value: n.node }, nodePerms(n).includes('g') ? `Into the group stream I’m invited to on ${n.info?.name || 'a computer'}` : `Into my group stream on ${n.info?.name || 'my computer'} (switch it on there)`)));
+      // value: the computer, or "computer|host" to join someone else's group there (its owner's, when it's shared with you)
+      intoSel.replaceChildren(h('option', { value: '' }, 'Live on this channel'), ...groupNodes.flatMap(n => { const nm = n.info?.name || 'a computer';
+        if (nodePerms(n).includes('g')) return [h('option', { value: n.node }, `Into the group stream I’m invited to on ${nm}`)];
+        if (n.grant.user !== me.pub) return [h('option', { value: n.node + '|' + n.grant.user }, `Into ${personName(n.grant.user) || 'its owner'}’s group stream on ${nm}`), h('option', { value: n.node }, `Into my own group stream on ${nm}`)];
+        return [h('option', { value: n.node }, `Into my group stream on ${nm} (switch it on there)`)]; }));
       const want = keep || window.pendingInto;   // "Join on camera" on someone's live page picked their group
-      intoSel.value = groupNodes.some(n => n.node === want) ? want : ''; intoRow.classList.toggle('hidden', !groupNodes.length);
+      intoSel.value = [...intoSel.options].some(o => o.value === want) ? want : ''; intoRow.classList.toggle('hidden', !groupNodes.length);
       if (intoSel.value && intoSel.value === window.pendingInto) { window.pendingInto = null; intoRow.style.outline = '2px solid var(--live, #e11d48)'; intoRow.style.borderRadius = '6px'; }
     };
     fillInto(); const intoTimer = setInterval(() => { if (!intoRow.isConnected && intoRow.wasIn) return clearInterval(intoTimer); if (intoRow.isConnected) intoRow.wasIn = true; fillInto(); }, 3000);
@@ -5405,7 +5410,7 @@ function liveStudio(chainId) {
     go.onclick = async () => {
       if (!media) return; if (!title.value.trim()) return toast('Give the stream a title');
       go.disabled = true; status.textContent = 'Starting…';
-      try { const gn = intoSel.value && groupNodes.find(n => n.node === intoSel.value); const sess = await startLive(chainId, media, title.value.trim(), { group: gn || null }); sess.preview = preview; media = null; ui(); }
+      try { const [gNode, gHost] = intoSel.value.split('|'), gn = gNode && groupNodes.find(n => n.node === gNode); const sess = await startLive(chainId, media, title.value.trim(), { group: gn || null, groupHost: gHost || null }); sess.preview = preview; media = null; ui(); }
       catch (e) { status.textContent = e.message; go.disabled = false; }
     };
     fill().catch(() => {});
@@ -5598,13 +5603,15 @@ views.livewatch = {
     const banner = h('div');
     const drawBanner = () => {
       const n = hostNode();
-      if (!n || !nodePerms(n).includes('g') || [...broadcasts.values()].some(b => b.group === n.node && !b.ended)) return banner.replaceChildren();
+      const perms = n ? nodePerms(n) : '', hostKey = E.ledger.resolve ? E.ledger.resolve(d.owner) : d.owner;
+      const into = !n || isMine(d.owner) ? null : perms.includes('g') ? n.node : perms.includes('o') ? n.node + '|' + hostKey : null;   // invited, or it's shared with you
+      if (!into || [...broadcasts.values()].some(b => b.group === n.node && !b.ended)) return banner.replaceChildren();
       banner.replaceChildren(h('div', { class: 'panel', style: 'border-color:var(--live, #e11d48);margin:10px 0 0' }, h('div', { class: 'row', style: 'justify-content:space-between' },
-        h('span', {}, '🎥 ', h('b', {}, 'You’re invited to join this stream on camera.')),
+        h('span', {}, '🎥 ', h('b', {}, perms.includes('g') ? 'You’re invited to join this stream on camera.' : 'You can join this stream on camera (the computer is shared with you).')),
         h('button', { class: 'primary', onclick: () => {
           const mineCh = myChannels().filter(c => derive(c)?.kind === 'channel');
           if (!mineCh.length) { toast('You need a channel to go live from: create one first (it takes a few seconds).'); location.hash = '#/you/channels'; return; }
-          window.pendingInto = n.node; location.hash = `#/c/${mineCh[0]}/golive`;
+          window.pendingInto = into; location.hash = `#/c/${mineCh[0]}/golive`;
         } }, 'Join on camera'))));
     };
     const drawChat = () => {
@@ -7039,7 +7046,7 @@ function guestPanel(n) {   // you were invited to someone's group stream on this
     const hosts = [...new Set([n.info?.publicIp, ...(n.addrs || []).filter(a => !n.info?.tunnel || a !== n.info?.public).map(a => { try { return new URL(a).hostname; } catch { return null; } })].filter(x => x && x !== 'localhost' && !/\.trycloudflare\.com$/.test(x)))];
     const servers = hosts.map(hh => `rtmp://${hh}${g.port && g.port !== 1935 ? ':' + g.port : ''}/live`);
     const key = h('input', { type: 'password', readOnly: true, value: g.key || '', class: 'mono', style: 'flex:1' });
-    box.replaceChildren(h('b', {}, `👥 ${g.invitedBy}’s group stream`), h('div', { class: 'sub' }, `Your invitation lasts until ${new Date(g.until).toLocaleString()}. ${g.on ? 'The group stream is on.' : 'The host hasn’t switched the group stream on yet.'}`),
+    box.replaceChildren(h('b', {}, `👥 ${g.invitedBy}’s group stream`), h('div', { class: 'sub' }, `${g.until ? `Your invitation lasts until ${new Date(g.until).toLocaleString()}. ` : 'This computer is shared with you. '}${g.on ? 'The group stream is on.' : 'The host hasn’t switched the group stream on yet.'}`),
       h('div', { style: 'margin-top:6px' }, h('b', {}, 'With OBS: '), 'Settings → Stream → Custom…'),
       ...servers.map(u => h('div', { class: 'row', style: 'gap:6px' }, h('code', { class: 'mono', style: 'flex:1' }, u), h('button', { class: 'small', onclick: () => copyText(u, 'Server') }, 'Copy'))),
       h('div', { class: 'row', style: 'gap:6px;margin-top:4px' }, h('span', {}, 'Stream key'), key, h('button', { class: 'small', onclick: (e) => { key.type = key.type === 'password' ? 'text' : 'password'; e.target.textContent = key.type === 'password' ? 'Show' : 'Hide'; } }, 'Show'), h('button', { class: 'small', onclick: () => copyText(g.key, 'Stream key') }, 'Copy')),
@@ -7056,7 +7063,7 @@ function groupPanel(n, { title = false } = {}) {
   const resolveWho = (v) => { v = v.trim(); if (/^[A-Za-z0-9_-]{43}$/.test(v)) return E.ledger.resolve ? E.ledger.resolve(v) : v; const id = resolveName(v.startsWith('@@') ? v : '@@' + v.replace(/^@+/, '')); return id ? E.ledger.resolve(genesisFor(id).author) : null; };
   const draw = () => {
     if (!g) return box.replaceChildren(h('span', { class: 'sub' }, 'Loading the group stream…'), ' ', st);
-    if (!g.host) return box.replaceChildren(h('div', { class: 'sub' }, `You’re invited by ${g.invitedBy} until ${new Date(g.until).toLocaleString()}. Stream with OBS using your own key below, or go live from your browser and choose this computer’s group.`), st);
+    if (!g.host) return box.replaceChildren(h('div', { class: 'sub' }, `${g.until ? `You’re invited by ${g.invitedBy} until ${new Date(g.until).toLocaleString()}` : `${g.invitedBy}’s group stream`}. Stream with OBS using your own key below, or go live from your browser and choose this computer’s group.`), st);
     const sw = h('input', { type: 'checkbox', checked: g.on, disabled: !g.ffmpeg, onchange: () => run('group.set', { on: sw.checked }) });
     box.replaceChildren(
       title ? h('h4', { style: 'margin:0 0 6px' }, '👥 Group stream') : null,
