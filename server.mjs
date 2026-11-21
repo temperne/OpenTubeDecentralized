@@ -556,7 +556,8 @@ function groupStart(hostCfg) {
     + ';' + list.map((x, i) => `[${i}:a]asetpts=PTS-STARTPTS,aresample=48000[a${i}]`).join(';') + ';' + list.map((x, i) => `[a${i}]`).join('') + (k > 1 ? `amix=inputs=${k}:normalize=0[a]` : 'anull[a]');
   // stage 1, the picture: rebuilt whenever someone joins or leaves, output as MPEG-TS (which can be strung together)
   const args = ['-hide_banner', '-loglevel', 'error', ...list.flatMap((x, i) => ['-thread_queue_size', '1024', '-f', x.fmt === 'webm' ? 'matroska' : 'mp4', '-i', 'pipe:' + (3 + i)]), '-filter_complex', vf, '-map', '[v]', '-map', '[a]',
-    '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency', '-crf', '20', '-g', '30', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '160k', '-ar', '48000', '-f', 'mpegts', 'pipe:1'];
+    // an intermediate only stage 2 reads: MPEG-2 at high quality costs far less CPU than a second H.264 encode
+    '-c:v', 'mpeg2video', '-q:v', '3', '-g', '15', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '160k', '-ar', '48000', '-f', 'mpegts', 'pipe:1'];
   const ff = g.ff = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe', ...list.map(() => 'pipe')] });
   ff.stderr.on('data', d => log('[group]', String(d).trim().slice(0, 200)));
   // stage 2, the stream: one encoder for the whole session, timestamps from the clock, so viewers, the recording and
@@ -564,7 +565,7 @@ function groupStart(hostCfg) {
   if (!g.enc) {
     g.out = goLiveSink(log, hostCfg); g.t0 = Date.now();
     const enc = g.enc = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-use_wallclock_as_timestamps', '1', '-fflags', '+genpts+discardcorrupt', '-f', 'mpegts', '-i', 'pipe:0',
-      '-vf', 'fps=30', '-af', 'aresample=async=1000', '-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency', '-profile:v', 'high', '-level', '4.0', '-g', '60', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k', '-ar', '48000',
+      '-vf', 'fps=30', '-af', 'aresample=async=1000', '-c:v', 'libx264', '-preset', 'superfast', '-tune', 'zerolatency', '-profile:v', 'high', '-level', '4.0', '-g', '30', '-keyint_min', '30', '-sc_threshold', '0',   // a keyframe (a fragment) every second: smoother delivery '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k', '-ar', '48000',
       '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', 'pipe:1'], { stdio: ['pipe', 'pipe', 'pipe'] });
     enc.stdin.on('error', () => {}); enc.stderr.on('data', d => log('[group]', String(d).trim().slice(0, 200)));
     const out = g.out; let first = true;

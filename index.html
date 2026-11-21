@@ -3171,7 +3171,7 @@ const liveNet = (() => {
   // the hub a stream lives on, reachable from here: each of its addresses in turn (a computer lists several: public,
   // home network, localhost), so one unreachable address doesn't cut viewers off
   async function resolveHub(lb) {
-    const key = lb?.payload?.hub || (E.nodes.has(lb?.author) ? lb.author : null);
+    const key = lb?.payload?.hub || null;   // no hub named: an older stream, on the site's hub
     for (const u of key ? nodeHubUrls(key) : []) if (await connect(u)) { goodHub.set(key, u); return u; }
     return liveNetApi.hubOf(lb);
   }
@@ -3226,7 +3226,7 @@ const liveNet = (() => {
   }
   // ask a stream's hub whether it's working (no viewer is added): the answer arrives as 'up' or 'nostream'
   async function probe(lb) {
-    const s = lb.payload.stream, key = lb?.payload?.hub || (E.nodes.has(lb?.author) ? lb.author : null);
+    const s = lb.payload.stream, key = lb?.payload?.hub || null;
     const cands = key ? nodeHubUrls(key) : [liveNetApi.hubOf(lb)];
     let url = null; for (const u of cands) if (u && await connect(u)) { url = u; break; }
     if (!url) { if (!hubDown.has(s)) hubDown.set(s, Date.now()); return; }
@@ -3237,7 +3237,7 @@ const liveNet = (() => {
     connect, send, auth, pickHub, entryHubs, linkedHubs, nodeHubUrl, resolveHub, probe,
     available: () => entryHubs().length > 0 || linkedHubs().length > 0 || !!siteHub(),
     // where a stream lives: the hub its live block names; a computer's own stream, that computer; else (older streams) the site
-    hubOf: (lb) => (lb?.payload?.hub && nodeHubUrl(lb.payload.hub)) || (E.nodes.has(lb?.author) && nodeHubUrl(lb.author)) || (lb?.payload?.hub ? bestHub() : siteHub()),
+    hubOf: (lb) => (lb?.payload?.hub && nodeHubUrl(lb.payload.hub)) || (lb?.payload?.hub ? bestHub() : siteHub() || bestHub()),
     hubName: (url) => { const n = [...E.nodes.values()].find(n => (n.addrs || []).some(a => url?.startsWith(a.replace(/^http/, 'ws').replace(/\/+$/, '')))); return n ? (n.info?.name || 'a computer') + (n.roles.includes('entry') ? ' (entry node)' : '') : url === siteHub() ? 'the site' : 'the hub'; },
     urlFor,
     on: (st, fn, url) => { handlers.set(st, fn); if (url) streamHub.set(st, url); },
@@ -3663,10 +3663,14 @@ function segmentPlayer(video, mime, header = null) {
       else { console.warn('live mse append', e.message); window.__mseErr = e.message; }
     }
   }
-  setInterval(() => {   // stay near the live edge
+  // How far behind live to play: starts at 3 s; every stall (the buffer ran dry: video arrives unevenly, e.g. a group
+  // stream of several cameras, or a slow link) adds 1.5 s, up to 10 s, so it stops stalling instead of stalling again.
+  let behind = 3, lastStall = 0;
+  video.addEventListener('waiting', () => { if (synced && Date.now() - lastStall > 3000) { lastStall = Date.now(); behind = Math.min(10, behind + 1.5); dbg('stall: now playing', behind, 's behind'); } });
+  setInterval(() => {   // stay near the live edge, with that margin
     if (!sb || !video.buffered.length) return;
     const end = video.buffered.end(video.buffered.length - 1), start = video.buffered.start(0);
-    if (video.currentTime < start || end - video.currentTime > 8) video.currentTime = Math.max(start, end - 2);
+    if (video.currentTime < start || end - video.currentTime > behind + 6) video.currentTime = Math.max(start, end - behind);
     else {   // in a gap (a group stream rebuilt its picture): jump to where the video continues
       const b = video.buffered, t = video.currentTime; let inside = false;
       for (let i = 0; i < b.length; i++) if (t >= b.start(i) - 0.05 && t < b.end(i)) inside = true;
@@ -5856,8 +5860,12 @@ views.livewatch = {
     const ui = {
       attach(sess) { ui.sess = sess; if (sess.media) ui.media(sess.media); else if (sess.mode === 'seg' || sess.mode === 'dc') ui.segmentMode(); },
       media(ms) { segp = null; player.srcObject = ms; player.play().catch(() => {}); how = ui.sess?.parent && ui.sess.parent === ui.sess.parentHint ? '' : ''; status.textContent = 'Live · by WebRTC (about a second behind)'; },
-      segmentMode() { if (segp) return; player.srcObject = null; segp = segmentPlayer(player, lb.payload.mime, ui.sess?.init); status.textContent = segp ? `Live · by segments through ${liveNet.hubName(liveNet.urlFor(lb.payload.stream))} (a few seconds behind)` : 'This browser can’t play this stream format.'; },
-      segment(g, u8) { if (ui.sess?.mode === 'seg' || ui.sess?.mode === 'dc' || !ui.sess?.media) segp?.push(g, u8); },
+      segmentMode() { if (segp) return; player.srcObject = null; segp = segmentPlayer(player, lb.payload.mime, ui.sess?.init); status.textContent = segp ? (ui.sess?.mode === 'dc' ? 'Live · peer-to-peer over WebRTC (data channel), a few seconds behind' : `Live · by segments through ${liveNet.hubName(liveNet.urlFor(lb.payload.stream))} (a few seconds behind)`) : 'This browser can’t play this stream format.'; },
+      segment(g, u8) {
+        if (ui.sess?.mode === 'seg' || ui.sess?.mode === 'dc' || !ui.sess?.media) segp?.push(g, u8);
+        const how = g && ui.sess?.mode;   // say how the video actually arrives (it can change: a peer leaves, a fallback)
+        if (segp && how && how !== ui.shownHow) { ui.shownHow = how; status.textContent = how === 'dc' ? 'Live · peer-to-peer over WebRTC (data channel), a few seconds behind' : `Live · by segments through ${liveNet.hubName(liveNet.urlFor(lb.payload.stream))} (a few seconds behind)`; }
+      },
       status(t) { status.textContent = t; },
       viewers(m) { lastViewers = m; drawWho(); watchers.textContent = `👁 ${m.viewers} watching · peak ${m.peak ?? m.viewers} · ${m.seenCount || 0} have watched`; watchers.title = 'People who checked in within the last 45 s'; },
       ended(t) { status.textContent = t + (d.recordings.get(lb.payload.stream) ? '' : ' If the streamer publishes the recording, it appears with the channel’s videos.'); }
