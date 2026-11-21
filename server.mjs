@@ -487,6 +487,7 @@ function goLiveSink(log, obsCfg) {
       (async () => {
         const r = await rec?.finish(stream).catch(e => { log('[obs] recording failed:', e.message); return null; });
         const p = { type: 'liveend', stream, outcome: 'ended' };
+        const st = core.liveStatsOf(liveStats.get(stream) || liveStats.current); if (st && core.liveStatsOk(st)) p.stats = st;   // public statistics
         if (r) p.rec = { infohash: r.infohash, file: r.file.slice(0, 200), size: r.size, mime: r.mime, thumb: r.thumb };
         await engine.append(chain, p);
         if (r) log(`[obs] recording ready: the channel’s owner can publish it from the site (Go live, or the channel’s Videos)`);
@@ -526,7 +527,7 @@ function groupStart(hostCfg) {
       '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', 'pipe:1'], { stdio: ['pipe', 'pipe', 'pipe'] });
     enc.stdin.on('error', () => {}); enc.stderr.on('data', d => log('[group]', String(d).trim().slice(0, 200)));
     const out = g.out; let first = true;
-    enc.stdout.on('data', mp4Boxes((init) => out.init(init, 'video/mp4; codecs="avc1.640028,mp4a.40.2"').catch(e => log('[group]', e.message)), (frag) => out.fragment(frag, first ? (first = false, true) : false)));
+    enc.stdout.on('data', mp4Boxes((init) => out.init(init, 'video/mp4; codecs="avc1.640028,mp4a.40.2"').catch(e => log('[group]', e.message)), (frag) => out.fragment(frag, true)));   // frag_keyframe: every fragment starts with a keyframe, so a viewer can start at any of them
     enc.on('exit', () => { out.end(); if (g.enc === enc) { g.enc = null; g.out = null; g.t0 = 0; } log('[group] ended'); });
   }
   const enc = g.enc;

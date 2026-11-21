@@ -469,7 +469,7 @@ function validPayload(chain, b, CFG) {
     if (kind !== 'channel' || zeroBits(b.hash) < CFG.commentDifficulty) return false;
     // a computer the owner linked to the channel (a `relay` block) starts and ends live streams by itself (OBS)
     if (p.type === 'live') return relayAllowed(chain, b) && isStr(p.title, LIMITS.title) && p.title.trim().length > 0 && isHex(p.stream, 64) && isStr(p.mime, 80) && p.relay === undefined;
-    if (p.type === 'liveend') return relayAllowed(chain, b) && isHex(p.stream, 64) && ['published', 'discarded', 'ended'].includes(p.outcome);
+    if (p.type === 'liveend') return relayAllowed(chain, b) && isHex(p.stream, 64) && ['published', 'discarded', 'ended'].includes(p.outcome) && liveStatsOk(p.stats);
     if (p.type === 'comment') return isHex(p.target, 64) && isStr(p.text, LIMITS.comment) && p.text.trim().length > 0 && isStr(p.name ?? '', LIMITS.name) && permittedAt(chain, b);
     if (p.type === 'hide') return isHex(p.target, 64) && permittedAt(chain, b);
     if (p.type === 'vote') return isHex(p.target, 64) && [1, 0, -1].includes(p.v) && permittedAt(chain, b);
@@ -481,7 +481,7 @@ function validPayload(chain, b, CFG) {
     // A live stream starts. Its media goes through the live hub (see createLiveHub), signed by this key or by `relay`
     // (a home node the owner lets sign for this stream, e.g. for OBS ingest). Chat is comments on this block.
     case 'live': return kind === 'channel' && isStr(p.title, LIMITS.title) && p.title.trim().length > 0 && isHex(p.stream, 64) && isStr(p.mime, 80) && (p.relay === undefined || isKey(p.relay));
-    case 'liveend': return kind === 'channel' && isHex(p.stream, 64) && ['published', 'discarded', 'ended'].includes(p.outcome);
+    case 'liveend': return kind === 'channel' && isHex(p.stream, 64) && ['published', 'discarded', 'ended'].includes(p.outcome) && liveStatsOk(p.stats);
     case 'settings': return kind === 'channel' && isHex(p.target, 64) && ['default', 'anyone', 'approved', 'off'].includes(p.comments);
     case 'post': return isStr(p.text, LIMITS.text) && (p.text.trim().length > 0 || p.media?.length > 0) && (p.image === undefined || isImg(p.image)) && mediaListOk(p.media);
     case 'comment': return isHex(p.target, 64) && isStr(p.text, LIMITS.comment) && p.text.trim().length > 0;
@@ -1331,6 +1331,12 @@ const liveAuthPreimage = (nonce) => 'opentube-live-auth:' + nonce;
 // stream (the one streaming, or one relaying it). The announcement lists the segments inside (number, offset, hash,
 // signature) so whoever fetches it checks every segment exactly like one received live.
 const liveChunkPreimage = (c) => `opentube-live-chunk:${c.stream}:${c.from}:${c.to}:${c.o}:${c.len}:${c.ih}`;
+// A live stream's public statistics, written into its liveend block when it ends (everyone can read them, not only
+// the streamer): peak viewers, unique viewers, total watch time in seconds, and who watched longest.
+const liveStatsOk = (s) => s === undefined || (!!s && typeof s === 'object' && !Array.isArray(s) && [s.peak, s.unique, s.secs].every(x => Number.isSafeInteger(x) && x >= 0 && x < 1e12)
+  && Array.isArray(s.top) && s.top.length <= 50 && s.top.every(t => Array.isArray(t) && t.length === 2 && isKey(t[0]) && Number.isSafeInteger(t[1]) && t[1] >= 0));
+const liveStatsOf = (m) => m && { peak: Math.round(m.peak || m.viewers || 0), unique: Math.round(m.seenCount || 0), secs: Math.round(m.watchSecs || 0),
+  top: [...(m.seen || [])].filter(x => isKey(x.k)).sort((a, b) => b.secs - a.secs).slice(0, 50).map(x => [x.k, Math.max(0, Math.round(x.secs || 0))]) };
 const liveChunkShape = (c) => !!c && isHex(c.stream, 64) && Number.isSafeInteger(c.from) && Number.isSafeInteger(c.to) && c.to >= c.from && c.to - c.from < 200
   && Number.isSafeInteger(c.o) && Number.isSafeInteger(c.len) && c.len > 0 && c.len < 64 * 1024 * 1024 && isHex(c.ih, 40) && isKey(c.by) && typeof c.sig === 'string'
   && Array.isArray(c.segs) && c.segs.length === c.to - c.from + 1 && c.segs.every(g => Number.isSafeInteger(g.n) && Number.isSafeInteger(g.o) && isHex(g.h, 64) && typeof g.sig === 'string');
@@ -1347,8 +1353,11 @@ function createLiveHub(o) {   // o: { ownerOf(chain) -> key|null, signerOf(chain
     const src = st.nodes.get(st.src);
     // who: open by design. Watching now (checked in recently), and everyone who has been here, with time spent
     const nowKeys = [...new Set([...st.nodes].filter(([sid, n]) => sid !== st.src && !n.relay && n.who && now - (n.seen || 0) < LIVE.staleMs).map(([, n]) => n.who))].slice(0, 100);
-    const seen = [...(st.seenBy || new Map())].sort((a, b) => b[1].last - a[1].last).slice(0, 100).map(([k, x]) => ({ k, first: x.first, last: x.last, secs: Math.round(x.secs) }));
-    return { viewers, now: nowKeys, seenCount: st.seenBy?.size || 0, seen, members, rtc, seg, dc, direct: (src?.children.size || 0) + (src?.dcKids?.size || 0) };
+    const secsOf = (k, x) => x.secs + (nowKeys.includes(k) ? Math.min(60, (now - x.last) / 1000) : 0);   // still watching: up to now
+    const seen = [...(st.seenBy || new Map())].sort((a, b) => b[1].last - a[1].last).slice(0, 100).map(([k, x]) => ({ k, first: x.first, last: x.last, secs: Math.round(secsOf(k, x)) }));
+    st.peak = Math.max(st.peak || 0, viewers);
+    const watchSecs = Math.round([...(st.seenBy || new Map())].reduce((s, [k, x]) => s + secsOf(k, x), 0));
+    return { viewers, peak: st.peak, watchSecs, now: nowKeys, seenCount: st.seenBy?.size || 0, seen, members, rtc, seg, dc, direct: (src?.children.size || 0) + (src?.dcKids?.size || 0) };
   }
   const report = (st) => out(st.src, { t: 'viewers', stream: st.id, ...counts(st) });
   function sendSegs(sid, st) { if (st.seg0) out(sid, { t: 'seg', seg: st.seg0 }); for (const g of st.segs) if (g.n !== 0) out(sid, { t: 'seg', seg: g }); }
@@ -1457,7 +1466,7 @@ function createLiveHub(o) {   // o: { ownerOf(chain) -> key|null, signerOf(chain
         if (!(owner && s.keys.has(owner)) && !(relay && s.keys.has(relay))) return out(sid, { t: 'error', stream: m.stream, error: 'not the owner of this channel' });
         if (st && st.chain !== m.chain) return;
         if (st && st.src !== sid) leave(st, st.src);   // a reconnecting broadcaster replaces the old connection
-        const fresh = { id: m.stream, chain: m.chain, src: sid, mime: m.mime, media: m.rtc !== false, seg0: st?.seg0 || null, segs: st?.segs || [], chunks: st?.chunks || [], seenBy: st?.seenBy || new Map(), nodes: new Map() };
+        const fresh = { id: m.stream, chain: m.chain, src: sid, mime: m.mime, media: m.rtc !== false, seg0: st?.seg0 || null, segs: st?.segs || [], chunks: st?.chunks || [], seenBy: st?.seenBy || new Map(), peak: st?.peak || 0, nodes: new Map() };
         fresh.nodes.set(sid, node({ slots: m.rtc === false ? 0 : Math.min(Math.max(m.slots | 0, 0), LIVE.maxSlots) || LIVE.srcSlots, dcSlots: Math.min(Math.max(m.dcSlots | 0, 0), LIVE.maxDcSlots), member: true, mode: 'src', media: m.rtc !== false }));
         streams.set(m.stream, fresh); s.watching.add(m.stream);
         return out(sid, { t: 'broadcasting', stream: m.stream });
@@ -1598,15 +1607,15 @@ function derive(c) {
     ads: live.filter(b => b.payload.type === 'ad' && byOwner.has(b.hash)).reverse(),
     sponsors: live.filter(b => b.payload.type === 'sponsor' && byOwner.has(b.hash)).reverse(),
     ...(() => {   // live streams: started, not yet ended (and less than a day old)
-      const ends = new Map(), recordings = new Map(), nodeRecs = new Map();   // nodeRecs: stream -> a recording a linked computer made (OBS), waiting to be published
+      const ends = new Map(), recordings = new Map(), nodeRecs = new Map(), liveStats = new Map();   // liveStats: stream -> its public statistics   // nodeRecs: stream -> a recording a linked computer made (OBS), waiting to be published
       for (const b of live) if (byOwner.has(b.hash) || (b.payload.type === 'liveend' && relays.has(b.author))) {
-        if (b.payload.type === 'liveend') ends.set(b.payload.stream, b.payload.outcome);
+        if (b.payload.type === 'liveend') { ends.set(b.payload.stream, b.payload.outcome); if (b.payload.stats && !liveStats.has(b.payload.stream)) liveStats.set(b.payload.stream, b.payload.stats); }
         const r = b.payload.type === 'liveend' && b.payload.rec;
         if (r && typeof r === 'object' && isHex(r.infohash, 40) && isStr(r.file, 200) && Number.isSafeInteger(r.size) && r.size > 0 && isStr(r.mime, 80) && isImg(r.thumb ?? '')) nodeRecs.set(b.payload.stream, { ...r, by: b.author, at: b.ts });
         if (b.payload.type === 'video' && b.payload.stream) recordings.set(b.payload.stream, b);
       }
       const streams = live.filter(b => b.payload.type === 'live' && (byOwner.has(b.hash) || relays.has(b.author))).reverse();
-      return { streams, liveEnds: ends, recordings, nodeRecs, liveNow: streams.filter(b => !ends.has(b.payload.stream) && Date.now() - b.ts < 24 * 3600000 && !b.payload.group) };   // group: sent into someone's group stream, not shown on its own
+      return { streams, liveEnds: ends, recordings, nodeRecs, liveStats, liveNow: streams.filter(b => !ends.has(b.payload.stream) && Date.now() - b.ts < 24 * 3600000 && !b.payload.group) };   // group: sent into someone's group stream, not shown on its own
     })(),
     commentsFor: (target) => visible.filter(b => b.payload.type === 'comment' && b.payload.target === target),
     votes: tallyVotes(visible),
@@ -2109,7 +2118,7 @@ async function createEngine(o) {
 }
 
 const VERSION = '2026.11.21';   // the release name; the build fingerprint is a hash of index.html (see pageBuild / BUILD in server.mjs)
-globalThis.OpenTubeCore = { VERSION, MAIN_GENESIS, LIMITS, ORG_TYPES, LISTING_TYPES, XCHG, noteUnlock, mediaRefShape, placeShape, domainOf, MAIL, ORG, orgRoles, orderPreimage, courtPreimage, bindPreimage, retirePreimage, rekeyPreimage, SQUARE, SEAL, monthKey, squareMonths, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, obsChannelPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, liveChunkPreimage, liveChunkShape, createLiveHub, dcSend, dcReceiver, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
+globalThis.OpenTubeCore = { VERSION, MAIN_GENESIS, LIMITS, ORG_TYPES, LISTING_TYPES, XCHG, noteUnlock, mediaRefShape, placeShape, domainOf, MAIL, ORG, orgRoles, orderPreimage, courtPreimage, bindPreimage, retirePreimage, rekeyPreimage, SQUARE, SEAL, monthKey, squareMonths, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, obsChannelPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, liveChunkPreimage, liveChunkShape, liveStatsOk, liveStatsOf, createLiveHub, dcSend, dcReceiver, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
 })();
 </script>
 
@@ -3277,7 +3286,8 @@ async function stopLive(chainId) {
   for (const pc of sess.kids.values()) pc.close();
   sess.thumb = sess.preview ? makeThumb(sess.preview) : '';
   for (const t of sess.media.getTracks()) t.stop();
-  append(chainId, { type: 'liveend', stream: sess.stream, outcome: 'ended' }).catch(e => console.warn('liveend', e));   // over now, for everyone: Publish/Discard comes after
+  const stats = globalThis.OpenTubeCore.liveStatsOf(sess.viewers || viewing.get(sess.stream)?.viewers);
+  append(chainId, { type: 'liveend', stream: sess.stream, outcome: 'ended', ...(stats ? { stats } : {}) }).catch(e => console.warn('liveend', e));   // over now, for everyone: Publish/Discard comes after
   scheduleRender();
 }
 // OBS with a stream key (server.mjs home nodes): OBS sends WebM to the node, which signs and relays it. This browser
@@ -3777,6 +3787,42 @@ function render(force) {
 }
 
 const views = {};
+// A video's statistics, public: views (each paid once per viewer, on the ledger), who watched, likes, comments, what
+// it earned from views, and how many peers share it right now. Everyone sees what the creator sees.
+function videoStatsPanel(id, video, v) {
+  const box = h('div', { class: 'panel', style: 'margin-top:12px' });
+  let open = false;
+  const draw = () => {
+    const d = derive(id); if (!d) return;
+    const viewers = []; let earned = 0;
+    const pre = `view:${video}:`;
+    for (const [k, x] of E.ledger.paid) if (k.startsWith(pre)) { viewers.push(x.from); earned += x.amt || 0; }
+    for (const t of E.txpool.values()) if (t.v === 2 && t.view?.video === video && !viewers.includes(t.from)) { viewers.push(t.from); earned += t.view.amt || 0; }
+    const vt = votesOf(d, video), comments = d.commentsFor(video).filter(b => !d.hidden.has(b.hash)).length;
+    const t = getTorrent(v.infohash), peers = t ? t.numPeers : null;
+    const cell = (n, l) => h('div', { style: 'min-width:90px' }, h('div', { style: 'font-size:1.4em;font-weight:700' }, n), h('div', { class: 'sub' }, l));
+    box.replaceChildren(h('h3', { style: 'margin:0 0 8px' }, '📊 Statistics'),
+      h('div', { class: 'row', style: 'gap:18px;flex-wrap:wrap' }, cell(Math.max(viewsOf(video), viewers.length), 'views'), cell(vt.up, 'likes'), cell(vt.down, 'dislikes'), cell(comments, 'comments'),
+        cell(fmtCoin(earned), 'coins from views'), peers == null ? null : cell(peers, 'peers sharing now')),
+      viewers.length ? h('div', { style: 'margin-top:10px' }, h('a', { href: 'javascript:void 0', class: 'sub', onclick: () => { open = !open; draw(); } }, `${open ? '▾' : '▸'} Who watched (${viewers.length})`),
+        open ? h('div', { style: 'margin-top:6px' }, viewers.slice(0, 200).map(k => { const a = authorOf(k, null); return h('a', { href: a.href, class: 'row', style: 'gap:6px;display:inline-flex;align-items:center;margin:0 12px 6px 0' }, avatar(a.pic, a.name, 'xs'), h('span', {}, a.name)); })) : null) : null,
+      v.stream && d.liveStats?.get(v.stream) ? h('div', { style: 'margin-top:12px' }, liveStatsPanel(d.liveStats.get(v.stream), { title: '🔴 When it was live' })) : null,
+      h('div', { class: 'sub', style: 'margin-top:6px' }, 'Public on OpenTube: anyone can see these, not only the creator.'));
+  };
+  draw(); const iv = setInterval(() => { if (!box.isConnected) return clearInterval(iv); if (!open) draw(); }, 5000);
+  return box;
+}
+// A live stream's statistics, public: everyone sees the same numbers the streamer does.
+const fmtDur = (secs) => secs < 60 ? `${secs} s` : secs < 3600 ? `${Math.round(secs / 60)} min` : `${(secs / 3600).toFixed(1)} h`;
+function liveStatsPanel(st, { title = '📊 Stream statistics' } = {}) {
+  if (!st) return null;
+  const cell = (n, l) => h('div', { style: 'min-width:90px' }, h('div', { style: 'font-size:1.4em;font-weight:700' }, n), h('div', { class: 'sub' }, l));
+  return h('div', { class: 'panel' }, h('h3', { style: 'margin:0 0 8px' }, title),
+    h('div', { class: 'row', style: 'gap:18px;flex-wrap:wrap' }, cell(st.peak, 'peak viewers'), cell(st.unique, 'unique viewers'), cell(fmtDur(st.secs), 'watched in total'), cell(st.unique ? fmtDur(Math.round(st.secs / st.unique)) : '–', 'per viewer')),
+    st.top?.length ? h('div', { style: 'margin-top:10px' }, h('div', { class: 'sub', style: 'margin-bottom:4px' }, 'Who watched (longest first)'),
+      st.top.slice(0, 20).map(([k, s]) => { const a = authorOf(k, null); return h('a', { href: a.href, class: 'row', style: 'gap:6px;display:inline-flex;align-items:center;margin:0 12px 6px 0' }, avatar(a.pic, a.name, 'xs'), h('span', {}, a.name), h('span', { class: 'sub' }, fmtDur(s))); })) : null,
+    h('div', { class: 'sub', style: 'margin-top:6px' }, 'Public on OpenTube: anyone can see these, not only the streamer.'));
+}
 // Your channels (not lists), and quick ways to the things people look for.
 const myChannels = () => [...new Set([...E.directory.keys(), ...mempool.keys(), ...chains.keys()])].filter(id => id !== MAIN_ID && genesisFor(id)?.payload.kind === 'channel' && isMine(genesisFor(id).author));
 function channelQuick(id) {
@@ -5559,20 +5605,25 @@ views.livewatch = {
     if (lb.payload.type !== 'live') return h('div', { class: 'empty' }, 'Not a live stream.');
     const player = h('video', { playsInline: true, autoplay: true, muted: true, controls: true, style: 'width:100%;background:#000;border-radius:8px;aspect-ratio:16/9' });
     const status = h('div', { class: 'sub' }, 'Joining…');
-    const watchers = h('button', { class: 'badge', style: 'margin-left:8px;cursor:pointer;border:none', title: 'Who is watching, and who has been here', onclick: () => { whoBox.classList.toggle('hidden'); drawWho(); } }, '👁 …');
-    const whoBox = h('div', { class: 'panel hidden', style: 'margin-top:8px' });
+    const watchers = h('button', { class: 'badge', style: 'margin-left:8px;cursor:pointer;border:none', title: 'Who is watching, and who has been here', onclick: () => whoBox.scrollIntoView({ behavior: 'smooth', block: 'center' }) }, '👁 …');
+    const whoBox = h('div', { class: 'panel' });   // people here: always shown (the host invites from it)
+    let showSeen = false;
     let lastViewers = null;
     const face = (k, extra = '') => { const a = authorOf(k, null); return h('a', { href: a.href, class: 'row', style: 'gap:6px;display:inline-flex;align-items:center;margin:0 10px 6px 0', title: a.name + extra }, avatar(a.pic, a.name, 'xs'), h('span', {}, a.name)); };
     const dur = (secs) => secs < 60 ? `${secs} s` : secs < 3600 ? `${Math.round(secs / 60)} min` : `${(secs / 3600).toFixed(1)} h`;
     const drawWho = () => {
-      if (whoBox.classList.contains('hidden')) return;
-      const m = lastViewers; if (!m) return whoBox.replaceChildren(h('div', { class: 'sub' }, 'Counting…'));
-      const anon = Math.max(0, (m.viewers || 0) - (m.now || []).length);
+      const m = lastViewers;
+      if (!m) return whoBox.replaceChildren(h('h3', { style: 'margin:0 0 6px' }, '👁 People here'), h('div', { class: 'sub' }, 'Counting…'));
+      const anon = Math.max(0, (m.viewers || 0) - (m.now || []).length), host = iHost();
+      const person = (k) => h('div', { class: 'row', style: 'justify-content:space-between;gap:6px;margin:0 0 4px' }, face(k), host ? inviteBtn(k, '') : null);
       whoBox.replaceChildren(
-        h('h4', { style: 'margin:0 0 6px' }, `Watching now (${m.viewers})`), h('div', {}, (m.now || []).map(k => face(k)), anon ? h('span', { class: 'sub' }, `+ ${anon} not signed in`) : null, !(m.now || []).length && !anon ? h('span', { class: 'sub' }, 'Nobody right now.') : null),
-        h('h4', { style: 'margin:10px 0 6px' }, `Has been here (${m.seenCount || 0})`),
-        h('div', {}, (m.seen || []).map(x => face(x.k, ` · first ${ago(x.first)}, watched ${dur(x.secs)}`))),
-        h('div', { class: 'sub', style: 'margin-top:6px' }, 'Open to everyone: who watches is public on OpenTube, so anyone can count and compare.'));
+        h('h3', { style: 'margin:0 0 6px' }, `👁 People here (${m.viewers || 0})`),
+        h('div', { class: 'sub', style: 'margin:-2px 0 8px' }, `peak ${m.peak ?? m.viewers ?? 0} · ${m.seenCount || 0} unique · ${fmtDur(m.watchSecs || 0)} watched · public`),
+        h('div', {}, (m.now || []).map(person), anon ? h('div', { class: 'sub' }, `+ ${anon} not signed in`) : null, !(m.now || []).length && !anon ? h('div', { class: 'sub' }, 'Nobody watching right now.') : null),
+        host ? h('div', { class: 'sub', style: 'margin-top:4px' }, '🎥 Invite puts them on camera with you: they get a “Join on camera” button on this page.') : null,
+        h('div', { style: 'margin-top:8px' }, h('a', { href: 'javascript:void 0', class: 'sub', onclick: () => { showSeen = !showSeen; drawWho(); } }, `${showSeen ? '▾' : '▸'} Has been here (${m.seenCount || 0})`)),
+        showSeen ? h('div', { style: 'margin-top:4px' }, (m.seen || []).map(x => face(x.k, ` · first ${ago(x.first)}, watched ${dur(x.secs)}`)),
+          h('div', { class: 'sub', style: 'margin-top:6px' }, 'Open to everyone: who watches is public on OpenTube.')) : null);
     };
     const unmute = h('button', { class: 'small', onclick: () => { player.muted = false; player.play().catch(() => {}); unmute.remove(); } }, '🔊 Unmute');
     const chat = h('div', { style: 'max-height:420px;overflow:auto' });
@@ -5614,8 +5665,13 @@ views.livewatch = {
           window.pendingInto = into; location.hash = `#/c/${mineCh[0]}/golive`;
         } }, 'Join on camera'))));
     };
+    const liveBadge = h('span', { class: 'badge live' }, 'LIVE');
     const drawChat = () => {
-      const dd = derive(id), list = dd.commentsFor(block).filter(b => !dd.hidden.has(b.hash)).sort((a, z) => a.ts - z.ts).slice(-200);
+      const dd = derive(id);
+      if (dd.liveEnds.has(lb.payload.stream) && whoBox.isConnected) {   // it just ended: its public statistics replace the live counts
+        const sp = liveStatsPanel(dd.liveStats.get(lb.payload.stream)); if (sp) { whoBox.replaceWith(sp); liveBadge.remove(); watchers.remove(); }
+      }
+      const list = dd.commentsFor(block).filter(b => !dd.hidden.has(b.hash)).sort((a, z) => a.ts - z.ts).slice(-200);
       const atEnd = chat.scrollTop + chat.clientHeight >= chat.scrollHeight - 30, host = iHost();
       chat.replaceChildren(...(list.length ? list.map(cb => msgRow(cb.author, id, { name: cb.payload.name, text: cb.payload.text, ts: cb.ts,
         extra: isMine(dd.owner) && !isMine(cb.author) ? h('div', {}, h('button', { class: 'small', style: 'margin-top:2px', onclick: () => append(id, { type: 'hide', target: cb.hash }) }, 'Hide'), host ? inviteBtn(cb.author, cb.payload.name) : null) : null })) : [h('div', { class: 'sub' }, 'No messages yet. Say hello!')]));
@@ -5629,12 +5685,13 @@ views.livewatch = {
       segmentMode() { if (segp) return; player.srcObject = null; segp = segmentPlayer(player, lb.payload.mime, ui.sess?.init); status.textContent = segp ? 'Live · by segments through the home node (a few seconds behind)' : 'This browser can’t play this stream format.'; },
       segment(g, u8) { if (ui.sess?.mode === 'seg' || ui.sess?.mode === 'dc' || !ui.sess?.media) segp?.push(g, u8); },
       status(t) { status.textContent = t; },
-      viewers(m) { lastViewers = m; drawWho(); watchers.textContent = `👁 ${m.viewers} watching`; watchers.title = 'People who checked in within the last 45 s'; },
+      viewers(m) { lastViewers = m; drawWho(); watchers.textContent = `👁 ${m.viewers} watching · peak ${m.peak ?? m.viewers} · ${m.seenCount || 0} have watched`; watchers.title = 'People who checked in within the last 45 s'; },
       ended(t) { status.textContent = t + (d.recordings.get(lb.payload.stream) ? '' : ' If the streamer publishes the recording, it appears with the channel’s videos.'); }
     };
     const ended = d.liveEnds.has(lb.payload.stream);
     const rec = d.recordings.get(lb.payload.stream);
-    if (ended) status.replaceChildren('This stream has ended. ', rec ? h('a', { href: `#/v/${id}/${rec.hash}` }, 'Watch the recording') : 'The recording wasn’t published.');
+    if (ended) { status.replaceChildren('This stream has ended. ', rec ? h('a', { href: `#/v/${id}/${rec.hash}` }, 'Watch the recording') : 'The recording wasn’t published.');
+      whoBox.replaceWith(liveStatsPanel(d.liveStats.get(lb.payload.stream)) || h('div', { class: 'panel sub' }, 'No statistics were saved for this stream.')); }
     else if (broadcasts.get(id)?.stream === lb.payload.stream && !broadcasts.get(id).ended) { player.srcObject = broadcasts.get(id).media; status.textContent = 'You are live. This is your own preview.'; }
     else {
       joinLive(id, lb, ui).then(sess => {
@@ -5642,16 +5699,15 @@ views.livewatch = {
         views.livewatch.current = { stream: lb.payload.stream, timer: setInterval(() => { if (!player.isConnected) return; drawChat(); }, 2000) };
       });
     }
-    drawChat();
+    drawChat(); drawWho();
     views.livewatch.refresh = drawChat;   // new blocks (chat) shouldn't rebuild the player
     return h('div', { class: 'split', style: 'grid-template-columns:2fr 1fr' },
-      h('div', {}, player, h('div', { class: 'row', style: 'justify-content:space-between;margin-top:8px' }, h('h2', { style: 'margin:0' }, ended ? '' : h('span', { class: 'badge live' }, 'LIVE'), ' ', lb.payload.title), unmute),
-        h('div', { class: 'sub' }, h('a', { href: `#/c/${id}` }, d.profile.name), ' · started ', ago(lb.ts), watchers), status, whoBox, banner),
-      (() => {   // your own stream from one of your computers: the group stream's controls (who's in, disconnect, cancel invites)
+      h('div', {}, player, h('div', { class: 'row', style: 'justify-content:space-between;margin-top:8px' }, h('h2', { style: 'margin:0' }, ended ? '' : liveBadge, ' ', lb.payload.title), unmute),
+        h('div', { class: 'sub' }, h('a', { href: `#/c/${id}` }, d.profile.name), ' · started ', ago(lb.ts), watchers), status, banner),
+      h('div', {}, (() => {   // your own stream from one of your computers: the group stream's controls (who's on camera, disconnect, invites)
         const n = lb.author !== d.owner && E.nodes.get(lb.author);
-        return n && isMine(d.owner) && nodePerms(n).includes('o') && !nodePerms(n).includes('g') ? h('div', { class: 'panel' }, keep('grouplive:' + lb.hash, () => groupPanel(n, { title: true }))) : null;
-      })(),
-      h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Chat'), chat, h('div', { class: 'row', style: 'margin-top:8px' }, box, send)));
+        return n && isMine(d.owner) && nodePerms(n).includes('o') && !nodePerms(n).includes('g') ? h('div', { class: 'panel', style: 'margin-bottom:12px' }, keep('grouplive:' + lb.hash, () => groupPanel(n, { title: true }))) : null;
+      })(), whoBox, h('div', { class: 'panel', style: 'margin-top:12px' }, h('h3', { style: 'margin-top:0' }, 'Chat'), chat, h('div', { class: 'row', style: 'margin-top:8px' }, box, send))));
   }
 };
 const TAB_LABEL = { golive: '● Go live', upload: '＋ Upload' };
@@ -6103,6 +6159,7 @@ views.watch = {
         (v.tags || []).length ? h('div', { class: 'row', style: 'margin-top:8px;gap:6px' }, v.tags.map(t => h('span', { class: 'tagbox' }, tagLink(t),
           isMine(d.owner) ? null : h('button', { class: 'tagx', title: `Not interested in #${t}: hide videos with this tag (kept in this browser only)`, onclick: () => { setMuted('tags', t, true); toast(`You won’t see videos or ads tagged #${t}. Undo under My node → Not interested.`); } }, '✕')))) : null,
         h('div', { class: 'panel', style: 'margin-top:12px' }, v.desc ? rich(v.desc, d.owner) : h('p', { class: 'sub', style: 'margin:0' }, 'No description.')),
+        keep('vstats:' + video, () => videoStatsPanel(id, video, v)),
         h('div', { class: 'row', style: 'justify-content:space-between;margin:18px 0 8px' }, h('h3', { style: 'margin:0' }, 'Comments'), policySel),
         h('div', { class: 'row' }, box, postBtn, postStatus), comments),
       h('aside', {}, h('h3', { style: 'margin-top:0' }, 'More from this channel'), h('div', { style: 'display:grid;gap:12px' }, others.map(x => videoCard(id, x)))));
