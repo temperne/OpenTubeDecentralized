@@ -242,7 +242,7 @@ export function startRtmp({ port = 1935, host = '::', onPublish, log = () => {} 
         log(`${who}: publish with stream key ${key ? key.slice(0, 4) + '…' : '(empty: put the key in OBS’s Stream Key box)'}`); state.lastConn.stage = 'publish';
         const r = await onPublish?.(key);
         if (!r || typeof r === 'string') { state.lastConn.stage = 'refused: ' + (r || 'no handler'); status(sid, 'error', 'NetStream.Publish.BadName', r || 'refused'); log('OBS stream refused: ' + (r || 'no handler')); setTimeout(() => sock.destroy(), 500); return; }
-        sink = r; published = true; state.live++;
+        sink = r; published = true; state.live++; r.kick = () => { try { sock.destroy(); } catch {} };   // the host can disconnect this stream
         status(sid, 'status', 'NetStream.Publish.Start', 'Publishing to OpenTube'); state.lastConn.stage = 'streaming';
         log('OBS is streaming');
       } else if (name === 'FCUnpublish' || name === 'deleteStream') end();

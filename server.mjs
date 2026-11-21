@@ -268,6 +268,7 @@ function liveSink(chain, stream, mime) {
     o += bytes.length;
     g.sig = await signer.sign(core.liveSegPreimage(g)); g.d = bytes.toString('base64'); if (k) g.k = 1;
     send(g); engine.liveMesh.publish(g);   // and over the mesh: viewers who want it get it without any hub
+    if (process.env.LIVE_DEBUG && g.n % 5 === 0) log('[live] segment', g.n, bytes.length, 'bytes');
   }).catch(e => log('[obs] segment failed:', e.message)));
   let send, finish;
   const site = process.env.NODE_SITE;
@@ -311,7 +312,8 @@ function profileOf(user) {
 const nodeUsers = () => obsStore.users;
 // a channel someone may go live on from here: theirs (its key is theirs, or bound to their identity)
 const ownsChannel = (user, ch) => { const d = ch && engine.derive(ch); return !!d && (d.owner === user || engine.ledger.resolve(d.owner) === engine.ledger.resolve(user)); };
-const may = (user, what) => user === GRANT?.user || !!obsStore.users[user]?.can?.includes(what);
+const may = (user, what) => user === GRANT?.user || (!!obsStore.users[user]?.can?.includes(what) && !(obsStore.users[user].until < Date.now()));   // guests' access ends at `until`
+setInterval(() => { let gone = false; for (const [k, u] of Object.entries(obsStore.users)) if (u.until && u.until < Date.now()) { delete obsStore.users[k]; delete obsStore.profiles[k]; gone = true; } if (gone) { saveObs(); announceSoon?.(); } }, 60000);
 if (GRANT) profileOf(GRANT.user);
 saveObs();
 setTimeout(() => { for (const p of Object.values(obsStore.profiles)) if (p.channel) { const ch = engine.openChain(p.channel); if (ch) engine.requestChain(ch); } }, 3000);   // keep the linked channels loaded
@@ -369,19 +371,28 @@ async function thumbOf(file) {   // a small JPEG from 2 s in (needs ffmpeg), as 
   });
 }
 function recorder(chain, title, log) {
-  let out = null, file = null, bytes = 0, open;
+  // parts: a group stream restarts ffmpeg when people join or leave; each run is one part, joined into one file at the end
+  let out = null, file = null, bytes = 0, open, parts = [];
+  const partPath = (i) => path.join(path.dirname(file.full), `.${path.basename(file.full)}.part${i}.mp4`);
   open = (async () => {
     const host = globalThis.openTubeHost;
     const p = host?.recordingPath ? await host.recordingPath(chain, title) : (() => { const dir = path.join(DATA, 'recordings'); fs.mkdirSync(dir, { recursive: true }); const name = `${title.replace(/[^\w .()-]/g, ' ').trim() || 'Live'} ${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.mp4`; return { full: path.join(dir, name), file: name }; })();
-    file = p; out = fs.createWriteStream(p.full); out.on('error', e => log('[obs] recording:', e.message));
+    file = p; parts.push(p.full); out = fs.createWriteStream(p.full); out.on('error', e => log('[obs] recording:', e.message));
     log(`[obs] recording to ${p.full}`);
   })().catch(e => log('[obs] can’t record:', e.message));
   return {
     write: (b) => { open.then(() => { if (out) { out.write(b); bytes += b.length; } }); },
+    nextPart() { open = open.then(() => new Promise(r => { if (!out) return r(); out.end(() => { const p = partPath(parts.length); parts.push(p); out = fs.createWriteStream(p); r(); }); })); },
     async finish(stream) {
       await open; if (!out) return null;
       await new Promise(r => out.end(r));
-      if (bytes < 1000) { fs.rmSync(file.full, { force: true }); return null; }
+      if (bytes < 1000) { for (const p of parts) fs.rmSync(p, { force: true }); return null; }
+      if (parts.length > 1 && ffmpegOk) {   // join the parts (same size and codecs: no re-encoding)
+        const first = partPath(0); fs.renameSync(parts[0], first); parts[0] = first;
+        const list = file.full + '.parts.txt'; fs.writeFileSync(list, parts.map(p => `file '${p.replace(/'/g, "'\\''")}'`).join('\n'));
+        await new Promise(r => { const ff = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', '-movflags', '+faststart', '-y', file.full]); ff.on('exit', r); ff.on('error', r); });
+        for (const p of [...parts, list]) fs.rmSync(p, { force: true });
+      }
       const host = globalThis.openTubeHost;
       if (!host?.seedRecording) { log(`[obs] recording saved to ${file.full} (video hosting is off on this computer, so it isn’t shared for publishing)`); return null; }
       const r = await host.seedRecording(chain, file.file, title, stream);
@@ -406,6 +417,11 @@ function goLiveSink(log, obsCfg) {
       for (const [b, k] of queued) { real.fragment(b, k); yt?.write(b); rec?.write(b); } queued = [];
     },
     fragment(bytes, k) { if (real) { real.fragment(bytes, k); yt?.write(bytes); rec?.write(bytes); } else queued.push([bytes, k]); },
+    reinit(bytes) {   // the group picture restarted (someone joined or left): same stream, new start
+      if (!real) return queued.push([bytes, true]);
+      real.fragment(bytes, true); rec?.nextPart(); rec?.write(bytes);
+      if (yt) { yt.end(); yt = youtubeOut(log, obsCfg); yt?.write(bytes); }
+    },
     end() {
       real?.end(); yt?.end(); log('[obs] stream ended');
       if (!stream || armed?.()) return;
@@ -419,54 +435,93 @@ function goLiveSink(log, obsCfg) {
     }
   };
 }
-// Tiles: several OBS streams (keys <key>, <key>-2, <key>-3, <key>-4) combined by ffmpeg into one picture (2 → side by
-// side, 3-4 → 2×2), audio mixed. It starts when every slot has connected, or 20 s after the first with those present.
-function tileSlot(n, log, obsCfg) {
-  // each person's group stream is their own; this state lives only in memory (never in obs.json)
-  const tiles = obsCfg._tiles ||= { slots: new Map(), ff: null, timer: null, restart: false };
-  const old = tiles.slots.get(n); if (old && !old.ended) { old.ended = true; try { old.pipe?.end(); } catch {} }   // the same key reconnecting replaces itself
-  const slot = { n, init: null, chunks: [], pipe: null, ended: false };
-  tiles.slots.set(n, slot);
-  const active = () => [...tiles.slots.values()].filter(s => !s.ended).sort((a, b) => a.n - b.n);
-  const restart = (why) => { if (!tiles.ff) return startTiles(); log(`[tiles] ${why}: restarting the group picture`); tiles.restart = true; tiles.ff.kill('SIGTERM'); };
-  function startTiles() {
-    if (tiles.ff) return; clearTimeout(tiles.timer); tiles.timer = null;
-    const list = active().filter(s => s.init); if (!list.length) return;
-    const k = list.length, lay = { 1: '0_0', 2: '0_0|w0_0', 3: '0_0|w0_0|0_h0', 4: '0_0|w0_0|0_h0|w0_h0' }[k];
-    const vf = list.map((s, i) => `[${i}:v]scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2,setsar=1[v${i}]`).join(';')
-      + ';' + list.map((s, i) => `[v${i}]`).join('') + (k > 1 ? `xstack=inputs=${k}:layout=${lay}[v]` : 'copy[v]')
-      + ';' + list.map((s, i) => `[${i}:a]`).join('') + (k > 1 ? `amix=inputs=${k}[a]` : 'anull[a]');
-    const args = ['-hide_banner', '-loglevel', 'error', ...list.flatMap((s, i) => ['-f', 'mp4', '-i', 'pipe:' + (3 + i)]), '-filter_complex', vf, '-map', '[v]', '-map', '[a]',
-      '-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency', '-profile:v', 'high', '-level', '4.0', '-g', '60', '-c:a', 'aac', '-b:a', '128k',
-      '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', 'pipe:1'];
-    const ff = tiles.ff = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe', ...list.map(() => 'pipe')] });
-    ff.stderr.on('data', d => log('[tiles]', String(d).trim().slice(0, 200)));
-    const out = goLiveSink(log, obsCfg); let first = true;
-    ff.stdout.on('data', mp4Boxes((init) => out.init(init, 'video/mp4; codecs="avc1.640028,mp4a.40.2"').catch(e => log('[tiles]', e.message)), (frag) => out.fragment(frag, first ? (first = false, true) : false)));
-    ff.on('exit', (code) => {
-      out.end(); tiles.ff = null; for (const s of tiles.slots.values()) s.pipe = null;
-      const again = tiles.restart || (code && active().length); tiles.restart = false;
-      if (again && active().length) { for (const s of active()) s.chunks = []; setTimeout(startTiles, 1500); }   // with whoever is still streaming
-      else { for (const [k_, s] of tiles.slots) if (s.ended) tiles.slots.delete(k_); log('[tiles] ended'); }
-    });
-    list.forEach((s, i) => { s.pipe = ff.stdio[3 + i]; s.pipe.on('error', () => {}); s.pipe.write(s.init); for (const c of s.chunks) s.pipe.write(c); s.chunks = []; });
-    log(`[tiles] combining ${k} stream(s): ${list.map(s => s.n === 1 ? 'key' : 'key-' + s.n).join(', ')}`);
+// The group stream: everyone streaming into one person's group (their own OBS keys, guests they invited, and browser
+// streams sent into it) combined by ffmpeg into one 1280×720 picture, laid out by how many are connected (1 full,
+// 2 side by side, 3–4 in 2×2, 5–9 in 3×3), audio mixed. When someone joins or leaves the picture is rebuilt, but it
+// stays the same live stream (a new start segment, timestamps continuing) and the recording is joined into one file.
+const GROUP_MAX = 9;
+function groupOf(hostCfg) { return hostCfg._group ||= { inputs: new Map(), ff: null, timer: null, out: null, t0: 0, restart: false, log: null }; }
+function groupLayout(k) {
+  const cols = k <= 1 ? 1 : k <= 4 ? 2 : 3, rows = Math.ceil(k / cols), W = 1280, H = 720, cw = Math.floor(W / cols / 2) * 2, ch = Math.floor(H / rows / 2) * 2;
+  return { cols, rows, cw, ch, pos: [...Array(k)].map((_, i) => `${(i % cols) * cw}_${Math.floor(i / cols) * ch}`) };
+}
+function groupStart(hostCfg) {
+  const g = groupOf(hostCfg), log = g.log || console.log;
+  if (g.ff) return; clearTimeout(g.timer); g.timer = null;
+  const list = [...g.inputs.values()].filter(x => !x.ended && x.init).sort((a, b) => a.at - b.at).slice(0, GROUP_MAX); if (!list.length) return;
+  const k = list.length, L = groupLayout(k);
+  const vf = list.map((x, i) => `[${i}:v]setpts=PTS-STARTPTS,scale=${L.cw}:${L.ch}:force_original_aspect_ratio=decrease,pad=${L.cw}:${L.ch}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v${i}]`).join(';')
+    + ';' + (k > 1 ? list.map((x, i) => `[v${i}]`).join('') + `xstack=inputs=${k}:layout=${L.pos.join('|')}:fill=black,pad=1280:720:0:0:black[v]` : `[v0]pad=1280:720:(ow-iw)/2:(oh-ih)/2:black[v]`)
+    + ';' + list.map((x, i) => `[${i}:a]asetpts=PTS-STARTPTS,aresample=48000[a${i}]`).join(';') + ';' + list.map((x, i) => `[a${i}]`).join('') + (k > 1 ? `amix=inputs=${k}:normalize=0[a]` : 'anull[a]');
+  // stage 1, the picture: rebuilt whenever someone joins or leaves, output as MPEG-TS (which can be strung together)
+  const args = ['-hide_banner', '-loglevel', 'error', ...list.flatMap((x, i) => ['-thread_queue_size', '1024', '-f', x.fmt === 'webm' ? 'matroska' : 'mp4', '-i', 'pipe:' + (3 + i)]), '-filter_complex', vf, '-map', '[v]', '-map', '[a]',
+    '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency', '-crf', '20', '-g', '30', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '160k', '-ar', '48000', '-f', 'mpegts', 'pipe:1'];
+  const ff = g.ff = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe', ...list.map(() => 'pipe')] });
+  ff.stderr.on('data', d => log('[group]', String(d).trim().slice(0, 200)));
+  // stage 2, the stream: one encoder for the whole session, timestamps from the clock, so viewers, the recording and
+  // YouTube see one continuous stream however often the picture is rebuilt
+  if (!g.enc) {
+    g.out = goLiveSink(log, hostCfg); g.t0 = Date.now();
+    const enc = g.enc = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-use_wallclock_as_timestamps', '1', '-fflags', '+genpts+discardcorrupt', '-f', 'mpegts', '-i', 'pipe:0',
+      '-vf', 'fps=30', '-af', 'aresample=async=1000', '-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency', '-profile:v', 'high', '-level', '4.0', '-g', '60', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k', '-ar', '48000',
+      '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', 'pipe:1'], { stdio: ['pipe', 'pipe', 'pipe'] });
+    enc.stdin.on('error', () => {}); enc.stderr.on('data', d => log('[group]', String(d).trim().slice(0, 200)));
+    const out = g.out; let first = true;
+    enc.stdout.on('data', mp4Boxes((init) => out.init(init, 'video/mp4; codecs="avc1.640028,mp4a.40.2"').catch(e => log('[group]', e.message)), (frag) => out.fragment(frag, first ? (first = false, true) : false)));
+    enc.on('exit', () => { out.end(); if (g.enc === enc) { g.enc = null; g.out = null; g.t0 = 0; } log('[group] ended'); });
   }
-  const write = (b) => { if (slot.pipe) { try { slot.pipe.write(b); } catch {} } else { slot.chunks.push(b); if (slot.chunks.length > 600) slot.chunks.splice(0, 300); } };
-  return {
-    init(bytes) {
-      slot.init = bytes;
-      if (tiles.ff) return restart(`${n === 1 ? 'key' : 'key-' + n} joined`);
-      if (active().filter(s => s.init).length >= obsCfg.tile.n) startTiles();
-      else if (!tiles.timer) tiles.timer = setTimeout(startTiles, 20000);   // don't wait forever for everyone
-    },
+  const enc = g.enc;
+  ff.stdout.on('data', (d) => { try { enc.stdin.write(d); } catch {} });
+  ff.on('exit', (code) => {
+    g.ff = null; for (const x of g.inputs.values()) x.pipe = null;
+    const left = [...g.inputs.values()].filter(x => !x.ended);
+    if ((g.restart || code) && left.length) { g.restart = false; for (const x of left) x.chunks = []; setTimeout(() => groupStart(hostCfg), 500); }   // rebuilt picture, same stream
+    else { g.restart = false; for (const [id, x] of g.inputs) if (x.ended) g.inputs.delete(id); if (!left.length) { try { enc.stdin.end(); } catch {} } }
+  });
+  list.forEach((x, i) => { x.pipe = ff.stdio[3 + i]; x.pipe.on('error', () => {}); x.pipe.write(x.init); for (const c of x.chunks) x.pipe.write(c); x.chunks = []; });
+  log(`[group] ${k} in the picture: ${list.map(x => x.label).join(', ')}`);
+}
+function groupRebuild(hostCfg, why) { const g = groupOf(hostCfg); if (!g.ff) return groupStart(hostCfg); (g.log || console.log)(`[group] ${why}: rebuilding the picture`); g.restart = true; g.ff.kill('SIGTERM'); }
+// One input (an OBS connection, or a browser stream this node pulls): returns the sink its data goes to.
+function groupInput(hostCfg, { id, label, user, kind, fmt = 'mp4', close = null }, log) {
+  const g = groupOf(hostCfg); g.log = log;
+  const old = g.inputs.get(id); if (old && !old.ended) { old.ended = true; try { old.pipe?.end(); } catch {} try { old.close?.(); } catch {} }   // reconnecting replaces itself
+  if (!old && [...g.inputs.values()].filter(x => !x.ended).length >= GROUP_MAX) return `The group picture is full (${GROUP_MAX}).`;
+  const x = { id, label, user, kind, fmt, at: Date.now(), init: null, chunks: [], pipe: null, ended: false, close };
+  g.inputs.set(id, x);
+  const write = (b) => { if (x.pipe) { try { x.pipe.write(b); } catch {} } else { x.chunks.push(b); if (x.chunks.length > 600) x.chunks.splice(0, 300); } };
+  return x.sink = {
+    input: x,
+    init(bytes) { x.init = bytes; if (g.ff) return groupRebuild(hostCfg, `${label} joined`); if (!g.timer) g.timer = setTimeout(() => groupStart(hostCfg), 2500); },   // a moment for others connecting at the same time
     fragment(bytes) { write(bytes); },
     end() {
-      slot.ended = true; try { slot.pipe?.end(); } catch {}
-      if (!active().length) { tiles.ff?.kill('SIGTERM'); clearTimeout(tiles.timer); tiles.timer = null; }
-      else if (tiles.ff && slot.pipe !== undefined) restart(`${n === 1 ? 'key' : 'key-' + n} left`);
+      if (x.ended) return; x.ended = true; try { x.pipe?.end(); } catch {}
+      const left = [...g.inputs.values()].filter(y => !y.ended);
+      if (!left.length) { g.ff?.kill('SIGTERM'); clearTimeout(g.timer); g.timer = null; if (!g.ff) { try { g.enc?.stdin.end(); } catch {} g.inputs.clear(); } }   // the encoder finishes the stream
+      else if (g.ff) groupRebuild(hostCfg, `${label} left`);
     }
   };
+}
+// A browser stream sent into the group: watched from the hub like a relay, its segments (WebM) fed to ffmpeg in order.
+function pullIntoGroup(hostCfg, stream, user, label) {
+  if (!process.env.NODE_SITE) return 'this computer has no site hub to pull the stream from';
+  let sink = null, last = -1, hub = null;
+  sink = groupInput(hostCfg, { id: 'web:' + user, label, user, kind: 'web', fmt: 'webm', close: () => { hub?.send({ t: 'leave', stream }); hub?.close(); } }, log);
+  if (typeof sink === 'string') return sink;
+  hub = hubSocket((m) => {
+    if (m.t === 'seg' && m.seg?.stream === stream && m.seg.n > last) {
+      const b = Buffer.from(m.seg.d, 'base64');
+      if (m.seg.n === 0) { last = 0; sink.init(b); } else if (last >= 0) { last = m.seg.n; sink.fragment(b); }
+    } else if (m.t === 'ended' || m.t === 'nostream') { sink.end(); hub.close(); }
+  }, () => hub.send({ t: 'watch', stream, segOnly: true, media: false, dcSlots: 0, slots: 0, relay: true }));
+  const alive = setInterval(() => { if (sink.input.ended) { clearInterval(alive); hub.close(); } else hub.send({ t: 'alive', stream }); }, 15000);
+  log(`[group] pulling ${label}’s browser stream into the picture`);
+  return sink;
+}
+function groupKick(hostCfg, pred) {   // disconnect inputs (OBS connection closed, browser stream no longer pulled)
+  const g = groupOf(hostCfg); let n = 0;
+  for (const x of [...g.inputs.values()]) if (!x.ended && pred(x)) { n++; try { x.close?.(); x.sink?.kick?.(); } catch {} x.sink?.end(); }
+  return n;
 }
 var armed = null, announceSoon = null;
 if (process.env.RTMP_PORT) {
@@ -487,13 +542,21 @@ if (process.env.RTMP_PORT) {
     const rtmp = startRtmp({ port: Number(process.env.RTMP_PORT), host: rtmpHost, log: (...a) => log('[obs]', ...a),
       onPublish: (key) => {
         key = String(key || '').trim();
-        let user = null, slot = 0;   // whose key is it? the key itself, or key-2…key-4 for tiles
-        for (const [u, pr] of Object.entries(obsStore.profiles)) { if (!may(u, 'obs')) continue; const s_ = key === pr.key ? 1 : [2, 3, 4].find(i => key === pr.key + '-' + i) || 0; if (s_) { user = u; slot = s_; break; } }
+        let user = null, slot = 0;   // whose key is it? the key itself, or key-2…key-9 (more cameras into your group stream)
+        for (const [u, pr] of Object.entries(obsStore.profiles)) { if (!may(u, 'obs')) continue; const s_ = key === pr.key ? 1 : [2, 3, 4, 5, 6, 7, 8, 9].find(i => key === pr.key + '-' + i) || 0; if (s_) { user = u; slot = s_; break; } }
         if (!slot) return 'Wrong stream key. Copy it from Go live (or Devices) on the site.';
+        const who = obsStore.users[user]?.name || (user === GRANT?.user ? 'the owner' : user.slice(0, 8));
+        log(`[obs] stream from ${who}`);
+        const guestOf = obsStore.users[user]?.guestOf;
+        if (guestOf) {   // an invited guest: into the host's group stream
+          const host = Object.assign(profileOf(guestOf), { owner: guestOf === GRANT?.user });
+          if (!host.tile.on) return 'The group stream you were invited to isn’t on right now.';
+          if (!ffmpegOk) return 'Group streams need ffmpeg on this computer.';
+          return groupInput(host, { id: 'obs:' + user + (slot > 1 ? '-' + slot : ''), label: who + (slot > 1 ? ' ' + slot : ''), user, kind: 'obs' }, log);
+        }
         const obsCfg = Object.assign(profileOf(user), { owner: user === GRANT?.user });
-        log(`[obs] stream from ${obsStore.users[user]?.name || (obsCfg.owner ? 'the owner' : user.slice(0, 8))}`);
-        if (obsCfg.tile.on) { if (!ffmpegOk) return 'Tiles need ffmpeg on this computer.'; if (slot > obsCfg.tile.n) return `Only ${obsCfg.tile.n} tiles are set up.`; return tileSlot(slot, log, obsCfg); }
-        if (slot > 1) return 'Tiles are off on this computer: use the main stream key.';
+        if (obsCfg.tile.on) { if (!ffmpegOk) return 'Group streams need ffmpeg on this computer.'; return groupInput(obsCfg, { id: 'obs:' + user + (slot > 1 ? '-' + slot : ''), label: 'host' + (slot > 1 ? ' (camera ' + slot + ')' : ''), user, kind: 'obs' }, log); }
+        if (slot > 1) return 'The group stream is off on this computer: use the main stream key.';
         if (obsCfg.channel && !obsCfg.owner && obsCfg.channelBy !== user && !ownsChannel(user, obsCfg.channel)) return 'That channel isn’t yours.';
         if (!(obsCfg.owner && armed()) && !(obsCfg.channel && engine.derive(obsCfg.channel)?.relays.has(signer.pub))) return 'Not linked to a channel yet. On the site: Go live → OBS → pick this computer and link it to your channel.';
         return goLiveSink(log, obsCfg);
@@ -620,13 +683,53 @@ async function signed(x) { x.sig = await signer.sign(core.ctlPreimage(x)); retur
 async function control(c) {
   const fail = (error) => signed({ v: 1, kind: 'nodectlr', node: signer.pub, re: c.nonce, at: Date.now(), ok: false, error });
   if (c.v !== 1 || c.node !== signer.pub || typeof c.nonce !== 'string' || c.nonce.length > 40 || typeof c.cmd !== 'string') return fail('bad command');
-  if (!GRANT || (c.user !== GRANT.user && !obsStore.users[c.user])) return fail('this computer isn’t yours, and it isn’t shared with you');
+  if (!GRANT || (c.user !== GRANT.user && (!obsStore.users[c.user] || obsStore.users[c.user].until < Date.now()))) return fail('this computer isn’t yours, and it isn’t shared with you (or your invitation ended)');
   if (Math.abs(Date.now() - c.at) > 2 * 60000 || ctlSeen.has(c.nonce)) return fail('stale or repeated command');
   if (!(await core.verify(c.user, core.ctlPreimage(c), c.sig))) return fail('bad signature');
   ctlSeen.set(c.nonce, Date.now()); for (const [k, at] of ctlSeen) if (Date.now() - at > 5 * 60000) ctlSeen.delete(k);
   try {
     let data;
     const owner = c.user === GRANT.user;
+    if (c.cmd.startsWith('group')) {   // the group stream: yours (or, for a guest, the one you were invited to)
+      const a = c.args || {}, me_ = obsStore.users[c.user], guestOf = me_?.guestOf, hostUser = guestOf || c.user;
+      if (!may(c.user, 'obs')) return fail('you may not stream through this computer');
+      const hostCfg = Object.assign(profileOf(hostUser), { owner: hostUser === GRANT.user }), g = groupOf(hostCfg);
+      const isHost = !guestOf, label = (u) => u === hostUser ? 'host' : obsStore.users[u]?.name || u.slice(0, 8);
+      if (c.cmd === 'group.set') { if (!isHost) return fail('only the host can switch the group stream'); if (typeof a.on === 'boolean') { hostCfg.tile.on = a.on; saveObs(); } }
+      else if (c.cmd === 'group.invite') {
+        if (!isHost) return fail('only the host can invite');
+        if (!/^[A-Za-z0-9_-]{43}$/.test(a.key || '') || a.key === GRANT.user || a.key === c.user) return fail('not a user ID');
+        if (obsStore.users[a.key] && !obsStore.users[a.key].guestOf) return fail('they already use this computer: they can stream into your group from their browser');
+        const hours = Math.min(Math.max(Number(a.hours) || 6, 0.25), 24 * 14);
+        obsStore.users[a.key] = { can: ['obs'], name: String(a.name || '').slice(0, 60), guestOf: c.user, until: Date.now() + hours * 3600000 };
+        profileOf(a.key); saveObs(); announceSoon?.();
+        log(`[group] the host invited ${a.name || a.key.slice(0, 8)} for ${hours} h`);
+      }
+      else if (c.cmd === 'group.uninvite') {   // hang up: disconnect and end their access
+        const u = obsStore.users[a.key]; if (!u?.guestOf || (u.guestOf !== c.user && !owner)) return fail('not your guest');
+        groupKick(hostCfg, x => x.user === a.key); delete obsStore.users[a.key]; delete obsStore.profiles[a.key]; saveObs(); announceSoon?.();
+        log(`[group] invitation of ${u.name || a.key.slice(0, 8)} cancelled`);
+      }
+      else if (c.cmd === 'group.kick') {   // disconnect one input (they can come back while invited)
+        if (!isHost && a.id && !String(a.id).includes(c.user)) return fail('only the host can disconnect others');
+        if (!groupKick(hostCfg, x => x.id === a.id)) return fail('not connected');
+      }
+      else if (c.cmd === 'group.join') {   // a browser stream (host's or a guest's) into the picture: we pull its segments
+        if (!hostCfg.tile.on) return fail('the group stream isn’t on');
+        if (!ffmpegOk) return fail('group streams need ffmpeg on this computer');
+        if (!/^[0-9a-f]{64}$/.test(a.stream || '') || !/^[0-9a-f]{64}$/.test(a.chain || '')) return fail('bad stream');
+        let ok = ownsChannel(c.user, a.chain);
+        if (!ok && typeof a.channelSig === 'string') { const key = engine.derive(a.chain)?.owner || engine.directory.get(a.chain)?.genesis.author; ok = !!key && await core.verify(key, core.obsChannelPreimage(signer.pub, c.user, a.chain), a.channelSig).catch(() => false); }
+        if (!ok) return fail('that stream’s channel isn’t yours');
+        const r = pullIntoGroup(hostCfg, a.stream, c.user, label(c.user) + ' (browser)'); if (typeof r === 'string') return fail(r);
+      }
+      const now = Date.now();
+      data = { on: !!hostCfg.tile.on, host: isHost, live: !!g.out, ffmpeg: ffmpegOk,
+        inputs: [...g.inputs.values()].filter(x => !x.ended).map(x => ({ id: x.id, label: x.label, user: x.user, kind: x.kind, since: x.at, guest: !!obsStore.users[x.user]?.guestOf })),
+        guests: Object.entries(obsStore.users).filter(([, u]) => u.guestOf === hostUser && !(u.until < now)).map(([k, u]) => ({ key: k, name: u.name, until: u.until })),
+        ...(isHost ? {} : { invitedBy: label(hostUser), until: me_.until, key: profileOf(c.user).key, port: Number(process.env.RTMP_PORT) || null }) };
+      return signed({ v: 1, kind: 'nodectlr', node: signer.pub, re: c.nonce, at: Date.now(), ok: true, data });
+    }
     if (c.cmd === 'store' || c.cmd === 'store.status') {   // keep a video someone uploaded from a browser (their storage is this computer)
       const a = c.args || {};
       if (!owner && !may(c.user, 'host')) return fail('you may not store videos on this computer');
@@ -786,7 +889,7 @@ else if (GRANT) {
   const announce = async () => {
     let host = globalThis.openTubeHost?.status() || null;
     if (!host) try { host = JSON.parse(fs.readFileSync(process.env.HOST_STATUS_FILE, 'utf8')); if (Date.now() - host.at > 120000) host = { ...host, stale: true }; } catch {}
-    const info = { publicIp: (await publicIp()) || null, users: Object.fromEntries(Object.entries(obsStore.users).slice(0, 20).map(([k, u]) => [k, u.can.map(x => x[0]).join('')])),   // who may use it: o(bs) h(ost) m(anage)
+    const info = { publicIp: (await publicIp()) || null, users: Object.fromEntries(Object.entries(obsStore.users).filter(([, u]) => !(u.until < Date.now())).slice(0, 20).map(([k, u]) => [k, u.can.map(x => x[0]).join('') + (u.guestOf ? 'g' : '')])),   // who may use it: o(bs) h(ost) m(anage)
       version: { name: core.VERSION, build: BUILD, files: FILES }, peerId: nodePeerId(signer.pub), name: (process.env.NODE_LABEL || os.hostname()).slice(0, 60), os: `${os.platform()} ${os.arch()}`, node: process.version, height: engine.main.best.height,
       peers: peers.size, chains: engine.chains.size, site: process.env.NODE_SITE || null, host, obs: globalThis.openTubeRtmp?.status?.() || null };
     try { await engine.publishNodeInfo({ grant: GRANT, roles, addrs: addrs(), info }); } catch (e) { log('announce failed:', e.message); }

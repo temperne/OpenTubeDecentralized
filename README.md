@@ -494,6 +494,17 @@ Many VPS providers only let a few ports in from the internet (often 22 and 80), 
 - **Open the port:** in the provider's control panel (Firewall or Security group), and on the server with `sudo iptables -I INPUT -p tcp --dport 1935 -j ACCEPT`.
 - **Or use a port that's already open:** add `--obs-port=80` to the command, or set "OBS port" when you create it on Devices. In OBS, use `rtmp://<its-ip>:80/live`. Only one program can use a port, so pick one nothing else on the server is using.
 
+### Group streams (several people in one picture)
+
+Under Devices → 🎥 OBS & streaming → **Group**, or on the live page of your own stream, switch the group stream **on**. Everyone connected is combined into one 1280×720 picture, arranged by how many are in it: one fills the screen, two sit side by side, three or four go in a 2×2 grid, and five to nine in 3×3. Audio is mixed.
+
+- **Who can be in it:** your own OBS (your key; `key-2` … `key-9` for more cameras), **invited guests** with their own key, and **browser streams**: on Go live, under *Where*, choose "Into my group stream on …" (or, for a guest, "Into the group stream I'm invited to on …"). Your computer pulls that browser stream into the picture. It doesn't show up as a separate live stream on the sender's channel.
+- **Inviting:** enter their @@name or user ID and how long (2 hours to 1 week). They get temporary access to that computer with their own stream key, shown on their Devices page under 👥 Group stream. It ends by itself when the time is up.
+- **Hanging up:** each person in the picture has **Disconnect** (they're dropped and can come back while invited). Guests also have **Cancel invite** (dropped, and their key stops working).
+- **One stream throughout:** when someone joins or leaves, the picture is rebuilt, but viewers keep watching the same stream. A second, long-running encoder carries it, with timestamps from the clock. The recording is one file, offered for publishing at the end like any recording.
+
+Needs ffmpeg on that computer.
+
 ### Live delivery: video tree, segment tree, and your computers as relays
 
 Every stream is cut into ~1 s **segments**, each signed by the channel (or by the computer streaming for it) and checked by every viewer, so whoever passes them on can't alter them. They travel in three ways, and the site's hub only introduces peers:
