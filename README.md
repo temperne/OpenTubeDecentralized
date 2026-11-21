@@ -378,6 +378,13 @@ On your channel's Videos tab, **Go live**: pick a camera, a microphone, or *Shar
 Known limits: the recording is WebM straight from the browser's recorder, so some players can't seek in it. The hub keeps the last minute of chunks, so a member who joins later than that fetches the gap after the stream is published.
 
 
+**OBS through your computer.** Every computer running OpenTube (with OBS on) has its own **stream key**. On *Go live* (pick the computer) or *Devices → 🎥 OBS & streaming*:
+
+- **Setting up OBS:** copy the **server** address and the key. The server is `rtmp://localhost/live` on that computer, or `rtmp://<its address>/live` from another one. The key is hidden until you click *Show*, and *New key* replaces it. Paste both into OBS → Settings → Stream → Custom.
+- **Linking a channel:** choose the channel and click *Link this computer to it*. That writes a `relay` block on the channel: the computer may now start and end live streams on it by itself. Then *Start Streaming* in OBS goes live on the channel with the title you saved, and *Stop Streaming* ends it. The computer accepts OBS only with its key, from any address.
+- **YouTube:** tick *Also send it to YouTube* and paste your YouTube stream key. The computer forwards the same stream to YouTube unchanged (needs ffmpeg there).
+- **Tiles** (group streams): choose 2, 3 or 4. Each person streams to the same server with the key, or the key plus `-2`, `-3`, `-4`. The computer combines the pictures (side by side, or 2×2), mixes the audio, and the result goes live as one stream (needs ffmpeg). The combined stream starts when all have connected, or 20 s after the first.
+
 **Live over the mesh (no hub needed).** A hub on the site's node is now optional. The broadcaster also publishes every signed segment to the peer-to-peer mesh (an OBS node does too):
 
 - **Wanting:** a viewer sends `lwant` for a stream. Each peer remembers which links want it and passes the want on, a few hops, toward whoever has the stream.

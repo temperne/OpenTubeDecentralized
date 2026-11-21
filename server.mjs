@@ -22,6 +22,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -164,10 +165,92 @@ function liveSink(chain, stream, mime) {
   }
   return { init: (bytes) => seg(bytes, false), fragment: (bytes, k) => seg(bytes, k), end: () => { queue.then(() => finish()); } };
 }
+// OBS settings for this computer (set from the owner's console): the stream key OBS must use, the channel it goes live
+// on (the owner links this computer to the channel with a `relay` block), the title, YouTube forwarding, and tiles.
+const obsFile = path.join(DATA, 'obs.json');
+const obsCfg = Object.assign({ key: null, channel: null, title: 'Live', youtube: { key: '', on: false }, tile: { on: false, n: 4 } }, (() => { try { return JSON.parse(fs.readFileSync(obsFile, 'utf8')); } catch { return {}; } })());
+if (!obsCfg.key) obsCfg.key = 'ot-' + crypto.randomBytes(12).toString('base64url');
+const saveObs = () => fs.writeFileSync(obsFile, JSON.stringify(obsCfg, null, 2), { mode: 0o600 });
+saveObs();
+// fMP4 splitting (ffmpeg output): ftyp+moov is the header, then moof+mdat pairs
+function mp4Boxes(onInit, onFrag) {
+  let buf = Buffer.alloc(0), init = null, moof = null;
+  return (chunk) => {
+    buf = Buffer.concat([buf, chunk]);
+    for (;;) {
+      if (buf.length < 8) return; const size = buf.readUInt32BE(0), type = buf.toString('latin1', 4, 8);
+      if (size < 8 || buf.length < size) return;
+      const box = buf.subarray(0, size); buf = buf.subarray(size);
+      if (type === 'ftyp') init = Buffer.from(box); else if (type === 'moov') { onInit(Buffer.concat([init || Buffer.alloc(0), box])); init = null; }
+      else if (type === 'moof') moof = Buffer.from(box); else if (type === 'mdat' && moof) { onFrag(Buffer.concat([moof, box])); moof = null; }
+    }
+  };
+}
+const ffmpegOk = (() => { try { return !spawnSync('ffmpeg', ['-version']).error; } catch { return false; } })();
+function youtubeOut(log) {   // forward the stream (fMP4, H.264 + AAC) to YouTube, unchanged
+  if (!obsCfg.youtube.on || !obsCfg.youtube.key || !ffmpegOk) return null;
+  const ff = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'mp4', '-i', 'pipe:0', '-c', 'copy', '-f', 'flv', 'rtmp://a.rtmp.youtube.com/live2/' + obsCfg.youtube.key], { stdio: ['pipe', 'ignore', 'pipe'] });
+  ff.stderr.on('data', d => log('[youtube]', String(d).trim().slice(0, 200))); ff.stdin.on('error', () => {});
+  log('[youtube] forwarding the stream to YouTube');
+  return { write: (b) => { try { ff.stdin.write(b); } catch {} }, end: () => { try { ff.stdin.end(); } catch {} } };
+}
+// Go live on the linked channel: writes the live block (as the channel's relay), then feeds the mesh/hub and YouTube.
+function goLiveSink(log) {
+  let real = null, yt = youtubeOut(log), queued = [], stream = null, chain = null;
+  return {
+    async init(bytes, mime) {
+      const armedOld = armed?.();
+      if (armedOld) { chain = armedOld.chain; stream = armedOld.b.payload.stream; mime = armedOld.b.payload.mime; }
+      else {
+        chain = obsCfg.channel; if (!chain || !engine.chains.get(chain)) throw new Error('no channel linked to this computer');
+        stream = crypto.randomBytes(32).toString('hex');
+        await engine.append(chain, { type: 'live', title: (obsCfg.title || 'Live').slice(0, 140), stream, mime });
+        log(`[obs] live on ${engine.derive(chain)?.profile.name || chain.slice(0, 8)}: “${obsCfg.title}”`);
+      }
+      real = liveSink(chain, stream, mime); real.init(bytes); yt?.write(bytes);
+      for (const [b, k] of queued) { real.fragment(b, k); yt?.write(b); } queued = [];
+    },
+    fragment(bytes, k) { if (real) { real.fragment(bytes, k); yt?.write(bytes); } else queued.push([bytes, k]); },
+    end() { real?.end(); yt?.end(); if (stream && !armed?.()) engine.append(chain, { type: 'liveend', stream, outcome: 'ended' }).catch(() => {}); log('[obs] stream ended'); }
+  };
+}
+// Tiles: several OBS streams (keys <key>, <key>-2, <key>-3, <key>-4) combined by ffmpeg into one picture (2 → side by
+// side, 3-4 → 2×2), audio mixed. It starts when every slot has connected, or 20 s after the first with those present.
+const tiles = { slots: new Map(), ff: null, timer: null };
+function tileSlot(n, log) {
+  const slot = { n, chunks: [], pipe: null, ended: false };
+  tiles.slots.set(n, slot);
+  const startTiles = () => {
+    if (tiles.ff) return; clearTimeout(tiles.timer);
+    const list = [...tiles.slots.values()].filter(s => !s.ended).sort((a, b) => a.n - b.n); if (!list.length) return;
+    const k = list.length, lay = { 1: '0_0', 2: '0_0|w0_0', 3: '0_0|w0_0|0_h0', 4: '0_0|w0_0|0_h0|w0_h0' }[k];
+    const vf = list.map((s, i) => `[${i}:v]scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2,setsar=1[v${i}]`).join(';')
+      + ';' + list.map((s, i) => `[v${i}]`).join('') + (k > 1 ? `xstack=inputs=${k}:layout=${lay}[v]` : 'copy[v]')
+      + ';' + list.map((s, i) => `[${i}:a]`).join('') + (k > 1 ? `amix=inputs=${k}[a]` : 'anull[a]');
+    const args = ['-hide_banner', '-loglevel', 'error', ...list.flatMap((s, i) => ['-f', 'mp4', '-i', 'pipe:' + (3 + i)]), '-filter_complex', vf, '-map', '[v]', '-map', '[a]',
+      '-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency', '-profile:v', 'high', '-level', '4.0', '-g', '60', '-c:a', 'aac', '-b:a', '128k',
+      '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', 'pipe:1'];
+    const ff = tiles.ff = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe', ...list.map(() => 'pipe')] });
+    ff.stderr.on('data', d => log('[tiles]', String(d).trim().slice(0, 200)));
+    const out = goLiveSink(log); let first = true;
+    ff.stdout.on('data', mp4Boxes((init) => out.init(init, 'video/mp4; codecs="avc1.640028,mp4a.40.2"').catch(e => log('[tiles]', e.message)), (frag) => out.fragment(frag, first ? (first = false, true) : false)));
+    ff.on('exit', () => { out.end(); tiles.ff = null; tiles.slots.clear(); log('[tiles] ended'); });
+    list.forEach((s, i) => { s.pipe = ff.stdio[3 + i]; s.pipe.on('error', () => {}); for (const c of s.chunks) s.pipe.write(c); s.chunks = []; });
+    log(`[tiles] combining ${k} stream(s)`);
+  };
+  if (!tiles.timer && !tiles.ff) tiles.timer = setTimeout(startTiles, 20000);
+  const write = (b) => { if (slot.pipe) { try { slot.pipe.write(b); } catch {} } else slot.chunks.push(b); };
+  return {
+    init(bytes) { write(bytes); if (tiles.slots.size >= obsCfg.tile.n) startTiles(); },
+    fragment(bytes) { write(bytes); },
+    end() { slot.ended = true; try { slot.pipe?.end(); } catch {} if ([...tiles.slots.values()].every(s => s.ended)) { tiles.ff?.kill('SIGTERM'); tiles.slots.clear(); clearTimeout(tiles.timer); tiles.timer = null; } }
+  };
+}
+var armed = null;
 if (process.env.RTMP_PORT) {
   try {
     const { startRtmp } = await import('./rtmp.mjs');
-    const armed = () => {   // the newest live stream, not ended, whose owner named this node as its relay
+    armed = () => {   // the newest live stream, not ended, whose owner named this node as its relay (Go live → pick this computer)
       let best = null;
       for (const c of engine.chains.values()) {
         if (c === engine.main) continue;
@@ -176,9 +259,17 @@ if (process.env.RTMP_PORT) {
       }
       return best;
     };
-    const rtmp = startRtmp({ port: Number(process.env.RTMP_PORT), host: process.env.RTMP_HOST || '127.0.0.1', log: (...a) => log('[obs]', ...a),
-      onPublish: () => { const a = armed(); return a ? liveSink(a.chain, a.b.payload.stream, a.b.payload.mime) : 'Not live yet. On the site: Go live → Stream from OBS, pick this computer, then Start Streaming again.'; } });
-    globalThis.openTubeRtmp = { status: () => ({ ...rtmp.status(), armed: !!armed() }) };
+    // OBS needs this computer's stream key; with one, any address may connect (OBS on another computer, or a VPS)
+    const rtmp = startRtmp({ port: Number(process.env.RTMP_PORT), host: process.env.RTMP_HOST || '0.0.0.0', log: (...a) => log('[obs]', ...a),
+      onPublish: (key) => {
+        const m = /^(.*?)(?:-([2-4]))?$/.exec(String(key || '')), slot = Number(m[2] || 1);
+        if (m[1] !== obsCfg.key) return 'Wrong stream key. Copy it from Go live (or Devices) on the site.';
+        if (obsCfg.tile.on) { if (!ffmpegOk) return 'Tiles need ffmpeg on this computer.'; if (slot > obsCfg.tile.n) return `Only ${obsCfg.tile.n} tiles are set up.`; return tileSlot(slot, log); }
+        if (slot > 1) return 'Tiles are off on this computer: use the main stream key.';
+        if (!armed() && !(obsCfg.channel && engine.derive(obsCfg.channel)?.relays.has(signer.pub))) return 'Not linked to a channel yet. On the site: Go live → OBS → pick this computer and link it to your channel.';
+        return goLiveSink(log);
+      } });
+    globalThis.openTubeRtmp = { status: () => ({ ...rtmp.status(), armed: !!armed(), port: Number(process.env.RTMP_PORT), channel: obsCfg.channel, tiles: obsCfg.tile.on ? obsCfg.tile.n : 0, youtube: obsCfg.youtube.on && !!obsCfg.youtube.key }) };
   } catch (e) { log('OBS receiver unavailable:', e.message); }
 }
 
@@ -284,7 +375,23 @@ async function control(c) {
   ctlSeen.set(c.nonce, Date.now()); for (const [k, at] of ctlSeen) if (Date.now() - at > 5 * 60000) ctlSeen.delete(k);
   try {
     let data;
-    if (c.cmd === 'status') data = { height: engine.main.best.height, peers: peers.size, chains: engine.chains.size, host: globalThis.openTubeHost?.status() || null, obs: globalThis.openTubeRtmp?.status?.() || null };
+    if (c.cmd === 'obs' || c.cmd === 'obs.set' || c.cmd === 'obs.rotate') {   // OBS settings (the key is only ever sent to the owner)
+      const a = c.args || {};
+      if (c.cmd === 'obs.rotate') obsCfg.key = 'ot-' + crypto.randomBytes(12).toString('base64url');
+      if (c.cmd === 'obs.set') {
+        if (a.channel !== undefined) obsCfg.channel = /^[0-9a-f]{64}$/.test(a.channel) ? a.channel : null;
+        if (typeof a.title === 'string') obsCfg.title = a.title.slice(0, 140) || 'Live';
+        if (a.youtube) { if (typeof a.youtube.key === 'string') obsCfg.youtube.key = a.youtube.key.trim().slice(0, 200); if (typeof a.youtube.on === 'boolean') obsCfg.youtube.on = a.youtube.on; }
+        if (a.tile) { if (typeof a.tile.on === 'boolean') obsCfg.tile.on = a.tile.on; if ([2, 3, 4].includes(a.tile.n)) obsCfg.tile.n = a.tile.n; }
+        if (obsCfg.channel && !engine.chains.has(obsCfg.channel)) engine.requestChain(engine.openChain(obsCfg.channel));
+      }
+      saveObs();
+      const os = await import('node:os');
+      const ips = Object.values(os.networkInterfaces()).flat().filter(i => i && i.family === 'IPv4' && !i.internal).map(i => i.address);
+      data = { key: obsCfg.key, port: Number(process.env.RTMP_PORT) || null, ips, publicHost: process.env.PUBLIC_URL ? new URL(process.env.PUBLIC_URL).hostname : null, channel: obsCfg.channel, title: obsCfg.title,
+        linked: !!(obsCfg.channel && engine.derive(obsCfg.channel)?.relays.has(signer.pub)), youtube: { on: obsCfg.youtube.on, set: !!obsCfg.youtube.key }, tile: obsCfg.tile, ffmpeg: ffmpegOk, node: signer.pub, live: globalThis.openTubeRtmp?.status?.() || null };
+    }
+    else if (c.cmd === 'status') data = { height: engine.main.best.height, peers: peers.size, chains: engine.chains.size, host: globalThis.openTubeHost?.status() || null, obs: globalThis.openTubeRtmp?.status?.() || null };
     else if (!globalThis.openTubeHost) return fail('video hosting is off on this node (started with --no-host?)');
     else data = globalThis.openTubeHost.command(c.cmd, c.args || {});
     log(`[control] ${c.cmd} from the owner's console`);
@@ -394,7 +501,7 @@ const tracker = core.createTracker();
 // ---- live hub at /live: introduces live viewers to each other (members first) and relays signed segments
 const liveHub = core.createLiveHub({
   ownerOf: (c) => engine.directory.get(c)?.genesis.author || engine.chains.get(c)?.owner || null,
-  signerOf: (c, s) => engine.chains.has(c) ? engine.derive(c)?.streams.find(b => b.payload.stream === s)?.payload.relay || null : null,
+  signerOf: (c, s) => { if (!engine.chains.has(c)) return null; const b = engine.derive(c)?.streams.find(x => x.payload.stream === s); return b ? (b.payload.relay || (b.author !== engine.derive(c).owner ? b.author : null)) : null; },   // the relay named in the live block, or the linked computer that wrote it
   isJoined: (k, c) => !!engine.memberships.get(k)?.joined?.includes(c),
   ingest: { ticket: (t) => { const key = crypto.randomBytes(18).toString('base64url'); ingestTickets.set(key, { ...t, exp: Date.now() + 12 * 3600000 }); return key; } }
 });

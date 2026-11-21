@@ -365,6 +365,11 @@ function groupPermitted(chain, b) {
   return join === 'open' || allowed.has(b.author);
 }
 const kind_ = (chain) => chain.genesis.payload.kind;
+function relayAllowed(chain, b) {   // did the owner link b's author to the channel, as of b's place in the chain?
+  const anc = chain.ancestors(b.parents); let on = false, h_ = -1;
+  for (const x of anc) { const y = chain.blocks.get(x); if (y?.payload.type === 'relay' && y.payload.key === b.author && chain.isOwnerBlock(y) && y.height >= h_) { on = y.payload.on; h_ = y.height; } }
+  return on;
+}
 const rekeyPreimage = (chainId, key) => `opentube-rekey:${chainId}:${key}`;   // the NEW key signs this: it agrees to take over
 async function checkSigned(b) {
   if (!b || typeof b !== 'object' || !isHex(b.hash, 64) || typeof b.sig !== 'string' || !Number.isSafeInteger(b.nonce) || !Number.isSafeInteger(b.ts) || !Number.isSafeInteger(b.height)) return false;
@@ -445,6 +450,9 @@ function validPayload(chain, b, CFG) {
   }
   if (!owner) {
     if (kind !== 'channel' || zeroBits(b.hash) < CFG.commentDifficulty) return false;
+    // a computer the owner linked to the channel (a `relay` block) starts and ends live streams by itself (OBS)
+    if (p.type === 'live') return relayAllowed(chain, b) && isStr(p.title, LIMITS.title) && p.title.trim().length > 0 && isHex(p.stream, 64) && isStr(p.mime, 80) && p.relay === undefined;
+    if (p.type === 'liveend') return relayAllowed(chain, b) && isHex(p.stream, 64) && ['published', 'discarded', 'ended'].includes(p.outcome);
     if (p.type === 'comment') return isHex(p.target, 64) && isStr(p.text, LIMITS.comment) && p.text.trim().length > 0 && isStr(p.name ?? '', LIMITS.name) && permittedAt(chain, b);
     if (p.type === 'hide') return isHex(p.target, 64) && permittedAt(chain, b);
     if (p.type === 'vote') return isHex(p.target, 64) && [1, 0, -1].includes(p.v) && permittedAt(chain, b);
@@ -473,6 +481,7 @@ function validPayload(chain, b, CFG) {
       && validTags(p.tags) && (p.category === undefined || AD_CATEGORIES.includes(p.category));
     // Run this advertiser's ads on this channel (or, for a list, on every channel in the list).
     case 'sponsor': return isHex(p.advertiser, 64);
+    case 'relay': return kind === 'channel' && isKey(p.key) && typeof p.on === 'boolean';   // let this computer go live on the channel (OBS)
     default: return false;
   }
 }
@@ -1436,7 +1445,7 @@ function derive(c) {
   const blocks = [...c.blocks.values()].filter(b => b.hash !== c.id).sort((a, b) => a.height - b.height || a.ts - b.ts || (a.hash < b.hash ? -1 : 1));
   const byOwner = new Set(blocks.filter(b => c.isOwnerBlock(b)).map(b => b.hash));   // owner blocks, across key changes
   const profile = { ...c.genesis.payload };
-  const allowed = new Set(), revokes = [];
+  const allowed = new Set(), revokes = [], relays = new Set();   // relays: computers allowed to go live on the channel
   const videoPolicy = new Map();  // video block hash -> comment policy overriding the channel default
   for (const b of blocks) if (byOwner.has(b.hash)) {
     const p = b.payload;
@@ -1444,6 +1453,7 @@ function derive(c) {
     if (p.type === 'settings') { if (p.comments === 'default') videoPolicy.delete(p.target); else videoPolicy.set(p.target, p.comments); }
     if (p.type === 'profile') for (const k of ['name', 'about', 'avatar', 'comments', 'join', 'links', 'location', 'place']) if (p[k] !== undefined) profile[k] = p[k];
     if (p.type === 'allow') { allowed.add(p.key); for (let i = revokes.length - 1; i >= 0; i--) if (revokes[i].key === p.key) revokes.splice(i, 1); }   // allowing again unblocks
+    if (p.type === 'relay') { if (p.on) relays.add(p.key); else relays.delete(p.key); }
     if (p.type === 'revoke') { allowed.delete(p.key); revokes.push({ key: p.key, before: c.ancestors([b.hash]) }); }
   }
   // A revoke hides everything that user writes except what the owner had already seen when revoking.
@@ -1456,6 +1466,7 @@ function derive(c) {
   const permitted = (b) => {
     if (byOwner.has(b.hash)) return true;
     if (isGroup || c.genesis.payload.kind === 'square' || c.genesis.payload.kind === 'circle') return !revokes.some(r => r.key === b.author && !r.before.has(b.hash));   // validity was checked on insert
+    if (b.payload.type === 'live' || b.payload.type === 'liveend') return true;   // by a linked computer (checked on insert)
     if (revokes.some(r => r.key === b.author && !r.before.has(b.hash))) return false;
     if (b.payload.type === 'hide' || b.payload.type === 'vote') return true;  // own-comment hides and votes need no comment permission
     return allows(b.author, b.payload.target);
@@ -1468,7 +1479,7 @@ function derive(c) {
   }
   const live = visible.filter(b => !hidden.has(b.hash));
   return (c._derived = {
-    version: c.version, id: c.id, kind: c.genesis.payload.kind, owner, byOwner, profile, allowed, revoked: new Set(revokes.map(r => r.key)), hidden,
+    version: c.version, id: c.id, kind: c.genesis.payload.kind, owner, byOwner, relays, profile, allowed, revoked: new Set(revokes.map(r => r.key)), hidden,
     videos: live.filter(b => b.payload.type === 'video' && byOwner.has(b.hash)).reverse(),
     posts: live.filter(b => b.payload.type === 'post' && (isGroup || c.genesis.payload.kind === 'square' || byOwner.has(b.hash))).reverse(),
     sealed: live.filter(b => b.payload.type === 'sealed').reverse(),
@@ -1477,11 +1488,11 @@ function derive(c) {
     sponsors: live.filter(b => b.payload.type === 'sponsor' && byOwner.has(b.hash)).reverse(),
     ...(() => {   // live streams: started, not yet ended (and less than a day old)
       const ends = new Map(), recordings = new Map();
-      for (const b of live) if (byOwner.has(b.hash)) {
+      for (const b of live) if (byOwner.has(b.hash) || (b.payload.type === 'liveend' && relays.has(b.author))) {
         if (b.payload.type === 'liveend') ends.set(b.payload.stream, b.payload.outcome);
         if (b.payload.type === 'video' && b.payload.stream) recordings.set(b.payload.stream, b);
       }
-      const streams = live.filter(b => b.payload.type === 'live' && byOwner.has(b.hash)).reverse();
+      const streams = live.filter(b => b.payload.type === 'live' && (byOwner.has(b.hash) || relays.has(b.author))).reverse();
       return { streams, liveEnds: ends, recordings, liveNow: streams.filter(b => !ends.has(b.payload.stream) && Date.now() - b.ts < 24 * 3600000) };
     })(),
     commentsFor: (target) => visible.filter(b => b.payload.type === 'comment' && b.payload.target === target),
@@ -3041,7 +3052,7 @@ async function finishLive(chainId, stream, publish, fields = {}) {
 
 // ---- watching, relaying and (for members) saving
 const viewing = new Map();   // stream -> session
-function liveSigner(chainId, lb) { return lb.payload.relay ? [derive(chainId).owner, lb.payload.relay] : [derive(chainId).owner]; }
+function liveSigner(chainId, lb) { return [...new Set([derive(chainId).owner, lb.payload.relay, lb.author].filter(Boolean))]; }   // the channel, or the computer streaming for it
 async function joinLive(chainId, lb, ui = null) {
   const stream = lb.payload.stream;
   let sess = viewing.get(stream);
@@ -4765,7 +4776,7 @@ function liveStudio(chainId) {
   function setup() {
     const head = h('h3', { style: 'margin-top:0' }, '🔴 Go live');
     if (!LIVE_MIME) return [head, h('p', { class: 'sub' }, 'This browser can’t record video for streaming. Use Chrome, Edge or Firefox on a computer.')];
-    const meshNote = liveNet.available() ? null : h('p', { class: 'sub' }, 'No home node here: the stream goes out over the peer-to-peer mesh only (camera streams; OBS needs one of your computers running OpenTube).');
+    const meshNote = liveNet.available() ? '' : h('p', { class: 'sub' }, 'No home node here: the stream goes out over the peer-to-peer mesh only (camera streams; OBS needs one of your computers running OpenTube).');
     if (!canHost()) return [head, folderPrompt('Going live (the recording is kept in your video folder)')];
     const source = h('select', {}, h('option', { value: '' }, 'Choose a camera…'));
     const mic = h('select', {}, h('option', { value: '' }, 'No microphone'));
@@ -4823,8 +4834,8 @@ function liveStudio(chainId) {
       try { await startNodeObsLive(chainId, nodeTitle.value.trim(), nodeSel.value); stopPreview(); ui(); } catch (e) { nodeStatus.textContent = e.message; nodeGo.disabled = false; }
     } }, 'Go live with OBS');
     const viaComputer = h('div', { class: 'panel', style: 'margin:0 0 14px;background:var(--panel-2)' }, h('h4', { style: 'margin:0 0 6px' }, 'Stream from OBS (Start Streaming)'),
-      comps.length ? [h('p', { class: 'sub', style: 'margin-top:0' }, 'OBS sends to OpenTube running on your computer, which relays it here. Pick the computer OBS runs on:'),
-        h('div', { class: 'split', style: 'gap:10px' }, nodeSel, nodeTitle), h('div', { class: 'row', style: 'margin-top:8px' }, nodeGo, nodeStatus)]
+      comps.length ? [h('p', { class: 'sub', style: 'margin-top:0' }, 'OBS sends to OpenTube running on one of your computers (yours at home, or a server), which puts it live on this channel. Pick the computer:'),
+        (() => { const sel = h('select', { style: 'width:auto' }, comps.map(n => h('option', { value: n.node }, n.info?.name || n.grant.label || 'computer'))); const slot = h('div'); const show = () => slot.replaceChildren(obsPanel(comps.find(x => x.node === sel.value), { chainId })); sel.onchange = show; show(); return h('div', {}, sel, slot); })()]
         : h('p', { class: 'sub', style: 'margin:0' }, 'Run OpenTube on the computer where OBS is (My node → Your computers → Run OpenTube on a computer). It then appears here, and OBS’s normal Start Streaming button goes live on your channel.'));
     const obs = diag.home?.ingest ? h('details', { style: 'margin-top:14px' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Or send the stream from OBS with a stream key'),
       h('p', { class: 'sub' }, 'OBS sends the video straight to this site’s server, which relays it. Viewers watch a few seconds behind. Your browser records it, so keep this page open.'),
@@ -6213,6 +6224,41 @@ async function nodeCtl(n, cmd, args = {}) {
   return { data: r.data, via: direct() ? 'direct' : 'mesh' };
 }
 const openManagers = new Map();   // node key -> its open file manager (kept while the page redraws)
+// OBS on one of your computers: where to send it (server and stream key), which channel it goes live on, YouTube
+// forwarding and tiles. Settings are signed commands to that computer (nodeCtl); the key is shown only to you.
+function obsPanel(n, { chainId = null } = {}) {
+  const box = h('div', { class: 'panel', style: 'margin-top:8px;background:var(--panel-2)' }), st = h('span', { class: 'sub' });
+  let data = null;
+  const run = async (cmd, args) => { st.textContent = 'asking the computer…'; try { const r = await nodeCtl(n, cmd, args); data = r.data; st.textContent = ''; draw(); } catch (e) { st.textContent = '✗ ' + e.message; draw(); } };
+  const mask = (v) => h('span', { class: 'row', style: 'gap:6px;flex:1' }, (() => { const i = h('input', { type: 'password', readOnly: true, value: v, class: 'mono', style: 'flex:1' }); return [i, h('button', { class: 'small', type: 'button', onclick: (e) => { i.type = i.type === 'password' ? 'text' : 'password'; e.target.textContent = i.type === 'password' ? 'Show' : 'Hide'; } }, 'Show'), h('button', { class: 'small', type: 'button', onclick: () => copyText(v, 'Stream key') }, 'Copy')]; })());
+  const draw = () => {
+    if (!data) return box.replaceChildren(h('b', {}, `OBS on ${n.info?.name || 'this computer'}`), ' ', st);
+    if (!data.port) return box.replaceChildren(h('b', {}, 'OBS'), h('p', { class: 'sub' }, 'This computer isn’t receiving OBS (it was started with --no-obs). Start it again without that option.'));
+    const hosts = [...new Set([data.publicHost, ...data.ips, 'localhost'].filter(Boolean))];
+    const servers = hosts.map(hh => `rtmp://${hh}${data.port === 1935 ? '' : ':' + data.port}/live`);
+    const chans = myChannels(), ch = h('select', { style: 'width:auto' }, h('option', { value: '' }, 'Choose the channel it goes live on…'), chans.map(id => h('option', { value: id, selected: (data.channel || chainId) === id }, channelTitle(id))));
+    const title = h('input', { type: 'text', value: data.title || 'Live', maxLength: 140, style: 'flex:1' });
+    const ytKey = h('input', { type: 'password', placeholder: data.youtube.set ? '•••••••• (saved; type to replace)' : 'YouTube stream key', style: 'flex:1' }), ytOn = h('input', { type: 'checkbox', checked: data.youtube.on });
+    const tileSel = h('select', { style: 'width:auto' }, [[0, 'Off: one stream'], [2, '2 streams side by side'], [3, '3 streams (2×2)'], [4, '4 streams (2×2)']].map(([v, l]) => h('option', { value: v, selected: (data.tile.on ? data.tile.n : 0) === v }, l)));
+    const selected = ch.value, linked = selected && derive(selected)?.relays?.has(n.node);
+    const row = (label, ...v) => h('div', { class: 'row', style: 'gap:8px;margin-top:6px' }, h('span', { style: 'min-width:120px' }, label), ...v);
+    box.replaceChildren(h('div', { class: 'row', style: 'justify-content:space-between' }, h('b', {}, `OBS on ${n.info?.name || 'this computer'}`), st),
+      h('p', { class: 'sub', style: 'margin:4px 0' }, 'In OBS: Settings → Stream → Service “Custom…”, then paste the server and the stream key. Use an H.264 encoder, AAC audio, keyframe interval 2 s. Start Streaming goes live on the channel below by itself.'),
+      row('Server', h('div', { style: 'flex:1' }, servers.map(u => h('div', { class: 'row', style: 'gap:6px' }, h('code', { class: 'mono', style: 'flex:1' }, u), h('button', { class: 'small', onclick: () => copyText(u, 'Server') }, 'Copy'))))),
+      h('div', { class: 'sub', style: 'margin-left:128px' }, 'Use the address OBS can reach: localhost if OBS runs on that computer, its network address otherwise (open port ' + data.port + ' on its firewall if needed).'),
+      row('Stream key', mask(data.key), h('button', { class: 'small', onclick: () => confirm('Make a new stream key? OBS will need the new one.') && run('obs.rotate') }, 'New key')),
+      row('Channel', ch, linked ? h('span', { class: 'badge ok' }, 'linked') : selected ? h('button', { class: 'small primary', onclick: async () => { await append(selected, { type: 'relay', key: n.node, on: true }); toast('Linked: this computer can go live on ' + channelTitle(selected)); await run('obs.set', { channel: selected, title: title.value }); } }, 'Link this computer to it') : null),
+      row('Title', title, h('button', { class: 'small', onclick: () => run('obs.set', { channel: ch.value || null, title: title.value }) }, 'Save')),
+      row('YouTube', ytOn, h('span', {}, 'Also send it to YouTube'), ytKey, h('button', { class: 'small', onclick: () => run('obs.set', { youtube: { on: ytOn.checked, ...(ytKey.value.trim() ? { key: ytKey.value.trim() } : {}) } }) }, 'Save')),
+      data.ffmpeg ? null : h('div', { class: 'sub', style: 'margin-left:128px' }, 'YouTube forwarding and tiles need ffmpeg on that computer (install it, then restart OpenTube there).'),
+      row('Tiles', tileSel, h('button', { class: 'small', onclick: () => { const v = Number(tileSel.value); run('obs.set', { tile: { on: v > 1, ...(v > 1 ? { n: v } : {}) } }); } }, 'Save')),
+      data.tile.on ? h('div', { class: 'sub', style: 'margin-left:128px' }, `Group stream: each person streams to the same server with their own key: `, [...Array(data.tile.n)].map((_, i) => h('code', { class: 'mono', style: 'margin-right:8px' }, i ? `…key-${i + 1}` : 'the key')), `. The picture is combined into tiles and goes live as one stream.`) : null,
+      data.live?.live ? h('div', { style: 'margin-top:6px' }, h('span', { class: 'badge live' }, 'LIVE'), ' receiving from OBS') : null);
+    ch.onchange = draw;
+  };
+  draw(); run('obs');
+  return box;
+}
 function fileManager(n) {
   const box = h('div', { class: 'panel', style: 'margin-top:8px' }), status = h('span', { class: 'sub' });
   let data = null, via = '';
@@ -6278,11 +6324,12 @@ function nodeRow(n) {
     h('div', { class: 'row', style: 'justify-content:space-between' },
       h('div', {}, h('span', { class: 'dot' + (online ? ' on' : '') }), ' ', h('b', {}, i.name || n.grant.label || 'computer'), h('span', { class: 'sub' }, ` · ${n.roles.map(r => ({ node: 'full node', host: 'host', obs: 'OBS receiver' })[r] || r).join(' · ')} · ${online ? 'online' : 'last seen ' + ago(n.at)}`)),
       h('div', { class: 'row' }, h('button', { class: 'small', onclick: check }, 'Test connection'),
+        n.roles.includes('obs') ? h('button', { class: 'small', onclick: (e) => { const row = e.target.closest('.item'), k = 'obs:' + n.node; if (openManagers.has(k)) { openManagers.get(k).remove(); openManagers.delete(k); return; } const p_ = obsPanel(n); openManagers.set(k, p_); row.append(p_); } }, '🎥 OBS & streaming') : null,
         n.roles.includes('host') ? h('button', { class: 'small', onclick: (e) => { const row = e.target.closest('.item'); if (openManagers.has(n.node)) { openManagers.get(n.node).remove(); openManagers.delete(n.node); return; } const fm = fileManager(n); openManagers.set(n.node, fm); row.append(fm); } }, openManagers.has(n.node) ? 'Close files' : 'Manage files') : null)),
     h('div', { class: 'sub' }, [i.os, i.node && 'Node ' + i.node, i.height != null && `main #${i.height}`, i.peers != null && `${i.peers} peer(s)`, i.chains != null && `${i.chains} chains`].filter(Boolean).join(' · ')),
     i.host ? h('div', { class: 'sub' }, `Hosting ${i.host.hosting ?? 0} videos (${fmtBytes(i.host.hostedBytes || 0)}) for ${i.host.channels ?? 0} joined channels in ${i.host.videoDir || 'its folder'}` + (i.host.downloading ? ` · downloading ${i.host.downloading}` : '') + (i.host.stale ? ' · host not reporting' : '')) : null,
     i.obs ? h('div', { class: 'sub' }, i.obs.live ? `OBS: streaming now (${fmtBytes(i.obs.bytes || 0)})` : i.obs.armed ? 'OBS: ready, waiting for Start Streaming' : `OBS: listening on rtmp://localhost:${i.obs.port}/live`) : null,
-    h('div', { class: 'sub mono' }, n.addrs.join('  ')), test, openManagers.get(n.node) || null);
+    h('div', { class: 'sub mono' }, n.addrs.join('  ')), test, openManagers.get('obs:' + n.node) || null, openManagers.get(n.node) || null);
 }
 function folderPanel() {
   const chans = [...folder.channels.entries()].map(([id, ch]) => {
