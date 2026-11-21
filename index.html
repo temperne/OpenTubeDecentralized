@@ -137,6 +137,7 @@
     <a href="#/explore" data-nav="explore">Explore</a>
     <a href="#/square" data-nav="square">Posts</a>
     <a href="#/market" data-nav="market">Market</a>
+    <a href="#/exchange" data-nav="exchange">Exchange</a>
     <a href="#/orgs" data-nav="orgs">Orgs</a>
     <a href="#/you" data-nav="you" id="nav-you">👤 You</a>
     <a href="#/me" data-nav="me" title="Your computers, video folder and the network">Devices</a>
@@ -375,7 +376,7 @@ async function checkSigned(b) {
 // Tags describe a video or an ad ("cooking", "pc-games"); ads also name what kind of product they're for. Viewers can say
 // they're not interested in a tag or category; that choice stays on their device and only filters what they see.
 const TAG_RE = /^[a-z0-9][a-z0-9-]{0,23}$/;
-const AD_CATEGORIES = ['apparel', 'autos', 'beauty', 'books', 'education', 'electronics', 'entertainment', 'finance', 'food', 'games', 'health', 'home', 'housing', 'jobs', 'pets', 'services', 'software', 'sports', 'travel', 'other'];
+const AD_CATEGORIES = ['apparel', 'autos', 'beauty', 'books', 'currency', 'education', 'electronics', 'entertainment', 'finance', 'food', 'games', 'health', 'home', 'housing', 'jobs', 'pets', 'services', 'software', 'sports', 'travel', 'other'];
 // Media attached to a public post or listing: a torrent of the file (plus a small preview). Media shared with friends
 // travels encrypted, and its reference (with the key) sits inside the sealed post instead.
 const mediaRefShape = (m) => !!m && typeof m === 'object' && isHex(m.ih, 40) && isStr(m.name, 200) && isStr(m.mime, 80) && Number.isSafeInteger(m.size) && m.size > 0 && (m.thumb === undefined || (isImg(m.thumb) && m.thumb.length <= 16000));
@@ -632,6 +633,18 @@ const retirePreimage = (old, key) => `opentube-retire:${old}:${key}`;           
 // ---- links: every link in a post can be voted on (paid like a like: up pays whoever shared it, down is burned), and
 // the votes add up per DOMAIN across the network, so a site gets a reputation.
 const domainOf = (url) => { try { const u = new URL(url); return /^https?:$/.test(u.protocol) ? u.hostname.toLowerCase().replace(/^www\./, '') : null; } catch { return null; } };
+// ---- getting value in and out: HASH-LOCKED payments (HTLCs) make atomic swaps with other currencies possible.
+// `htlc` locks coins to a recipient under sha256(secret) until a deadline; the recipient takes them with `unlock` by
+// revealing the secret before then, otherwise the sender gets them back with `refund`. A Lightning invoice's payment
+// hash is such a lock: when the buyer pays the invoice, their wallet learns the secret (the preimage) and claims the
+// coins with it, so the seller is paid in bitcoin exactly when the buyer gets the coins. Any chain with hash-locked
+// contracts works the same way. EXCHANGE offers advertise rates (buy/sell coins for BTC, ETH, stablecoins, cash...).
+const XCHG = { assets: ['BTC', 'ETH', 'USDC', 'USDT', 'XMR', 'LTC', 'USD', 'EUR', 'GBP', 'other'], methods: ['lightning', 'bitcoin', 'ethereum', 'stablecoin', 'paypal', 'bank', 'cash', 'other'], maxDays: 30 };
+const htlcShape = (x) => !!x && isKey(x.to) && amtOk(x.amt) && isHex(x.hash, 64) && Number.isSafeInteger(x.expires) && isStr(x.note ?? '', 200);
+const offerShape = (x) => !!x && ['buy', 'sell'].includes(x.side) && XCHG.assets.includes(x.asset) && amtOk(x.amt) && typeof x.rate === 'string' && /^\d{1,12}(\.\d{1,12})?$/.test(x.rate) && Number(x.rate) > 0
+  && (x.min === undefined || amtOk(x.min)) && Array.isArray(x.methods) && x.methods.length >= 1 && x.methods.length <= 6 && x.methods.every(m => XCHG.methods.includes(m)) && isStr(x.note ?? '', 500) && isStr(x.contact ?? '', 200);
+const unlockHash = new WeakMap();   // unlock tx -> sha256 of its preimage bytes (computed in checkTx)
+async function noteUnlock(t) { unlockHash.set(t, [...new Uint8Array(await crypto.subtle.digest('SHA-256', Uint8Array.from(t.unlock.preimage.match(/../g), x => parseInt(x, 16))))].map(b => b.toString(16).padStart(2, '0')).join('')); }
 const amtOk = (a) => Number.isSafeInteger(a) && a > 0 && a <= COIN.maxAmt;
 // ---- paying per piece. Whoever downloads a video pays the peer that sent each piece, at the network's piece price,
 // and that peer passes PIECE.creatorShare of it to the video's creator. It happens on the BitTorrent connection itself
@@ -680,6 +693,8 @@ class Ledger {
     this.receipts = new Set(src?.receipts); this.rcptUse = new Map(src?.rcptUse); this.poolFees = new Map(src?.poolFees);
     this.settled = new Set(src?.settled); this.earned = new Map([...(src?.earned || [])].map(([k, v]) => [k, [...v]])); this.clock = src?.clock || 0;   // viewer -> first time slot after the last ad they were paid for
     this.names = new Map(src?.names); this.nameOf = new Map(src?.nameOf);   // '@cooking' -> { chain, key }; chain -> '@cooking'
+    this.htlcs = new Map([...(src?.htlcs || [])].map(([k, v]) => [k, { ...v }]));   // lock id -> { from, to, amt, hash, expires, state }
+    this.offers = new Map([...(src?.offers || [])].map(([k, v]) => [k, { ...v }]));   // exchange offer id -> offer
     this.domains = new Map([...(src?.domains || [])].map(([k, v]) => [k, { ...v }]));   // domain -> { up, down }
     this.linkVotes = new Set(src?.linkVotes);   // 'voter|url' (one vote per link per person)
     this.appealDays = new Map(src?.appealDays);   // arbitration body key -> its appeal window in days (default ORG.appealDays)
@@ -752,6 +767,24 @@ class Ledger {
     }
     if (t.court) return this.superior.has(t.from) ? 'this court already has a court above it' : null;
     if (t.courtcfg) return null;
+    if (t.htlc) {
+      if (t.htlc.expires < t.ts + 10 * 60000 || t.htlc.expires > t.ts + XCHG.maxDays * 86400000) return 'the deadline must be between 10 minutes and 30 days away';
+      if (this.resolve(t.htlc.to) === this.resolve(t.from)) return 'that’s yourself';
+      return this.balance(t.from) < t.htlc.amt ? 'not enough coins' : null;
+    }
+    if (t.unlock || t.refund) {
+      const H = this.htlcs.get((t.unlock || t.refund).id);
+      if (!H || H.state !== 'locked') return 'no locked payment with that id';
+      if (t.unlock) {
+        if (this.resolve(H.to) !== this.resolve(t.from)) return 'only the recipient can unlock it';
+        if (t.ts >= H.expires) return 'too late: the deadline has passed';
+        return unlockHash.get(t) === H.hash ? null : 'that isn’t the secret for this lock';
+      }
+      if (this.resolve(H.from) !== this.resolve(t.from)) return 'only the sender can take it back';
+      return t.ts >= H.expires ? null : 'it can be taken back only after the deadline';
+    }
+    if (t.offer) return null;
+    if (t.endoffer) { const O = this.offers.get(t.endoffer.id); return O && O.state === 'open' && this.resolve(O.from) === this.resolve(t.from) ? null : 'not your open offer'; }
     if (t.linkvote) {
       if (this.linkVotes.has(t.from + '|' + t.linkvote.url)) return 'you already voted on that link';
       if (t.linkvote.amt < Math.floor(Math.ceil(this.prices.like) * COIN.slack)) return 'the voting price went up; try again';
@@ -873,6 +906,14 @@ class Ledger {
       this.add(t.from, -x.amt); const cut = this.feeCut(t, x.amt);
       if (x.v > 0 && x.to && this.resolve(x.to) !== this.resolve(t.from)) this.add(x.to, x.amt - cut); else this.burned += x.amt - cut;
       if (x.v > 0) d.up++; else d.down++; this.linkVotes.add(t.from + '|' + x.url); this.use.like++;
+    } else if (t.htlc) {
+      this.add(t.from, -t.htlc.amt); this.htlcs.set(t.hash, { ...t.htlc, from: t.from, ts: t.ts, state: 'locked' });
+    } else if (t.unlock) {
+      const H = this.htlcs.get(t.unlock.id); this.add(H.to, H.amt); H.state = 'unlocked'; H.preimage = t.unlock.preimage; H.at = t.ts;
+    } else if (t.refund) {
+      const H = this.htlcs.get(t.refund.id); this.add(H.from, H.amt); H.state = 'refunded'; H.at = t.ts;
+    } else if (t.offer) { this.offers.set(t.hash, { ...t.offer, from: t.from, ts: t.ts, state: 'open' });
+    } else if (t.endoffer) { this.offers.get(t.endoffer.id).state = 'closed';
     } else if (t.courtcfg) { this.appealDays.set(t.from, t.courtcfg.appealDays);
     } else if (t.msgkey) {
       const cur = (this.msgkeys.get(t.from) || []).filter(k => k !== t.msgkey.key);
@@ -985,6 +1026,7 @@ class Ledger {
   supply() {   // coins in wallets, plus those held in ad-view certificates and in the high bids of open auctions
     let s = 0; for (const v of this.bal.values()) s += v;
     for (const c of this.certs.values()) s += c.amt;
+    for (const H of this.htlcs.values()) if (H.state === 'locked') s += H.amt;
     for (const L of this.listings.values()) { if (L.state === 'open' && L.high) s += L.high.amt; if (['held', 'disputed', 'ruled'].includes(L.escrow?.state)) s += L.escrow.amt; }
     return s;
   }
@@ -1044,7 +1086,7 @@ function txShape(t) {
     if (!Array.isArray(outs) || !Array.isArray(burns) || outs.length > 100 || burns.length > 20 || !(outs.length + burns.length)) return false;
     return outs.every(o => o && isKey(o.to) && isKey(o.token) && amtOk(o.amt) && o.to !== t.from) && burns.every(b => b && isKey(b.token) && b.token !== t.from && amtOk(b.amt));
   }
-  const acts = ['pay', 'starter', 'post', 'view', 'vote', 'host', 'claim', 'name', 'serve', 'tabs', 'redeem', 'certs', 'list', 'unlist', 'buy', 'bid', 'bind', 'retire', 'release', 'dispute', 'rule', 'appeal', 'court', 'judge', 'msgkey', 'courtcfg', 'linkvote'].filter(k => t[k] !== undefined);
+  const acts = ['pay', 'starter', 'post', 'view', 'vote', 'host', 'claim', 'name', 'serve', 'tabs', 'redeem', 'certs', 'list', 'unlist', 'buy', 'bid', 'bind', 'retire', 'release', 'dispute', 'rule', 'appeal', 'court', 'judge', 'msgkey', 'courtcfg', 'linkvote', 'htlc', 'unlock', 'refund', 'offer', 'endoffer'].filter(k => t[k] !== undefined);
   if (acts.length !== 1 || t.outs !== undefined || t.burns !== undefined) return false;
   const x = t[acts[0]];
   switch (acts[0]) {
@@ -1060,6 +1102,10 @@ function txShape(t) {
     case 'redeem': return !!x && Array.isArray(x.ids) && x.ids.length >= 1 && x.ids.length <= PIECE.maxCerts && x.ids.every(i => isHex(i, 64)) && new Set(x.ids).size === x.ids.length;
     case 'certs': return !!x && isKey(x.to) && x.to !== t.from && Array.isArray(x.ids) && x.ids.length >= 1 && x.ids.length <= PIECE.maxCerts && x.ids.every(i => isHex(i, 64)) && new Set(x.ids).size === x.ids.length;
     case 'list': return listingShape(x);
+    case 'htlc': return htlcShape(x);
+    case 'unlock': return !!x && isHex(x.id, 64) && isHex(x.preimage, 64);   // the secret: 32 bytes, as hex (a Lightning preimage)
+    case 'refund': case 'endoffer': return !!x && isHex(x.id, 64);
+    case 'offer': return offerShape(x);
     case 'linkvote': return !!x && isStr(x.url, 300) && domainOf(x.url) === x.domain && [1, -1].includes(x.v) && (x.to === undefined || isKey(x.to)) && amtOk(x.amt);
     case 'courtcfg': return !!x && Number.isSafeInteger(x.appealDays) && x.appealDays >= 0 && x.appealDays <= 365;
     case 'msgkey': return !!x && typeof x.key === 'string' && /^[A-Za-z0-9_-]{80,100}$/.test(x.key) && typeof x.on === 'boolean';
@@ -1087,6 +1133,7 @@ async function checkTx(t) {
   if (t.bind && !(await verify(t.bind.key, bindPreimage(t.from, t.bind.key), t.bind.sig))) return false;
   if (t.retire && !(await verify(t.retire.to, retirePreimage(t.from, t.retire.to), t.retire.sig))) return false;
   if (t.court && !(await verify(t.court.parent, courtPreimage(t.from, t.court.parent), t.court.sig))) return false;
+  if (t.unlock) await noteUnlock(t);
   if (t.serve) {   // every receipt signed by its receiver; a grant (if any) signed by the owner who gets paid
     for (const r of t.serve.receipts) if (!(await verify(r.by, receiptPreimage(r), r.sig))) return false;
     if (t.serve.grant) { if (!(await verify(t.serve.grant.user, nodeGrantPreimage(t.serve.grant), t.serve.grant.sig))) return false; serveGrants.set(t, t.serve.grant.user); }
@@ -1622,6 +1669,7 @@ async function createEngine(o) {
     if (!txShape(body)) throw new Error('invalid transaction');
     if (body.name && !nameAllowed(body)) throw new Error('invalid name');
     if (body.claim && !(await checkClaim(body))) throw new Error('claim does not verify');
+    if (body.unlock) await noteUnlock(body);
     const why = st.check(body); if (why) throw new Error(why);
     body.nonce = await o.mine(body, body.starter ? COIN.starterBits : COIN.txBits, onProgress).promise;
     body.hash = await hashBlock(body); body.sig = await signer.sign(body.hash);
@@ -1931,7 +1979,7 @@ async function createEngine(o) {
   });
 }
 
-globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, mediaRefShape, placeShape, domainOf, MAIL, ORG, orgRoles, orderPreimage, courtPreimage, bindPreimage, retirePreimage, rekeyPreimage, SQUARE, SEAL, monthKey, squareMonths, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
+globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, XCHG, noteUnlock, mediaRefShape, placeShape, domainOf, MAIL, ORG, orgRoles, orderPreimage, courtPreimage, bindPreimage, retirePreimage, rekeyPreimage, SQUARE, SEAL, monthKey, squareMonths, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
 })();
 </script>
 
@@ -2084,7 +2132,7 @@ function setMuted(kind, value, on) {
 }
 const tagLink = (t) => h('a', { class: 'tag', href: `#/tag/${t}` }, '#' + t);
 const CAT_NAMES = { apparel: 'Clothing & apparel', autos: 'Cars & vehicles', beauty: 'Beauty', books: 'Books', education: 'Education', electronics: 'Electronics', entertainment: 'Entertainment',
-  finance: 'Finance', food: 'Food & drink', games: 'Games', health: 'Health', home: 'Home & garden', housing: 'Housing & real estate', jobs: 'Jobs', pets: 'Pets', services: 'Services', software: 'Software & apps', sports: 'Sports', travel: 'Travel', other: 'Other' };
+  finance: 'Finance', currency: 'Currency exchange', food: 'Food & drink', games: 'Games', health: 'Health', home: 'Home & garden', housing: 'Housing & real estate', jobs: 'Jobs', pets: 'Pets', services: 'Services', software: 'Software & apps', sports: 'Sports', travel: 'Travel', other: 'Other' };
 const subs = Object.assign({}, await kv.get('subs'));            // chainId -> 'sub' | 'join'
 const saveSubs = () => kv.set('subs', subs);
 
@@ -3352,6 +3400,7 @@ function parseRoute() {
   if (p[0] === 'explore') return { name: 'explore', tab: p[1] || 'trending' };
   if (p[0] === 'me') return { name: 'me' };
   if (p[0] === 'friends') return { name: 'friends' };
+  if (p[0] === 'exchange') return { name: 'exchange', tab: p[1] || 'book' };
   if (p[0] === 'you') return { name: 'you', tab: p[1] || 'profile' };
   if (p[0] === 'u' && isKey(p[1])) return { name: 'user', key: p[1] };
   if (p[0] === 'messages') return { name: 'messages', with: isKey(p[1]) ? p[1] : null };
@@ -4065,6 +4114,7 @@ async function readInbox() {
   }
   return out;
 }
+let msgDraft = '';
 views.messages = { render() {
   const box = h('div', { style: 'max-width:820px' });
   (async () => {
@@ -4076,11 +4126,13 @@ views.messages = { render() {
     const sel = route.with && E.ledger.resolve(route.with);
     const to = h('input', { type: 'text', placeholder: 'To: a user ID, or @channel (its owner)', value: sel || '', style: 'flex:1' });
     const text = h('textarea', { placeholder: 'Message (only they can read it)', maxLength: 4000 }), st = h('span', { class: 'sub' });
+    try { const dr = sessionStorage.getItem('opentube-draft'); if (dr) { msgDraft = dr; sessionStorage.removeItem('opentube-draft'); } } catch {}
+    text.value = msgDraft; text.oninput = () => { msgDraft = text.value; };   // the draft survives redraws until it's sent
     const send = h('button', { class: 'primary', onclick: async () => {
       let k = to.value.trim(); if (k.startsWith('@')) { const ch = resolveName(k.toLowerCase()); k = ch ? E.ledger.resolve(derive(ch)?.owner || genesisFor(ch).author) : ''; }
       if (!isKey(k)) return toast('Paste their user ID or a channel @name'); if (!text.value.trim()) return;
       send.disabled = true; st.textContent = 'Encrypting and doing anti-spam work…';
-      try { await sendMessage(k, text.value.trim()); text.value = ''; st.textContent = 'Sent.'; location.hash = '#/messages/' + k; render(true); } catch (e) { st.textContent = 'Failed: ' + e.message; } finally { send.disabled = false; }
+      try { await sendMessage(k, text.value.trim()); text.value = ''; msgDraft = ''; st.textContent = 'Sent.'; location.hash = '#/messages/' + k; render(true); } catch (e) { st.textContent = 'Failed: ' + e.message; } finally { send.disabled = false; }
     } }, 'Send');
     const keys = await myMsgKeys(), live = E.ledger.msgkeys.get(me.pub) || [];
     const keyPanel = h('details', { class: 'panel' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Messaging keys'),
@@ -4459,6 +4511,110 @@ function mediaTab() {
         h('button', { class: 'small', onclick: (e) => { const d = e.target.closest('.panel'); if (d.querySelector('.osm')) return; d.append(placePicker(it.place || null, (pl) => { it.place = pl; saveLib(); })); } }, '📍 Place'),
         h('button', { class: 'small', onclick: async () => { if (!confirm(`Delete “${it.name}” from your library${it.shared?.length ? ' (and stop sharing it)' : ''}?`)) return; await removeMedia(it); render(true); } }, 'Delete'))))) : h('div', { class: 'empty' }, 'No pictures or videos yet.'));
 }
+// ---------------------------------------------------------------- exchange (core: XCHG, htlc / unlock / refund)
+const { XCHG } = globalThis.OpenTubeCore;
+// Lightning invoices (BOLT11): read the payment hash and the amount, so a lock can use the invoice's hash.
+function decodeBolt11(inv) {
+  const s_ = inv.trim().toLowerCase().replace(/^lightning:/, ''), sep = s_.lastIndexOf('1');
+  if (!s_.startsWith('ln') || sep < 4) throw new Error('not a Lightning invoice');
+  const CH = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l', words = [...s_.slice(sep + 1)].map(c => { const v = CH.indexOf(c); if (v < 0) throw new Error('not a Lightning invoice'); return v; }).slice(0, -6);
+  const hrp = s_.slice(0, sep), m = /^ln(bc|tb|bcrt|tbs)(\d+)?([munp])?$/.exec(hrp);
+  let sats = null; if (m?.[2]) sats = Number(m[2]) * ({ m: 1e5, u: 100, n: 0.1, p: 1e-4 }[m[3]] ?? 1e8);
+  const toBytes = (ws) => { let acc = 0, bits = 0; const out = []; for (const w of ws) { acc = (acc << 5) | w; bits += 5; while (bits >= 8) { bits -= 8; out.push((acc >> bits) & 255); } } return out; };
+  let i = 7, hash = null, desc = '', expiry = 3600;   // skip the 35-bit timestamp
+  const ts = words.slice(0, 7).reduce((a, w) => a * 32 + w, 0);
+  while (i + 3 <= words.length) {
+    const type = words[i], len = words[i + 1] * 32 + words[i + 2], data = words.slice(i + 3, i + 3 + len); i += 3 + len;
+    if (type === 1 && len === 52) hash = toBytes(data).slice(0, 32).map(b => b.toString(16).padStart(2, '0')).join('');
+    if (type === 13) desc = new TextDecoder().decode(new Uint8Array(toBytes(data)));
+    if (type === 6) expiry = data.reduce((a, w) => a * 32 + w, 0);
+  }
+  if (!hash) throw new Error('the invoice has no payment hash');
+  return { hash, sats, desc, network: m?.[1] || '?', expires: (ts + expiry) * 1000 };
+}
+async function sha256OfHex(h_) { return hexOf(new Uint8Array(await crypto.subtle.digest('SHA-256', Uint8Array.from(h_.match(/../g), x => parseInt(x, 16))))); }
+let swapSecrets = (await kv.get('swapSecrets')) || {};   // hash -> secret you made (for swaps with chains other than Lightning)
+const ASSET_NAMES = { BTC: 'Bitcoin', ETH: 'Ether', USDC: 'USDC', USDT: 'USDT', XMR: 'Monero', LTC: 'Litecoin', USD: 'US dollars', EUR: 'Euros', GBP: 'Pounds', other: 'Other' };
+const METHOD_NAMES = { lightning: '⚡ Lightning', bitcoin: 'Bitcoin on-chain', ethereum: 'Ethereum', stablecoin: 'Stablecoin', paypal: 'PayPal', bank: 'Bank transfer', cash: 'Cash in person', other: 'Other' };
+function lockForm(prefill = {}) {
+  const to = h('input', { type: 'text', placeholder: 'Who gets the coins (their user ID)', value: prefill.to || '', style: 'flex:1' });
+  const amt = h('input', { type: 'text', inputMode: 'decimal', placeholder: 'Coins', value: prefill.coins || '', style: 'width:120px' });
+  const inv = h('textarea', { placeholder: 'Paste the Lightning invoice you created for this trade (lnbc…). Its payment hash locks the coins: the buyer claims them with the proof of paying it.', style: 'min-height:70px' });
+  const hashIn = h('input', { type: 'text', placeholder: '…or a sha256 hash (64 hex) for a swap on another chain', style: 'flex:1' }), hours = h('input', { type: 'number', min: 1, max: 720, value: 24, style: 'width:80px' });
+  const info = h('div', { class: 'sub' }), st = h('span', { class: 'sub' });
+  inv.oninput = () => { if (!inv.value.trim()) return info.textContent = ''; try { const d = decodeBolt11(inv.value); hashIn.value = d.hash; info.textContent = `⚡ ${d.sats != null ? d.sats.toLocaleString() + ' sats' : 'any amount'}${d.desc ? ' · “' + d.desc + '”' : ''} · network ${d.network} · invoice expires ${new Date(d.expires).toLocaleString()}`; } catch (e) { info.textContent = '⚠ ' + e.message; } };
+  const mkSecret = h('button', { class: 'small', type: 'button', onclick: async () => { const sec = hexOf(crypto.getRandomValues(new Uint8Array(32))), hh = await sha256OfHex(sec); swapSecrets[hh] = sec; await kv.set('swapSecrets', swapSecrets); hashIn.value = hh; info.textContent = 'A secret was made and kept in this browser. Give the other side this hash for their lock on the other chain; you reveal the secret when you claim theirs.'; } }, 'Make a secret for me');
+  return h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Lock coins for a swap'),
+    h('p', { class: 'sub', style: 'margin-top:0' }, 'Selling coins for bitcoin over Lightning: agree on a price, create an invoice in your Lightning wallet for the bitcoin amount, paste it here and lock the coins to the buyer. When they pay the invoice their wallet shows the payment proof (the preimage); they paste it on this page and get the coins. You get the bitcoin at the same moment, so neither side can cheat. If they don’t pay in time, the coins come back to you.'),
+    h('div', { class: 'row' }, to, amt, h('span', {}, 'coins')), h('label', {}, 'Lightning invoice'), inv, info, h('div', { class: 'row', style: 'margin-top:6px' }, hashIn, mkSecret),
+    h('div', { class: 'row', style: 'margin-top:8px' }, h('span', {}, 'They have'), hours, h('span', {}, 'hours to claim'), h('button', { class: 'primary', onclick: async () => {
+      const k = resolveRecipient(to.value) || to.value.trim(), n = coinsToUnits(amt.value);
+      if (!isKey(k)) return toast('Paste the buyer’s user ID'); if (!n) return toast('How many coins?'); if (!isHex(hashIn.value.trim(), 64)) return toast('Paste the invoice (or a 64-character hash)');
+      try { await sendTx({ htlc: { to: k, amt: n, hash: hashIn.value.trim(), expires: Date.now() + Math.max(1, Math.min(720, Number(hours.value) || 24)) * 3600000 } }, me.pub, st); st.textContent = 'Locked once the next block confirms it. Send the buyer the invoice.'; } catch {}
+    } }, 'Lock coins'), st));
+}
+function swapsPanel() {
+  const mine = [...E.ledger.htlcs].filter(([, H]) => isMine(H.from) || isMine(H.to)).sort((a, b) => b[1].ts - a[1].ts);
+  return h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Your swaps'),
+    mine.length ? mine.map(([id, H]) => {
+      const incoming = isMine(H.to), pre = h('input', { type: 'text', placeholder: 'The secret: the payment proof (preimage) your Lightning wallet showed, 64 hex', style: 'flex:1' }), st = h('span', { class: 'sub' });
+      const mySecret = swapSecrets[H.hash];
+      return h('div', { class: 'item' },
+        h('div', {}, incoming ? '⬇ ' : '⬆ ', h('b', {}, fmtCoin(H.amt) + ' coins'), incoming ? [' from ', personLink(H.from)] : [' to ', personLink(H.to)], h('span', { class: 'badge', style: 'margin-left:6px' }, H.state),
+          h('span', { class: 'sub' }, ` · deadline ${new Date(H.expires).toLocaleString()}`)),
+        h('div', { class: 'sub mono' }, 'hash ' + H.hash),
+        H.state === 'unlocked' ? h('div', { class: 'sub mono' }, 'revealed secret ' + H.preimage) : null,
+        incoming && H.state === 'locked' && Date.now() < H.expires ? h('div', { class: 'row', style: 'margin-top:6px' }, pre, h('button', { class: 'primary', onclick: async () => {
+          const v = pre.value.trim().toLowerCase(); if (!isHex(v, 64)) return toast('The preimage is 64 hex characters');
+          if (await sha256OfHex(v) !== H.hash) return toast('That isn’t the secret for this lock');
+          try { await sendTx({ unlock: { id, preimage: v } }, me.pub, st); } catch {}
+        } }, 'Claim'), st) : null,
+        !incoming && H.state === 'locked' && Date.now() >= H.expires ? h('div', { class: 'row', style: 'margin-top:6px' }, h('button', { onclick: () => sendTx({ refund: { id } }, me.pub, st).catch(() => {}) }, 'Take the coins back'), st) : null,
+        mySecret && H.state === 'locked' ? h('div', { class: 'sub' }, 'Your secret for this hash (reveal it only to claim the other side): ', h('span', { class: 'mono' }, mySecret)) : null);
+    }) : h('div', { class: 'sub' }, 'No swaps yet.'));
+}
+function offerForm() {
+  const side = h('select', { style: 'width:auto' }, h('option', { value: 'sell' }, 'I sell coins'), h('option', { value: 'buy' }, 'I buy coins'));
+  const asset = h('select', { style: 'width:auto' }, XCHG.assets.map(a => h('option', { value: a }, ASSET_NAMES[a])));
+  const amt = h('input', { type: 'text', inputMode: 'decimal', placeholder: 'How many coins', style: 'width:140px' }), rate = h('input', { type: 'text', inputMode: 'decimal', placeholder: 'Price per coin', style: 'width:140px' });
+  const methods = XCHG.methods.map(m => [m, h('input', { type: 'checkbox', checked: m === 'lightning' })]);
+  const note = h('input', { type: 'text', placeholder: 'Terms (optional): limits, hours, how you trade', maxLength: 500, style: 'flex:1' }), st = h('span', { class: 'sub' });
+  return h('details', { class: 'panel' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, '＋ Post an offer'),
+    h('div', { class: 'row', style: 'margin-top:8px' }, side, amt, h('span', {}, 'for'), asset, h('span', {}, 'at'), rate, h('span', { class: 'sub' }, 'per coin')),
+    h('div', { class: 'row', style: 'margin-top:6px;gap:12px' }, methods.map(([m, cb]) => h('label', { style: 'display:flex;gap:4px;align-items:center;font-weight:400' }, cb, METHOD_NAMES[m]))),
+    h('div', { class: 'row', style: 'margin-top:6px' }, note), h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { class: 'primary', onclick: async () => {
+      const n = coinsToUnits(amt.value), r = rate.value.trim(); const ms = methods.filter(([, cb]) => cb.checked).map(([m]) => m);
+      if (!n || !/^\d{1,12}(\.\d{1,12})?$/.test(r) || !Number(r)) return toast('Enter the coins and a price'); if (!ms.length) return toast('Choose how you trade');
+      try { await sendTx({ offer: { side: side.value, asset: asset.value, amt: n, rate: r, methods: ms, ...(note.value.trim() ? { note: note.value.trim() } : {}) } }, me.pub, st); st.textContent = 'Posted once the next block confirms it.'; } catch {}
+    } }, 'Post offer'), st));
+}
+views.exchange = { render() {
+  const tab = route.tab, open = [...E.ledger.offers].filter(([, O]) => O.state === 'open').sort((a, b) => Number(a[1].rate) - Number(b[1].rate));
+  const assetSel = settings.xAsset || 'all', shown = open.filter(([, O]) => assetSel === 'all' || O.asset === assetSel);
+  const best = (side, a) => { const xs = open.filter(([, O]) => O.side === side && O.asset === a).map(([, O]) => Number(O.rate)); return xs.length ? (side === 'sell' ? Math.min(...xs) : Math.max(...xs)) : null; };
+  const book = (side) => h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, side === 'sell' ? 'People selling coins' : 'People buying coins'),
+    shown.filter(([, O]) => O.side === side).length ? shown.filter(([, O]) => O.side === side).map(([id, O]) => h('div', { class: 'item row', style: 'justify-content:space-between' },
+      h('div', {}, h('b', {}, `${fmtCoin(O.amt)} coins`), ` at ${O.rate} ${O.asset} each`, h('div', { class: 'sub' }, personLink(O.from), ' · ', O.methods.map(m => METHOD_NAMES[m]).join(', '), O.note ? ' · ' + O.note : '', ' · ', ago(O.ts))),
+      isMine(O.from) ? h('button', { class: 'small', onclick: () => sendTx({ endoffer: { id } }, me.pub, h('span')).catch(() => {}) }, 'Withdraw')
+        : h('a', { class: 'act', href: `#/messages/${E.ledger.resolve(O.from)}`, onclick: () => { try { sessionStorage.setItem('opentube-draft', `About your offer: ${side === 'sell' ? 'I’d like to buy' : 'I’d like to sell you'} ${fmtCoin(O.amt)} coins at ${O.rate} ${O.asset} each, via ${O.methods.map(m => METHOD_NAMES[m]).join(' / ')}. My user ID: ${me.pub}`); } catch {} } }, side === 'sell' ? 'Buy' : 'Sell'))) : h('div', { class: 'sub' }, 'No offers.'));
+  const tabs = [['book', 'Order book'], ['swaps', 'Swaps'], ['how', 'How it works']];
+  const assets = [...new Set(open.map(([, O]) => O.asset))];
+  return h('div', { style: 'max-width:980px' }, h('h2', { style: 'margin:0' }, 'Exchange'),
+    h('p', { class: 'sub' }, 'Trade coins for bitcoin, ether, stablecoins or cash, person to person. Crypto trades are atomic swaps: coins are locked until the other side pays, so nobody can run off with the money. Cash trades use the market’s escrow and arbitration.'),
+    h('div', { class: 'tabs' }, tabs.map(([k, l]) => h('a', { href: `#/exchange/${k}`, class: tab === k ? 'active' : '' }, l))),
+    tab === 'book' ? h('div', {},
+      assets.length ? h('div', { class: 'row', style: 'gap:14px;margin-bottom:8px' }, assets.map(a => h('span', { class: 'tagbox', style: 'padding:4px 12px' }, h('b', {}, ASSET_NAMES[a]), ` · buy from ${best('sell', a) ?? '—'} · sell at ${best('buy', a) ?? '—'}`))) : null,
+      h('div', { class: 'row', style: 'margin-bottom:8px' }, h('span', { class: 'sub' }, 'Show'), h('select', { style: 'width:auto', onchange: (e) => { settings.xAsset = e.target.value; saveSettings(); render(true); } }, h('option', { value: 'all' }, 'every currency'), XCHG.assets.map(a => h('option', { value: a, selected: assetSel === a }, ASSET_NAMES[a])))),
+      offerForm(), h('div', { class: 'split' }, book('sell'), book('buy')))
+    : tab === 'swaps' ? h('div', {}, swapsPanel(), keep('lockform', () => lockForm()))
+    : h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Getting value in and out'),
+      h('ol', {},
+        h('li', {}, h('b', {}, 'Bitcoin over Lightning (atomic). '), 'Seller of coins: make a Lightning invoice for the agreed bitcoin, then Swaps → Lock coins with that invoice and the buyer’s user ID. Buyer: pay the invoice; your wallet shows the payment proof (preimage); paste it under Swaps → Claim. The seller is paid exactly when the buyer can claim. If the invoice isn’t paid before the deadline, the seller takes the coins back.'),
+        h('li', {}, h('b', {}, 'Other chains (atomic). '), 'Any chain with hash-locked contracts (Bitcoin scripts, Ethereum HTLC contracts, …): the coin seller clicks “Make a secret for me” and locks the coins (longer deadline). The other side locks their crypto on their chain to the seller with the same hash (shorter deadline). The seller claims it there, which reveals the secret; the buyer uses the secret here to claim the coins.'),
+        h('li', {}, h('b', {}, 'Cash, PayPal, bank (escrow). '), 'List coins (or buy them) in the Market under “Currency exchange” with an arbitration body: payment is held in escrow, and disputes go to its arbitrators.'),
+        h('li', {}, h('b', {}, 'Prices. '), 'The order book shows what people ask and bid for each currency; there is no central price.')),
+      h('p', { class: 'sub' }, 'Your swap secrets stay in this browser. Never paste a preimage anywhere but the claim box of the swap it belongs to.')));
+} };
 views.tag = { render() {
   const t = route.tag, found = [];
   for (const c of chains.values()) {
@@ -5982,6 +6138,7 @@ views.wallet = { render() {
         h('div', {}, 'Like or dislike'), h('div', {}, fmtCoin(priceNow('like')) + ' coins'),
         h('div', {}, 'Post a video'), h('div', {}, fmtCoin(Math.max(1, Math.ceil(L.prices.post))) + ' coins per GB'),
         h('div', {}, 'Confirming a block earns'), h('div', {}, fmtCoin(COIN_UI.reward) + ' coins'))),
+    h('div', { class: 'panel row', style: 'justify-content:space-between' }, h('div', {}, h('b', {}, 'Buy or sell coins'), h('div', { class: 'sub' }, 'Swap coins for bitcoin (Lightning), other crypto, or cash, person to person.')), h('a', { class: 'act', href: '#/exchange' }, 'Open the exchange')),
     form,
     adViewsPanel(),
     earningsPanel(myAccounts()),

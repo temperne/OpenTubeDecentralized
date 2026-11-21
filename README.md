@@ -199,6 +199,28 @@ A video torrent is split into pieces, each checked against the hash in the torre
 
 **Free:** your own videos, channels you host (joining registers you), peers who host the channel (or your own node), videos from before the coin, and ads. A node earns tabs under its own key and passes what it earns to its owner every 10 minutes, keeping 20 coins for its own downloads.
 
+## Exchange: getting value in and out
+
+*Exchange* lets people trade coins for bitcoin, ether, stablecoins or cash, person to person, without anyone holding the money in between.
+
+- **Hash-locked payments** (`htlc`, `unlock`, `refund`): coins locked to a recipient under `sha256(secret)` until a deadline (10 minutes to 30 days).
+  - The recipient takes them by revealing the secret before the deadline.
+  - Otherwise the sender takes them back afterwards.
+  - The secret then sits on the ledger for anyone to read, which is what makes cross-chain swaps work.
+- **Bitcoin over Lightning (atomic):**
+  1. The seller of coins creates a Lightning invoice for the agreed bitcoin.
+  2. The seller pastes it under *Exchange → Swaps*. The page reads the invoice (amount, description, payment hash) and locks the coins to the buyer under its hash.
+  3. The buyer pays the invoice. Their wallet then shows the payment proof (the preimage).
+  4. The buyer pastes it to claim the coins.
+
+  The seller is paid exactly when the buyer can claim, and an unpaid invoice means the coins go back to the seller after the deadline.
+- **Other chains (atomic):** any chain with hash-locked contracts (Bitcoin scripts, Ethereum HTLC contracts, …).
+  1. The coin seller makes a secret (*Make a secret for me*; it stays in their browser) and locks the coins with a longer deadline.
+  2. The other side locks their crypto with the same hash and a shorter deadline.
+  3. Claiming it there reveals the secret, which the other side then uses here to claim the coins.
+- **Order book** (`offer`, `endoffer`): offers to sell or buy coins for a currency at a price per coin, with payment methods and terms. *Buy* or *Sell* opens a private message to the maker with the details filled in. The best prices per currency are shown at the top; there's no central price.
+- **Cash, PayPal, bank:** list under *Currency exchange* in the Market with an arbitration body. The payment is held in escrow, and disputes go to its arbitrators.
+
 ## Ad views (certificates)
 
 The viewer's half of a verified ad view is held in a **certificate**: a ledger record of who watched which advertiser's ad, holding the coins taken from the advertiser at that moment. *Wallet → Ad views* groups yours by advertiser. A certificate can be:
