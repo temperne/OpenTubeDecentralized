@@ -2133,6 +2133,8 @@ const h = (tag, props = {}, ...kids) => {
   for (const kid of kids.flat()) if (kid != null && kid !== false) n.append(kid);
   return n;
 };
+// append/replaceChildren take nested lists and skip null/false, as h() does (instead of printing "null" or "[object …]")
+for (const m of ['append', 'replaceChildren', 'prepend']) { const o = Element.prototype[m]; Element.prototype[m] = function (...k) { return o.apply(this, k.flat(Infinity).filter(x => x != null && x !== false)); }; }
 const toast = (m) => { const t = $('#toast'); t.textContent = m; t.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 3000); };
 const fmtBytes = (b) => { if (!b) return '0 B'; const u = ['B','KB','MB','GB','TB']; const i = Math.min(4, Math.floor(Math.log(b) / Math.log(1024))); return (b / 1024 ** i).toFixed(i ? 1 : 0) + ' ' + u[i]; };
 const ago = (ts) => { const s = Math.max(1, (Date.now() - ts) / 1000); for (const [n, l] of [[31536000,'y'],[2592000,'mo'],[86400,'d'],[3600,'h'],[60,'m']]) if (s >= n) return Math.floor(s / n) + l + ' ago'; return 'just now'; };
@@ -7011,7 +7013,7 @@ function guestPanel(n) {   // you were invited to someone's group stream on this
   const box = h('div', { class: 'panel', style: 'margin-top:8px;background:var(--panel-2)' });
   box.append(h('span', { class: 'sub' }, 'Loading your invitation…'));
   nodeCtl(n, 'group').then(({ data: g }) => {
-    const hosts = [...new Set([n.info?.publicIp, ...(n.addrs || []).map(a => { try { return new URL(a).hostname; } catch { return null; } })].filter(x => x && x !== 'localhost'))];
+    const hosts = [...new Set([n.info?.publicIp, ...(n.addrs || []).filter(a => !n.info?.tunnel || a !== n.info?.public).map(a => { try { return new URL(a).hostname; } catch { return null; } })].filter(x => x && x !== 'localhost' && !/\.trycloudflare\.com$/.test(x)))];
     const servers = hosts.map(hh => `rtmp://${hh}${g.port && g.port !== 1935 ? ':' + g.port : ''}/live`);
     const key = h('input', { type: 'password', readOnly: true, value: g.key || '', class: 'mono', style: 'flex:1' });
     box.replaceChildren(h('b', {}, `👥 ${g.invitedBy}’s group stream`), h('div', { class: 'sub' }, `Your invitation lasts until ${new Date(g.until).toLocaleString()}. ${g.on ? 'The group stream is on.' : 'The host hasn’t switched the group stream on yet.'}`),
@@ -7088,7 +7090,7 @@ function obsPanel(n, { chainId = null } = {}) {
   const draw = () => {
     if (!data) return box.replaceChildren(h('b', {}, `OBS on ${n.info?.name || 'this computer'}`), ' ', st);
     if (!data.port) return box.replaceChildren(h('b', {}, 'OBS'), h('p', { class: 'sub' }, 'This computer isn’t receiving OBS (it was started with --no-obs). Start it again without that option.'));
-    const hosts = [...new Set([data.publicHost, data.publicIp, ...data.ips, '127.0.0.1'].filter(Boolean))];   // 127.0.0.1, not "localhost" (which can mean IPv6 first)
+    const hosts = [...new Set([data.publicHost, data.publicIp, ...data.ips, '127.0.0.1'].filter(x => x && !/\.trycloudflare\.com$/.test(x)))];   // tunnels carry web traffic only, not RTMP   // 127.0.0.1, not "localhost" (which can mean IPv6 first)
     const servers = hosts.map(hh => `rtmp://${hh}${data.port === 1935 ? '' : ':' + data.port}/live`);
     const chans = myChannels(), ch = h('select', { style: 'width:auto' }, h('option', { value: '' }, 'Choose the channel it goes live on…'), chans.map(id => h('option', { value: id, selected: (data.channel || chainId) === id }, channelTitle(id))));
     const title = h('input', { type: 'text', value: data.title || 'Live', maxLength: 140, style: 'flex:1' });
