@@ -6597,6 +6597,9 @@ function obsPanel(n, { chainId = null } = {}) {
       h('p', { class: 'sub', style: 'margin:4px 0' }, 'In OBS: Settings → Stream → Service “Custom…”, then paste the server and the stream key. Use an H.264 encoder, AAC audio, keyframe interval 2 s. Start Streaming goes live on the channel below by itself.'),
       row('Server', h('div', { style: 'flex:1' }, servers.map(u => h('div', { class: 'row', style: 'gap:6px' }, h('code', { class: 'mono', style: 'flex:1' }, u), h('button', { class: 'small', onclick: () => copyText(u, 'Server') }, 'Copy'))))),
       h('div', { class: 'sub', style: 'margin-left:128px' }, 'Use the address OBS can reach: 127.0.0.1 if OBS runs on that computer; its public address (first) from anywhere else; a 192.168… / 10… address only from the same home network. A server or VPS must allow incoming TCP port ' + data.port + ' (its firewall and the provider’s security settings).'),
+      data.bound?.length ? row('Bound', h('span', { class: 'sub', style: 'flex:1' + (data.bound.every(b => /^127\.|^::1$/.test(b.addr)) || data.bound.some(b => !b.self) ? ';color:var(--warn)' : '') },
+        'the system says port ' + data.port + ' is open on ' + data.bound.map(b => (b.addr === '0.0.0.0' ? 'all IPv4 addresses (0.0.0.0)' : b.addr === '::' ? 'all addresses (::)' : b.addr) + (b.self ? '' : ` by another program (process ${b.pid}: ${b.cmd})`)).join(', ')
+        + (data.bound.every(b => /^127\.|^::1$/.test(b.addr)) ? ' — localhost only: OBS on other computers can’t connect' : ''))) : null,
       row('Status', h('span', { class: 'sub', style: 'flex:1' }, data.live?.error ? '⚠ ' + data.live.error : data.live?.listening === false ? '⚠ not listening' : `listening on ${data.listen === '::' ? 'all addresses (IPv4 + IPv6)' : data.listen}, port ${data.port}`,
         data.lastConn ? ` · last OBS connection ${ago(data.lastConn.at)} from ${data.lastConn.from}: ${data.lastConn.stage}` : ' · no OBS connection has reached this computer yet'),
         h('button', { class: 'small', onclick: () => run('obs', { test: true }) }, 'Test from the internet'), h('button', { class: 'small', onclick: () => run('obs') }, 'Refresh')),
@@ -6665,8 +6668,18 @@ function fileManager(n) {
 // This page's build: a hash of the page itself. A node reports the same for the index.html it runs.
 let pageBuild = null;
 (async () => { try { if (!/^https?:$/.test(location.protocol)) return; const t = await (await fetch(location.pathname, { cache: 'no-store' })).text(); pageBuild = (await globalThis.OpenTubeCore.sha256hex(t)).slice(0, 12); scheduleRender(); } catch {} })();
+// the site's own copy of each program file a node runs, fingerprinted the same way (fetched once, when needed)
+const siteFiles = { map: null, busy: false };
+function siteFileHashes() {
+  if (siteFiles.map || siteFiles.busy || !/^https?:$/.test(location.protocol)) return siteFiles.map;
+  siteFiles.busy = true;
+  (async () => { const m = {}; for (const f of ['server.mjs', 'rtmp.mjs', 'host.mjs', 'tls.mjs', 'headless.mjs']) { try { const r = await fetch(f, { cache: 'no-store' }); if (r.ok) m[f] = (await globalThis.OpenTubeCore.sha256hex(await r.text())).slice(0, 12); } catch {} } siteFiles.map = m; scheduleRender(); })();
+  return null;
+}
 function versionBadge(v) {   // a node's version compared with this page's
   if (!v?.build) return h('span', { class: 'badge warn', title: 'This computer runs an OpenTube from before versions were reported. Stop it and run your command again to update.' }, 'old version: stop it and run your command again');
+  const sf = v.files ? siteFileHashes() : null, stale = sf ? Object.entries(v.files).filter(([f, x]) => sf[f] && sf[f] !== x).map(([f]) => f) : [];
+  if (stale.length) return h('span', { class: 'badge warn', title: `These files on that computer differ from the site’s: ${stale.join(', ')}` }, `v${v.name} · ${stale.join(', ')} out of date: press ⟳ Update`);
   const same = pageBuild && v.build === pageBuild;
   return h('span', { class: 'badge' + (same ? ' ok' : pageBuild ? ' warn' : ''), title: `node ${v.name} · build ${v.build}${pageBuild ? ' · this page ' + globalThis.OpenTubeCore.VERSION + ' · build ' + pageBuild : ''}` },
     same ? `v${v.name} · up to date` : pageBuild ? `v${v.name} (${v.build.slice(0, 7)}) · differs from this page: press ⟳ Update` : `v${v.name} (${v.build.slice(0, 7)})`);

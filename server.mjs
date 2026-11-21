@@ -38,6 +38,10 @@ const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 const html = fs.readFileSync(path.join(DIR, 'index.html'), 'utf8');
 const coreSrc = /<script id="opentube-core">([\s\S]*?)<\/script>/.exec(html)?.[1];
 const BUILD = crypto.createHash('sha256').update(html).digest('hex').slice(0, 12);   // the same fingerprint browsers compute for the page
+// a fingerprint of every program file this node runs, so the site can check each one against its own copy (a stale
+// rtmp.mjs once bound OBS to localhost while index.html, and so the version, looked current)
+const FILES = Object.fromEntries(['server.mjs', 'rtmp.mjs', 'host.mjs', 'tls.mjs', 'headless.mjs'].filter(f => fs.existsSync(path.join(DIR, f)))
+  .map(f => [f, crypto.createHash('sha256').update(fs.readFileSync(path.join(DIR, f))).digest('hex').slice(0, 12)]));
 if (!coreSrc) throw new Error('index.html has no opentube-core script');
 new Function(coreSrc)();
 const core = globalThis.OpenTubeCore;
@@ -124,6 +128,7 @@ if (fs.existsSync(blocksFile)) {
   for (const [c, blocks] of byChain) if (c !== engine.MAIN_ID && engine.openChain(c)) await engine.insert(c, blocks, null, false);
 }
 if (fs.existsSync(memFile)) for (const m of JSON.parse(fs.readFileSync(memFile, 'utf8'))) await engine.acceptMembership(m);
+log(`program files: ${Object.entries(FILES).map(([f, h]) => f + ' ' + h).join(', ')} (in ${DIR})`);
 log(`OpenTube ${core.VERSION} (build ${BUILD}) · network ${engine.MAIN_ID.slice(0, 16)}… · main height ${engine.main.best.height} · ${engine.directory.size} registered · ${engine.chains.size} chains loaded`);
 setInterval(() => engine.gossip(), 60000);   // repair pass; new blocks are pushed right away
 // The public feed (core: SQUARE): keep this month's chain from the start (older months open as peers mention them).
@@ -482,7 +487,9 @@ async function control(c) {
         data = { test: pub ? await rtmpProbe(pub, port) : { ok: false, error: 'couldn’t find this computer’s public address' }, outside, asked: others.length, publicIp: pub, httpPort };
         return signed({ v: 1, kind: 'nodectlr', node: signer.pub, re: c.nonce, at: Date.now(), ok: true, data });
       }
-      data = { version: { name: core.VERSION, build: BUILD }, key: obsCfg.key, port: Number(process.env.RTMP_PORT) || null, ips, publicIp: await publicIp(), listen: globalThis.openTubeRtmp?.status?.().host || process.env.RTMP_HOST || '::', lastConn: globalThis.openTubeRtmp?.lastConn?.() || null, publicHost: process.env.PUBLIC_URL ? new URL(process.env.PUBLIC_URL).hostname : null, channel: obsCfg.channel, title: obsCfg.title,
+      const { portHolders } = await import('./rtmp.mjs');
+      const bound = portHolders(Number(process.env.RTMP_PORT) || 0).map(x => ({ addr: x.addr, pid: x.pid, self: x.pid === process.pid, cmd: x.pid === process.pid ? '' : x.cmd.slice(0, 120) }));
+      data = { bound, version: { name: core.VERSION, build: BUILD, files: FILES }, key: obsCfg.key, port: Number(process.env.RTMP_PORT) || null, ips, publicIp: await publicIp(), listen: globalThis.openTubeRtmp?.status?.().host || process.env.RTMP_HOST || '::', lastConn: globalThis.openTubeRtmp?.lastConn?.() || null, publicHost: process.env.PUBLIC_URL ? new URL(process.env.PUBLIC_URL).hostname : null, channel: obsCfg.channel, title: obsCfg.title,
         linked: !!(obsCfg.channel && engine.derive(obsCfg.channel)?.relays.has(signer.pub)), youtube: { on: obsCfg.youtube.on, set: !!obsCfg.youtube.key }, tile: obsCfg.tile, ffmpeg: ffmpegOk, node: signer.pub, live: globalThis.openTubeRtmp?.status?.() || null };
     }
     else if (c.cmd === 'status') data = { height: engine.main.best.height, peers: peers.size, chains: engine.chains.size, host: globalThis.openTubeHost?.status() || null, obs: globalThis.openTubeRtmp?.status?.() || null };
@@ -564,7 +571,7 @@ else if (GRANT) {
     let host = globalThis.openTubeHost?.status() || null;
     if (!host) try { host = JSON.parse(fs.readFileSync(process.env.HOST_STATUS_FILE, 'utf8')); if (Date.now() - host.at > 120000) host = { ...host, stale: true }; } catch {}
     const info = { publicIp: (await publicIp()) || null, users: Object.fromEntries(Object.entries(obsStore.users).slice(0, 20).map(([k, u]) => [k, u.can.map(x => x[0]).join('')])),   // who may use it: o(bs) h(ost) m(anage)
-      version: { name: core.VERSION, build: BUILD }, peerId: nodePeerId(signer.pub), name: (process.env.NODE_LABEL || os.hostname()).slice(0, 60), os: `${os.platform()} ${os.arch()}`, node: process.version, height: engine.main.best.height,
+      version: { name: core.VERSION, build: BUILD, files: FILES }, peerId: nodePeerId(signer.pub), name: (process.env.NODE_LABEL || os.hostname()).slice(0, 60), os: `${os.platform()} ${os.arch()}`, node: process.version, height: engine.main.best.height,
       peers: peers.size, chains: engine.chains.size, site: process.env.NODE_SITE || null, host, obs: globalThis.openTubeRtmp?.status?.() || null };
     try { await engine.publishNodeInfo({ grant: GRANT, roles, addrs: addrs(), info }); } catch (e) { log('announce failed:', e.message); }
   };

@@ -137,7 +137,7 @@ function fragment(seq, vs, as) {
 // Linux: which processes listen on a TCP port (from /proc), so a port taken by an older OpenTube can be named or freed.
 import fs from 'node:fs';
 const cmdOf = (pid) => { try { return fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').join(' ').trim(); } catch { return ''; } };
-function portHolders(port) {
+export function portHolders(port) {
   if (process.platform !== 'linux') return [];
   const want = new Map();   // socket inode -> address
   for (const f of ['/proc/net/tcp', '/proc/net/tcp6']) {
@@ -296,7 +296,7 @@ export function startRtmp({ port = 1935, host = '::', onPublish, log = () => {} 
   server.on('error', (e) => log(`OBS receiver couldn’t listen on ${host}:${port}: ${e.message}`));
   // Listen on IPv6 and IPv4 together ('::'): on Windows and macOS "localhost" means ::1 first, and OBS only tries the
   // first address, so an IPv4-only receiver leaves OBS stuck at "Connecting…". Falls back to IPv4 where IPv6 is off.
-  const listen = (h) => { state.trying = h; server.removeAllListeners('listening'); server.listen({ port, host: h, ipv6Only: false }); server.once('listening', () => { state.listening = true; state.error = null; state.host = h; log(`OBS receiver on rtmp://${h === '127.0.0.1' || h === '::1' ? 'localhost' : 'this-computer'}:${port}/live (listening on ${h === '::' ? 'all addresses, IPv4 and IPv6' : h === '0.0.0.0' ? 'all IPv4 addresses' : h})`); }); };
+  const listen = (h) => { state.trying = h; server.removeAllListeners('listening'); server.listen({ port, host: h, ipv6Only: false }); server.once('listening', () => { state.listening = true; state.error = null; state.host = h; setTimeout(() => { const b = portHolders(port); if (b.length) log(`the system says port ${port} is bound on: ${b.map(x => x.addr + (x.pid === process.pid ? ' (this OpenTube)' : ` (process ${x.pid}: ${x.cmd.slice(0, 60)})`)).join(', ')}`); }, 200); log(`OBS receiver on rtmp://${h === '127.0.0.1' || h === '::1' ? 'localhost' : 'this-computer'}:${port}/live (listening on ${h === '::' ? 'all addresses, IPv4 and IPv6' : h === '0.0.0.0' ? 'all IPv4 addresses' : h})`); }); };
   server.on('error', async (e) => {
     if (host === '::' && ['EAFNOSUPPORT', 'EADDRNOTAVAIL', 'EINVAL'].includes(e.code) && !state.fellBack) { state.fellBack = true; return listen('0.0.0.0'); }
     if (e.code === 'EADDRINUSE') {
