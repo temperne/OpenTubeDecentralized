@@ -164,6 +164,7 @@
     <span class="detail"><span class="dot" id="dot-chain"></span><span id="st-chain">main chain…</span></span>
     <span id="st-p2p" class="detail"></span>
   </a>
+  <button id="upd-btn" class="small" title="Check for a new version of OpenTube and load it" style="margin-left:6px;white-space:nowrap">⟳ Update</button>
 </header>
 <div id="folderbar" class="hidden"></div>
 <div id="terms-banner" class="hidden" style="background:var(--panel-2);border-bottom:1px solid var(--border);padding:10px 16px;font-size:14px">
@@ -7401,6 +7402,57 @@ function fileManager(n) {
 // This page's build: a hash of the page itself. A node reports the same for the index.html it runs.
 let pageBuild = null;
 (async () => { try { if (!/^https?:$/.test(location.protocol)) return; const t = await (await fetch(location.pathname, { cache: 'no-store' })).text(); pageBuild = (await globalThis.OpenTubeCore.sha256hex(t)).slice(0, 12); scheduleRender(); } catch {} })();
+// Updating itself: every 10 minutes (and when you come back to the tab) the page checks whether the site has a newer
+// version of itself (a cheap HEAD request when the server gives an ETag; otherwise the page is fetched and hashed).
+// When there is one, it reloads by itself as soon as you're not busy: not live, not watching, not typing, nothing in
+// progress. Until then a small notice offers to reload now.
+let updateReady = false, updateTag = null, updateCheckedAt = 0, updateDismissed = false;
+function pageBusy() {
+  if ([...broadcasts.values()].some(b => !b.ended)) return 'you’re live';
+  if ([...viewing.values()].some(s => s.ui && !s.ended && s.ui.sess)) return 'you’re watching a live stream';
+  const v = document.querySelector('video'); if (v && !v.paused && !v.ended && !document.hidden) return 'a video is playing';
+  if ([...document.querySelectorAll('input[type=text], input:not([type]), textarea')].some(x => x.value.trim() && x.offsetParent && !x.readOnly)) return 'you’re typing';
+  if ([...document.querySelectorAll('button:disabled')].some(b => /…\s*$/.test(b.textContent))) return 'something is in progress';
+  return null;
+}
+async function checkPageUpdate() {
+  if (!/^https?:$/.test(location.protocol) || !pageBuild || updateReady) return;
+  updateCheckedAt = Date.now();
+  try {
+    const head = await fetch(location.pathname, { method: 'HEAD', cache: 'no-store' }), tag = head.headers.get('etag') || head.headers.get('last-modified');
+    if (tag) { if (!updateTag) { updateTag = tag; return; } if (tag === updateTag) return; }
+    const b = (await globalThis.OpenTubeCore.sha256hex(await (await fetch(location.pathname, { cache: 'no-store' })).text())).slice(0, 12);
+    if (b === pageBuild) { if (tag) updateTag = tag; return; }
+    updateReady = true; markUpdBtn(); maybeReload();
+  } catch {}
+}
+const updateNote = h('div', { style: 'position:fixed;bottom:14px;left:50%;transform:translateX(-50%);z-index:50;background:var(--panel, #fff);border:1px solid var(--line, #ddd);border-radius:10px;padding:8px 12px;box-shadow:0 4px 16px rgba(0,0,0,.15);display:none;gap:10px;align-items:center;max-width:calc(100vw - 32px)' });
+document.body.append(updateNote);
+function maybeReload() {
+  if (!updateReady) return;
+  const busy = pageBusy();
+  if (!busy) { updateNote.style.display = 'flex'; updateNote.replaceChildren('Updating OpenTube to the new version…'); setTimeout(() => { if (!pageBusy()) location.reload(); else maybeReload(); }, 1500); return; }
+  if (updateDismissed) return;
+  updateNote.style.display = 'flex';
+  updateNote.replaceChildren(h('span', {}, `A new version of OpenTube is ready. It loads by itself when you’re done (${busy}).`),
+    h('button', { class: 'small primary', onclick: () => location.reload() }, 'Reload now'), h('button', { class: 'small', onclick: () => { updateDismissed = true; updateNote.style.display = 'none'; } }, '✕'));
+}
+setInterval(() => { if (updateReady) maybeReload(); }, 30000);
+// the ⟳ Update button in the header: check now, and load the new version right away (asks first if you're busy)
+const updBtn = document.getElementById('upd-btn');
+const markUpdBtn = () => { if (!updBtn) return; updBtn.classList.toggle('primary', updateReady); updBtn.textContent = updateReady ? '⟳ Update ready' : '⟳ Update'; };
+if (updBtn) updBtn.onclick = async () => {
+  updBtn.disabled = true; updBtn.textContent = 'Checking…';
+  if (!updateReady) { updateTag = null; updateCheckedAt = 0; try { const b = (await globalThis.OpenTubeCore.sha256hex(await (await fetch(location.pathname, { cache: 'no-store' })).text())).slice(0, 12); if (pageBuild && b !== pageBuild) updateReady = true; } catch {} }
+  updBtn.disabled = false; markUpdBtn();
+  if (!updateReady) return toast(`You have the latest version (v${globalThis.OpenTubeCore.VERSION}${pageBuild ? ' · build ' + pageBuild.slice(0, 7) : ''}).`);
+  const busy = pageBusy();
+  if (!busy || confirm(`Load the new version now? (${busy}: reloading interrupts it)`)) location.reload();
+};
+setInterval(markUpdBtn, 30000);
+setInterval(checkPageUpdate, 10 * 60000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden && Date.now() - updateCheckedAt > 10 * 60000) checkPageUpdate(); });
+setTimeout(checkPageUpdate, 60000);
 // the site's own copy of each program file a node runs, fingerprinted the same way (fetched once, when needed)
 const siteFiles = { map: null, busy: false };
 function siteFileHashes() {
@@ -7571,7 +7623,7 @@ $('#terms-ok').onclick = () => { try { localStorage.setItem('opentube-terms', '1
 render(true);
 window.addEventListener('beforeunload', (e) => { if (E.miner || hosting.size) { e.preventDefault(); e.returnValue = ''; } });
 // Exposed for debugging in the console.
-window.opentube = { me, engine: E, net, wt, live: { broadcasts, viewing, hub: liveNet, liveStale }, nodeCtl, trackers: TRACKERS, diag, stale: { videoGone, checkVideos, scrape, vidSeen, vidChecked } };
+window.opentube = { me, engine: E, net, wt, live: { broadcasts, viewing, hub: liveNet, liveStale }, nodeCtl, trackers: TRACKERS, diag, stale: { videoGone, checkVideos, scrape, vidSeen, vidChecked }, update: { check: checkPageUpdate, busy: pageBusy } };
 
 // ---------------------------------------------------------------- connect
 if (params.get('net') === 'local') startLocal();
