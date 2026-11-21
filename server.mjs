@@ -196,6 +196,15 @@ function chunker(stream, announce) {
 // network for browsers, so the site itself only needs to serve the page. Its own streams use its own hub.
 const isEntry = () => !!process.env.PUBLIC_URL || process.env.ENTRY === '1';   // --public sets PUBLIC_URL once HTTPS is up
 const ownHubUrl = () => `ws://127.0.0.1:${PORT}/live`;
+// Meet places: where browsers and nodes find each other for video (BitTorrent trackers). Every node's own tracker, and
+// every entry node's (from signed node statuses and seeds.json), so files never depend on the site being up.
+function meetPlaces() {
+  const out = [`ws://127.0.0.1:${PORT}/tracker`], own = (process.env.PUBLIC_URL || '').replace(/\/+$/, '');
+  const add = (u) => { u = String(u || '').replace(/\/+$/, ''); if (/^https:\/\//.test(u) && u !== own) out.push(u.replace(/^http/, 'ws') + '/tracker'); };
+  for (const n of engine.nodes.values()) if (n.node !== signer.pub && n.roles?.includes('entry') && Date.now() - n.at < 30 * 60000) add((n.addrs || []).find(a => /^https:/.test(a)));
+  try { for (const e of JSON.parse(fs.readFileSync(path.join(DIR, 'seeds.json'), 'utf8')).entry || []) add(typeof e === 'string' ? e : e?.url); } catch {}
+  return [...new Set(out)].slice(0, 16);
+}
 const defaultHubUrl = () => isEntry() || !process.env.NODE_SITE ? ownHubUrl() : process.env.NODE_SITE.replace(/^http/, 'ws') + '/live';
 function hubUrlFor(chain, stream) {   // the hub a stream lives on: named in its live block (its `hub` node), else the site's
   const lb = engine.chains.has(chain) && engine.derive(chain)?.streams?.find(b => b.payload.stream === stream), hub = lb?.payload?.hub;
@@ -614,7 +623,7 @@ if (process.env.RTMP_PORT) {
 if (process.env.VIDEO_DIR && process.env.HOST_USER) {
   try {
     const { startHost } = await import('./host.mjs');
-    globalThis.openTubeHost = await startHost({ engine, nodeKey: signer.pub, tabs: pieceTabs(), users: () => Object.entries(obsStore.users).filter(([, u]) => u.can.includes('host')).map(([k]) => k), user: process.env.HOST_USER, videoDir: path.resolve(process.env.VIDEO_DIR), site: process.env.NODE_SITE || `http://localhost:${PORT}`, capGB: Number(process.env.CAP_GB) || 5, log });
+    globalThis.openTubeHost = await startHost({ engine, nodeKey: signer.pub, tabs: pieceTabs(), users: () => Object.entries(obsStore.users).filter(([, u]) => u.can.includes('host')).map(([k]) => k), meetPlaces, user: process.env.HOST_USER, videoDir: path.resolve(process.env.VIDEO_DIR), site: process.env.NODE_SITE || `http://localhost:${PORT}`, capGB: Number(process.env.CAP_GB) || 5, log });
   } catch (e) { log('video hosting unavailable:', e.message, '(npm install webtorrent next to server.mjs)'); }
 }
 
@@ -1114,7 +1123,7 @@ async function joinMesh() {   // called once the HTTP server listens (its own tr
     const [{ joinRoom }, { RTCPeerConnection }] = await Promise.all([import('@trystero-p2p/torrent'), import('webrtc-polyfill')]);
     const site = process.env.NODE_SITE;
     let listed = []; try { listed = (await (await fetch('https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_all_ws.txt', { signal: AbortSignal.timeout(5000) })).text()).split('\n').map(x => x.trim()).filter(x => x.startsWith('wss://')).slice(0, 20); } catch {}
-    const urls = [...new Set([site && site.replace(/^http/, 'ws') + '/tracker', `ws://localhost:${PORT}/tracker`, ...(engine.CFG.trackers || []), ...listed].filter(Boolean))];
+    const urls = [...new Set([...meetPlaces(), ...(engine.CFG.trackers || []), ...listed, site && site.replace(/^http/, 'ws') + '/tracker'].filter(Boolean))];   // the site's last
     const room = joinRoom({ appId: 'opentube-' + engine.MAIN_ID.slice(0, 16), relayConfig: { urls }, rtcPolyfill: RTCPeerConnection, maxReceiveBytes: 16 * 1024 ** 2 }, 'opentube/' + engine.MAIN_ID.slice(0, 32));
     const action = room.makeAction('ot', { onMessage: (data, ctx) => engine.handle(data, 'rtc:' + ctx.peerId).catch(() => {}) });
     room.onPeerJoin = (pid) => {

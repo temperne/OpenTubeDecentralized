@@ -2446,14 +2446,27 @@ const homeTracker = params.get('net') ? null : homeNodeUrl()?.replace(/\/ot$/, '
 // public WebSocket trackers from github.com/ngosang/trackerslist (browsers can only use wss:// trackers), remembered
 // for next time in case the list can't be fetched.
 const TRACKER_LIST = 'https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_all_ws.txt';
-const TRACKERS = params.get('trackers') ? params.get('trackers').split(',') : [homeTracker, ...CFG.trackers].filter(Boolean);
+// Every entry node is a meet place for browsers (its tracker): use the ones known (seeds.json, remembered) first, and
+// the site's own tracker only when none is known, so files keep working while the site's server is down.
+await Promise.race([seedsReady, new Promise(r => setTimeout(r, 2500))]);
+const meetPlaces = () => [...new Set(savedEntries().flatMap(x => (x.addrs || []).filter(a => /^https:\/\//.test(a) || (x.mine && /^http:\/\/(localhost|127\.)/.test(a))).slice(0, 1))
+  .map(a => a.replace(/\/+$/, '').replace(/^http/, 'ws') + '/tracker'))].slice(0, 12);
+const TRACKERS = params.get('trackers') ? params.get('trackers').split(',') : (() => { const m = meetPlaces(); return [...m, ...CFG.trackers, m.length ? null : homeTracker].filter(Boolean); })();
+// trackers found after a torrent started: add them to it (WebTorrent fixes the list when a torrent is added)
+function addTrackersTo(t, urls) {
+  const c = t?.discovery?.tracker; if (!c?._trackers || t.destroyed) return;
+  const have = new Set(c._trackers.map(x => x.announceUrl)), WS = c._trackers.find(x => /^wss?:/.test(x.announceUrl || ''))?.constructor; if (!WS) return;
+  for (const u of urls) if (!have.has(u) && !(u.startsWith('ws:') && location.protocol === 'https:')) { try { const tr = new WS(c, u); c._trackers.push(tr); tr.announce(c._defaultAnnounceOpts({ event: 'started' })); } catch {} }
+}
 // entry nodes, and computers this page is linked to, are trackers too: add theirs as they appear (and remember the
 // entry nodes for next time)
 const addNodeTrackers = () => {
   if (params.get('trackers') || typeof liveNet === 'undefined') return;
   for (const x of seedEntries) { const t = x.addrs[0].replace(/^http/, 'ws') + '/tracker'; if (!TRACKERS.includes(t) && TRACKERS.length < 24) TRACKERS.unshift(t); }
   for (const x of [...liveNet.entryHubs(), ...liveNet.linkedHubs()]) { const t = x.url.replace(/\/live$/, '/tracker'); if (!TRACKERS.includes(t) && TRACKERS.length < 24) TRACKERS.unshift(t); }
-  if (homeTracker && TRACKERS.some(t => t !== homeTracker && [...liveNet.entryHubs(), ...liveNet.linkedHubs()].some(x => x.url.replace(/\/live$/, '/tracker') === t)) && TRACKERS.includes(homeTracker)) TRACKERS.splice(TRACKERS.indexOf(homeTracker), 1);   // the site's tracker only as a fallback
+  for (const t of meetPlaces()) if (!TRACKERS.includes(t) && TRACKERS.length < 24) TRACKERS.unshift(t);
+  if (homeTracker && TRACKERS.includes(homeTracker) && meetPlaces().some(t => t !== homeTracker)) TRACKERS.splice(TRACKERS.indexOf(homeTracker), 1);   // the site's tracker only as a fallback
+  if (typeof wt !== 'undefined') for (const t of wt.torrents) addTrackersTo(t, TRACKERS);
   saveEntries();
 };
 setInterval(addNodeTrackers, 15000); setTimeout(addNodeTrackers, 3000); seedsReady.then(addNodeTrackers);

@@ -1,5 +1,5 @@
 // Video hosting for a Node home node, no browser needed: keeps the videos of the channels a user follows in a folder
-// and shares them with viewers' browsers over WebRTC (WebTorrent), announcing on the site's tracker.
+// and shares them with viewers' browsers over WebRTC (WebTorrent), announcing on the meet places: its own tracker and every entry node's (the site's only as a fallback).
 //
 // Started by server.mjs when VIDEO_DIR and HOST_USER are set (opentube.mjs does that). It follows HOST_USER's signed
 // list of joined channels (published from their browser; their own channels are included), downloads every paid video
@@ -23,9 +23,18 @@ export async function publicTrackers() {
   const [ws, best] = await Promise.all([get('trackers_all_ws.txt'), get('trackers_best.txt')]);
   return [...ws.slice(0, 20), ...best.slice(0, 20)];
 }
+// Add trackers to a torrent that's already running (WebTorrent fixes its list when the torrent is added): new meet
+// places (entry nodes) found later are used straight away. Reuses the class of one of its WebSocket trackers.
+export function addTrackersTo(t, urls) {
+  const c = t?.discovery?.tracker; if (!c?._trackers || t.destroyed) return 0;
+  const have = new Set(c._trackers.map(x => x.announceUrl)), WS = c._trackers.find(x => /^wss?:/.test(x.announceUrl || ''))?.constructor;
+  if (!WS) return 0; let n = 0;
+  for (const u of urls) if (/^wss?:\/\//.test(u) && !have.has(u)) { try { const tr = new WS(c, u); c._trackers.push(tr); tr.announce(c._defaultAnnounceOpts({ event: 'started' })); n++; } catch {} }
+  return n;
+}
 const MIN_COPIES = 2;   // other proven copies a video needs before trimming may remove ours
 
-export async function startHost({ engine, nodeKey, user, users = () => [], videoDir, site, capGB = 5, tabs = null, log = console.log }) {
+export async function startHost({ engine, nodeKey, user, users = () => [], meetPlaces = () => [], videoDir, site, capGB = 5, tabs = null, log = console.log }) {
   const { default: WebTorrent } = await import('webtorrent');
   // DHT and TCP/UDP trackers too: ordinary BitTorrent apps can share these videos with this node, and it bridges them to browsers.
   const { createHash } = await import('node:crypto');
@@ -55,7 +64,10 @@ export async function startHost({ engine, nodeKey, user, users = () => [], video
     setInterval(() => tabs.tick(client.torrents).catch(e => log('[host] tabs:', e.message)), 4000);
   }
   const listed = await publicTrackers();
-  const trackers = [...new Set([site ? site.replace(/^http/, 'ws') + '/tracker' : null, ...(engine.CFG.trackers || []), ...listed].filter(Boolean))];
+  // Meet places first: this node's own tracker (browsers reach it through its public address too) and every entry node's,
+  // where browsers look first. Then the network's and public trackers; the site's last, only as a fallback.
+  const trackers = [...new Set([...meetPlaces(), ...(engine.CFG.trackers || []), ...listed, site ? site.replace(/^http/, 'ws') + '/tracker' : null].filter(Boolean))];
+  setInterval(() => { const m = meetPlaces(); for (const u of m) if (!trackers.includes(u)) trackers.unshift(u); for (const t of client.torrents) addTrackersTo(t, m); }, 60000);
   await fsp.mkdir(videoDir, { recursive: true });
   const folders = new Map();   // chain -> { dir, name, meta }
   const torrents = new Map();  // infohash -> { chain, t }
