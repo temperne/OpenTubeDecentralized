@@ -16,6 +16,7 @@
 //   --videos=PATH     the video folder (default: ~/OpenTube Videos)
 //   --name=TEXT       what to call this computer on My node (default: its hostname)
 //   --port=8090       the local node's HTTP port (default: 8090, or the next free one)
+//   --obs-port=1935   the port OBS streams to (use one your server's firewall lets in, e.g. 80 if nothing else uses it)
 //   --no-host --no-obs --no-node   leave a part out
 //   --mine            also spend CPU confirming everyone's registrations (by default the node confirms only its own
 //                     transactions, such as the receipts it's paid for)
@@ -154,7 +155,7 @@ if (want.node) {
   run('node', 'server.mjs', [], {
     PORT: String(port), DATA_DIR: path.join(HOME, 'node-data'), PEERS: ws + '/ot', MINE: args.mine ? '1' : 'own', RANKER: '0',
     NODE_GRANT: String(args.grant), NODE_SITE: site.origin, NODE_ROLES: roles.join(','), NODE_LABEL: String(args.name || os.hostname()),
-    HOST_STATUS_FILE: STATUS, RTMP_PORT: want.obs ? '1935' : '',
+    HOST_STATUS_FILE: STATUS, RTMP_PORT: want.obs ? String(Number(args['obs-port']) || 1935) : '',
     ...(args.public ? { PUBLIC: args.public === true ? 'auto' : String(args.public), ...(args.email ? { PUBLIC_EMAIL: String(args.email) } : {}) } : {}),
     ...(nodeHosts ? { VIDEO_DIR: VIDEOS, HOST_USER: grant.user, CAP_GB: String(args['cap-gb'] || 5) } : {})
   });
@@ -173,5 +174,6 @@ if (want.host && (args['browser-host'] || !want.node)) {
 log(`OpenTube is running for user ${grant.user.slice(0, 8)}…`);
 if (want.node) log(`  node:  http://localhost:${port}  (syncs with ${site.origin}; see it under My node → Your nodes)`);
 if (want.host) log(`  host:  videos in ${VIDEOS}`);
-if (want.obs) log('  OBS:   Settings → Stream → Service “Custom…”, Server rtmp://127.0.0.1/live (from another computer: this one’s address; allow TCP port 1935), Stream Key: copy it on the site under Devices → 🎥 OBS & streaming.');
+const obsPort = Number(args['obs-port']) || 1935, obsSuffix = obsPort === 1935 ? '' : ':' + obsPort;
+if (want.obs) log(`  OBS:   Settings → Stream → Service “Custom…”, Server rtmp://127.0.0.1${obsSuffix}/live (from another computer: this one’s address; its firewall must let in TCP port ${obsPort}), Stream Key: copy it on the site under Devices → 🎥 OBS & streaming.`);
 log('Keep this window open. Ctrl+C stops everything.');

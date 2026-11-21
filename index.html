@@ -6501,6 +6501,7 @@ function nodesPanel() {
   const box = h('div', { class: 'panel' });
   const label = h('input', { type: 'text', placeholder: 'Name for this computer (optional)', maxLength: 60 });
   const videos = h('input', { type: 'text', placeholder: 'Video folder on that computer (default: OpenTube Videos in your home folder)' });
+  const obsPort = h('input', { type: 'number', min: 1, max: 65535, placeholder: 'OBS port (default 1935; on a server, one its firewall lets in)', style: 'width:100%' });
   const parts = [['host', 'Host my joined channels (keeps their videos in the folder)'], ['obs', 'Receive OBS “Start Streaming” for Go live'], ['mine', 'Also confirm registrations (uses CPU)']];
   const checks = Object.fromEntries(parts.map(([k]) => [k, h('input', { type: 'checkbox', checked: k !== 'mine' })]));
   const out = h('div');
@@ -6511,7 +6512,7 @@ function nodesPanel() {
     const site = location.origin + location.pathname.replace(/\/[^/]*$/, '');
     const q = (v) => /[\s"]/.test(v) ? `"${v.replace(/"/g, '')}"` : v;
     const cmd = NODE_LOADER(site) + ` -- --site=${site} --grant=${g}` + (videos.value.trim() ? ' ' + q('--videos=' + videos.value.trim()) : '') + (label.value.trim() ? ' ' + q('--name=' + label.value.trim()) : '')
-      + (checks.host.checked ? '' : ' --no-host') + (checks.obs.checked ? '' : ' --no-obs') + (checks.mine.checked ? ' --mine' : '');
+      + (checks.host.checked ? '' : ' --no-host') + (checks.obs.checked ? '' : ' --no-obs') + (checks.mine.checked ? ' --mine' : '') + (Number(obsPort.value) > 0 && Number(obsPort.value) !== 1935 ? ' --obs-port=' + Number(obsPort.value) : '');
     const ta = h('textarea', { readOnly: true, rows: 5, class: 'mono', style: 'width:100%;font-size:12px' }, cmd); ta.value = cmd;
     out.replaceChildren(h('label', {}, 'Paste this into a terminal on that computer (Windows: Command Prompt or PowerShell; Mac: Terminal):'), ta,
       h('div', { class: 'row', style: 'margin-top:6px' }, h('button', { onclick: () => copyText(cmd, 'Command') }, 'Copy command'),
@@ -6528,7 +6529,7 @@ function nodesPanel() {
   box.append(h('h3', { style: 'margin-top:0' }, 'Your computers'),
     h('p', { class: 'sub', style: 'margin-top:0' }, 'Run OpenTube on a computer with one command: it keeps a full copy of the network, hosts your joined channels around the clock, and receives OBS for going live. Each one reports here.'),
     list, h('details', { style: 'margin-top:12px' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Run OpenTube on a computer'),
-      h('div', { style: 'margin-top:8px' }, label, h('div', { style: 'margin-top:6px' }, videos), ...parts.map(([k, t]) => h('label', { style: 'display:flex;gap:8px;align-items:center;font-weight:400' }, checks[k], t)),
+      h('div', { style: 'margin-top:8px' }, label, h('div', { style: 'margin-top:6px' }, videos), h('div', { style: 'margin-top:6px' }, obsPort), ...parts.map(([k, t]) => h('label', { style: 'display:flex;gap:8px;align-items:center;font-weight:400' }, checks[k], t)),
         h('div', { style: 'margin-top:8px' }, make), out)));
   return box;
 }

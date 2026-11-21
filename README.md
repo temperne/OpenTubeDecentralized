@@ -487,6 +487,13 @@ These overrides live in `<video folder>/.opentube-node.json`. When a channel is 
 
 Commands are signed by your personal key, and the node obeys only the user in its grant. It refuses stale or repeated commands, and its answers are signed by the node. The page first connects **directly** to the node's addresses. That works for a public node with HTTPS, or a node on the same computer (localhost); a secure page can't open plain `ws://` to other IP addresses, and home computers sit behind routers. Otherwise the same signed command is passed node to node over the mesh, addressed to the node's key, and the answer comes back the same way.
 
+### OBS on a server whose firewall only lets some ports in
+
+Many VPS providers only let a few ports in from the internet (often 22 and 80), whatever the server itself listens on. To check, run `python3 -m http.server 9999` on the server and open `http://<its-ip>:9999` from your phone on mobile data. If that doesn't load, the firewall is blocking the port, not OpenTube. Fix it either way:
+
+- **Open the port:** in the provider's control panel (Firewall or Security group), and on the server with `sudo iptables -I INPUT -p tcp --dport 1935 -j ACCEPT`.
+- **Or use a port that's already open:** add `--obs-port=80` to the command, or set "OBS port" when you create it on Devices. In OBS, use `rtmp://<its-ip>:80/live`. Only one program can use a port, so pick one nothing else on the server is using.
+
 ### Updating a computer from the site
 
 Each computer on Devices has **⟳ Update** (highlighted when its version differs from the site's). It asks the computer, with a signed command, to download the site's current OpenTube and restart, so you don't need its terminal. This works for computers started with the one-line command. Computers running a version from before this button: stop OpenTube there and run the command again once.
