@@ -233,7 +233,23 @@ A single 2-cent view is too small to sell, but a bundle of thousands of views of
 
 ## Market
 
-*Market* holds listings on the main chain:
+*Market* holds listings on the main chain. Each listing is one **kind**, with its own fields and button:
+
+| Kind | Fields | Button |
+|---|---|---|
+| goods | condition, brand, quantity | Buy |
+| service | rate per hour, day, job or month; area; availability | Book |
+| job | type, pay in any currency, company, remote | Apply (a message) |
+| housing | sale or rent, bedrooms, bathrooms, size, furnished, available from | Buy, or rent per month |
+| vehicle | make, model, year, mileage, fuel, transmission | Buy |
+| rental | period, deposit | Rent |
+| digital | format, license, number of copies | Buy |
+| event | date and time, venue, tickets | Get a ticket |
+| wanted | budget, needed by | Make an offer (a message) |
+
+Listings with a quantity stay open until they sell out; they're paid at once rather than through escrow. Jobs and wanted ads may have no coin price. The *Listings* tab filters by kind.
+
+The ways a listing sells:
 
 - **For sale:** a fixed price. *Buy* pays the seller (10% to the resource pools).
 - **Auctions:** a starting bid and an end time, up to 30 days. Each bid must beat the high bid by 5%. The high bid is held by the ledger, an outbid bidder is refunded at once, and the auction settles automatically at its end.

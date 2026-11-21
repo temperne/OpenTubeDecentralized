@@ -681,8 +681,13 @@ const MARKET = { feeStart: Date.UTC(2026, 10, 20, 6), maxDays: 30, minStep: 0.05
 // With an ARBITER (a key named by the seller, typically an org's arbiter) the buyer's coins are held in escrow: the buyer
 // releases them on delivery, they're released automatically after `hold` days, and either side may open a dispute,
 // which freezes them until the arbiter rules how to split them (`rule`). Without an arbiter the seller is paid at once.
-const listingShape = (x) => !!x && typeof x === 'object' && ['fixed', 'auction'].includes(x.kind) && (x.arbiter === undefined || isKey(x.arbiter)) && (x.hold === undefined || (Number.isSafeInteger(x.hold) && x.hold >= 1 && x.hold <= 90)) && (x.org === undefined || isHex(x.org, 64)) && isStr(x.title, MARKET.title) && x.title.trim().length > 0 && isStr(x.about ?? '', MARKET.about)
-  && isStr(x.contact ?? '', MARKET.contact) && (x.image === undefined || (isImg(x.image) && x.image.length <= MARKET.img)) && amtOk(x.price)
+const LISTING_TYPES = ['goods', 'service', 'job', 'housing', 'vehicle', 'rental', 'digital', 'event', 'wanted'];
+const detailsShape = (d) => d === undefined || (!!d && typeof d === 'object' && !Array.isArray(d) && Object.keys(d).length <= 16
+  && Object.entries(d).every(([k, v]) => /^[a-z][a-zA-Z]{0,23}$/.test(k) && (isStr(v, 160) || typeof v === 'boolean' || (Number.isFinite(v) && Math.abs(v) < 1e15))));
+const listingShape = (x) => !!x && typeof x === 'object' && ['fixed', 'auction'].includes(x.kind)
+  && (x.type === undefined || LISTING_TYPES.includes(x.type)) && detailsShape(x.details) && (x.qty === undefined || (Number.isSafeInteger(x.qty) && x.qty >= 1 && x.qty <= 1e6))
+  && (x.qty === undefined || x.qty === 1 || (!x.arbiter && x.kind === 'fixed'))   // several of the same: fixed price, paid at once && (x.arbiter === undefined || isKey(x.arbiter)) && (x.hold === undefined || (Number.isSafeInteger(x.hold) && x.hold >= 1 && x.hold <= 90)) && (x.org === undefined || isHex(x.org, 64)) && isStr(x.title, MARKET.title) && x.title.trim().length > 0 && isStr(x.about ?? '', MARKET.about)
+  && isStr(x.contact ?? '', MARKET.contact) && (x.image === undefined || (isImg(x.image) && x.image.length <= MARKET.img)) && (amtOk(x.price) || (x.price === undefined && ['job', 'wanted'].includes(x.type) && x.kind === 'fixed'))
   && (x.kind === 'fixed' || (Number.isSafeInteger(x.ends) && x.ends > 0)) && (x.category === undefined || AD_CATEGORIES.includes(x.category) || x.category === 'adviews')
   && (x.certs === undefined || (Array.isArray(x.certs) && x.certs.length <= PIECE.maxCerts && x.certs.every(c => isHex(c, 64)) && new Set(x.certs).size === x.certs.length)) && validTags(x.tags)
   && (x.place === undefined || placeShape(x.place)) && (x.deal === undefined || ['sale', 'rent'].includes(x.deal)) && mediaListOk(x.media) && (x.fee === undefined || amtOk(x.fee));   // housing: for sale or for rent (price per month)
@@ -716,7 +721,7 @@ class Ledger {
     this.retired = new Set(src?.retired);  // keys that may not send transactions any more
     this.tabsPaid = new Map(src?.tabsPaid); this.viewers = new Set(src?.viewers);   // 'payer|payee|video' -> units paid; 'video|viewer' seen
     this.certs = new Map([...(src?.certs || [])].map(([k, v]) => [k, { ...v }]));   // ad-view certificate id -> { owner, adv, tid, amt, ts, video }
-    this.listings = new Map([...(src?.listings || [])].map(([k, v]) => [k, { ...v, certs: [...(v.certs || [])], ...(v.escrow ? { escrow: { ...v.escrow } } : {}) }]));   // marketplace
+    this.listings = new Map([...(src?.listings || [])].map(([k, v]) => [k, { ...v, certs: [...(v.certs || [])], ...(v.escrow ? { escrow: { ...v.escrow } } : {}), ...(v.buyers ? { buyers: [...v.buyers] } : {}) }]));   // marketplace
   }
   // Coins belong to identities. A channel key bound to an identity, or a retired identity, resolves to the identity that
   // owns it now, so whatever is paid to a channel lands in its owner's balance (and its ads are paid from there).
@@ -806,7 +811,7 @@ class Ledger {
     if (t.unlist) { const L = this.listings.get(t.unlist.id); return !L || L.seller !== t.from ? 'not your listing' : L.high ? 'it already has a bid' : null; }
     if (t.buy) {
       const L = this.listings.get(t.buy.id);
-      if (!L || L.kind !== 'fixed') return 'that listing isn’t for sale';
+      if (!L || L.kind !== 'fixed' || L.state !== 'open' || !L.price) return 'that listing isn’t for sale';
       if (L.seller === t.from) return 'it’s your own listing';
       return this.balance(t.from) < L.price ? 'not enough coins' : null;
     }
@@ -901,12 +906,14 @@ class Ledger {
       for (const id of t.list.certs || []) this.certs.get(id).owner = 'listing:' + t.hash;   // held by the listing
       const fee = t.ts >= MARKET.feeStart ? t.list.fee : 0;
       if (fee) { this.add(t.from, -fee); if (t.list.arbiter) this.add(t.list.arbiter, fee - this.feeCut(t, fee)); else { const e = epochOf(t.ts); this.poolFees.set(e, (this.poolFees.get(e) || 0) + fee); } this.use.list++; }
-      this.listings.set(t.hash, { ...t.list, certs: [...(t.list.certs || [])], seller: t.from, ts: t.ts, high: null, bids: 0, state: 'open' });
+      this.listings.set(t.hash, { ...t.list, certs: [...(t.list.certs || [])], ...(t.list.details ? { details: { ...t.list.details } } : {}), seller: t.from, ts: t.ts, high: null, bids: 0, state: 'open' });
     } else if (t.unlist) {
       const L = this.listings.get(t.unlist.id); this.closeListing(t.unlist.id, L, null, 'withdrawn');
     } else if (t.buy) {
       const L = this.listings.get(t.buy.id);
-      this.add(t.from, -L.price); this.pay(L, t.from, L.price, t.ts); this.closeListing(t.buy.id, L, t.from, 'sold');
+      this.add(t.from, -L.price); this.pay(L, t.from, L.price, t.ts);
+      if ((L.qty || 1) > 1) { L.qty--; L.sold = (L.sold || 0) + 1; (L.buyers ||= []).push(t.from); }   // more left: stays open
+      else this.closeListing(t.buy.id, L, t.from, 'sold');
     } else if (t.release) {
       const L = this.listings.get(t.release.id); this.payOut(L, 0, t.ts, 'released');
     } else if (t.appeal) {   // the ruling is set aside until the court above rules
@@ -1992,7 +1999,7 @@ async function createEngine(o) {
   });
 }
 
-globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, XCHG, noteUnlock, mediaRefShape, placeShape, domainOf, MAIL, ORG, orgRoles, orderPreimage, courtPreimage, bindPreimage, retirePreimage, rekeyPreimage, SQUARE, SEAL, monthKey, squareMonths, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
+globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, LISTING_TYPES, XCHG, noteUnlock, mediaRefShape, placeShape, domainOf, MAIL, ORG, orgRoles, orderPreimage, courtPreimage, bindPreimage, retirePreimage, rekeyPreimage, SQUARE, SEAL, monthKey, squareMonths, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
 })();
 </script>
 
@@ -3584,15 +3591,50 @@ const listingPrice = (L) => L.kind === 'auction' ? (L.high ? L.high.amt : L.pric
 const endsText = (ts) => { const d = ts - Date.now(); if (d <= 0) return 'ended'; const hrs = d / 3600000; return hrs >= 48 ? `${Math.round(hrs / 24)} days left` : hrs >= 1 ? `${Math.round(hrs)} h left` : `${Math.max(1, Math.round(d / 60000))} min left`; };
 function listingCard([id, L]) {
   const th = h('div', { class: 'thumb' }); if (L.image) th.style.backgroundImage = `url("${L.image}")`; else th.textContent = L.certs.length ? '🎟' : '🛍';
-  const what = L.kind === 'auction' ? `${L.high ? 'bid' : 'starts at'} ${fmtCoin(listingPrice(L))} · ${L.state === 'open' ? endsText(L.ends) : L.state}` : `${fmtCoin(L.price)} coins${L.deal === 'rent' ? ' / month' : ''}${L.state !== 'open' ? ' · ' + L.state : ''}`;
+  const K = kindOf(L), dd = L.details || {}, per = dd.rateUnit || dd.period || (L.deal === 'rent' ? 'month' : null);
+  const what = L.kind === 'auction' ? `${L.high ? 'bid' : 'starts at'} ${fmtCoin(listingPrice(L))} · ${L.state === 'open' ? endsText(L.ends) : L.state}` : `${L.price ? fmtCoin(L.price) + ' coins' : (dd.salary || dd.budget || 'price on request')}${L.price && per ? ' / ' + per : ''}${L.qty > 1 ? ` · ${L.qty} left` : ''}${L.state !== 'open' ? ' · ' + L.state : ''}`;
   return h('a', { class: 'card', href: `#/market/item/${id}` }, th,
     h('div', { class: 'meta' }, h('h3', { title: L.title }, L.title), h('div', { class: 'sub' }, what),
-      h('div', { class: 'sub' }, keyName(L.seller), L.certs.length ? ` · ${L.certs.length} ad view${L.certs.length === 1 ? '' : 's'}` : '', L.category && L.category !== 'adviews' ? ' · ' + CAT_NAMES[L.category] : ''),
+      h('div', { class: 'sub' }, `${K.icon} ${K.name} · `, keyName(L.seller), L.certs.length ? ` · ${L.certs.length} ad view${L.certs.length === 1 ? '' : 's'}` : '', L.category && !['adviews', 'housing'].includes(L.category) ? ' · ' + CAT_NAMES[L.category] : ''),
+      detailsText(L).length ? h('div', { class: 'sub' }, detailsText(L).slice(0, 3).map(([, v]) => v).join(' · ')) : null,
       L.place ? h('div', { class: 'sub' }, '📍 ', (L.place.label || '').split(',')[0] || 'on the map', myPlace ? ` · ${km(myPlace, L.place).toFixed(1)} km` : '') : null,
       L.pending ? h('span', { class: 'badge warn' }, 'waiting for a block…') : null));
 }
+// Each kind of listing has its own fields (stored in `details`) and its own words for the price and the button.
+const KINDS = {
+  goods: { name: 'Goods', icon: '📦', act: 'Buy', fields: [['condition', 'Condition', ['new', 'like new', 'used', 'refurbished', 'for parts']], ['brand', 'Brand'], ['qty', 'How many for sale', 'number']] },
+  service: { name: 'Service', icon: '🛠', act: 'Book', price: 'Rate', fields: [['rateUnit', 'Rate per', ['hour', 'day', 'job', 'week', 'month']], ['area', 'Where you work (area)'], ['availability', 'Availability']] },
+  job: { name: 'Job', icon: '💼', act: 'Apply', price: 'Pay (optional, coins)', optionalPrice: true, fields: [['employment', 'Type', ['full-time', 'part-time', 'contract', 'temporary', 'internship', 'volunteer']], ['salary', 'Pay (any currency, e.g. 25 USD/hour)'], ['company', 'Company'], ['remote', 'Remote possible', 'bool']] },
+  housing: { name: 'Housing', icon: '🏠', act: 'Buy', fields: [['deal', 'For', ['sale', 'rent']], ['bedrooms', 'Bedrooms', 'number'], ['bathrooms', 'Bathrooms', 'number'], ['sizeM2', 'Size (m²)', 'number'], ['furnished', 'Furnished', 'bool'], ['available', 'Available from (date)', 'date']] },
+  vehicle: { name: 'Vehicle', icon: '🚗', act: 'Buy', fields: [['make', 'Make'], ['model', 'Model'], ['year', 'Year', 'number'], ['mileageKm', 'Mileage (km)', 'number'], ['fuel', 'Fuel', ['petrol', 'diesel', 'electric', 'hybrid', 'other']], ['transmission', 'Transmission', ['manual', 'automatic']]] },
+  rental: { name: 'Rental', icon: '🔑', act: 'Rent', price: 'Price per period', fields: [['period', 'Per', ['hour', 'day', 'week', 'month']], ['deposit', 'Deposit (coins)', 'number']] },
+  digital: { name: 'Digital', icon: '💾', act: 'Buy', fields: [['format', 'Format (e.g. PDF, MP3, license key)'], ['license', 'License / usage terms'], ['qty', 'How many copies (blank: unlimited)', 'number']] },
+  event: { name: 'Event / tickets', icon: '🎟', act: 'Get a ticket', price: 'Price per ticket', fields: [['date', 'Date and time', 'datetime'], ['venue', 'Venue'], ['qty', 'Tickets available', 'number']] },
+  wanted: { name: 'Wanted', icon: '🔎', act: 'Make an offer', price: 'Budget (optional, coins)', optionalPrice: true, fields: [['budget', 'Budget (any currency)'], ['needBy', 'Needed by (date)', 'date']] }
+};
+const kindOf = (L) => KINDS[L.type] || (L.category === 'housing' ? KINDS.housing : L.certs?.length ? { name: 'Ad views', icon: '🎟', act: 'Buy', fields: [] } : KINDS.goods);
+function detailsText(L) {
+  const k = kindOf(L), d = L.details || {}; const out = [];
+  for (const [key, label, type] of k.fields) { const v = key === 'qty' ? L.qty : d[key]; if (v === undefined || v === '' || v === false) continue; out.push([label.replace(/ \(.*\)$/, ''), type === 'bool' ? 'yes' : type === 'datetime' || type === 'date' ? new Date(v).toLocaleString([], type === 'date' ? { dateStyle: 'medium' } : { dateStyle: 'medium', timeStyle: 'short' }) : String(v)]); }
+  return out;
+}
 function marketNew() {
   const kind = h('select', {}, h('option', { value: 'fixed' }, 'Fixed price'), h('option', { value: 'auction' }, 'Auction'));
+  const ltype = h('select', {}, Object.entries(KINDS).map(([k, v]) => h('option', { value: k }, `${v.icon} ${v.name}`)));
+  const fieldBox = h('div', { class: 'split', style: 'gap:10px' }), inputs = new Map();
+  const priceLabel = h('label', {}, 'Price');
+  const drawFields = () => {
+    const k = KINDS[ltype.value]; inputs.clear();
+    fieldBox.replaceChildren(...k.fields.map(([key, label, type]) => {
+      const el = Array.isArray(type) ? h('select', {}, h('option', { value: '' }, label + '…'), type.map(o => h('option', { value: o }, o)))
+        : type === 'bool' ? h('input', { type: 'checkbox' }) : h('input', { type: type === 'number' ? 'number' : type === 'date' ? 'date' : type === 'datetime' ? 'datetime-local' : 'text', placeholder: label, maxLength: 160 });
+      inputs.set(key, [el, type]);
+      return type === 'bool' ? h('label', { style: 'display:flex;gap:8px;align-items:center;font-weight:400' }, el, label) : h('div', {}, h('label', {}, label), el);
+    }));
+    priceLabel.textContent = k.price || 'Price';
+    if (ltype.value === 'housing') cat.value = 'housing';
+    if (['job', 'wanted'].includes(ltype.value)) kind.value = 'fixed';
+  };
   const title = h('input', { type: 'text', maxLength: MARKET.title, placeholder: 'What are you selling?' });
   const about = h('textarea', { maxLength: MARKET.about, placeholder: 'Description, condition, delivery…' });
   const price = h('input', { type: 'text', inputMode: 'decimal', placeholder: 'Price in coins (auction: starting bid)' });
@@ -3616,22 +3658,32 @@ function marketNew() {
       return h('label', { style: 'display:flex;gap:8px;align-items:center;font-weight:400' }, cb, `${list.length} view${list.length === 1 ? '' : 's'} of ${advName(adv)}’s ads (worth ${fmtCoin(list.reduce((n, c) => n + c.amt, 0))} coins if cashed in)`); })) : null;
   const status = h('span', { class: 'sub' });
   const btn = h('button', { class: 'primary', onclick: async () => {
-    const amt = coinsToUnits(price.value); if (!title.value.trim() || !amt) return toast('Give it a title and a price');
+    const K = KINDS[ltype.value], amt = coinsToUnits(price.value);
+    if (!title.value.trim() || (!amt && !(K.optionalPrice && !price.value.trim()))) return toast(K.optionalPrice ? 'Give it a title (the price can stay empty)' : 'Give it a title and a price');
+    const details = {}; let qty;
+    for (const [key, [el, type]] of inputs) {
+      const v = type === 'bool' ? el.checked : el.value.trim(); if (v === '' || v === false) continue;
+      if (key === 'qty') { qty = Math.max(1, Math.floor(Number(v)) || 1); continue; }
+      details[key] = type === 'number' ? Number(v) : type === 'date' || type === 'datetime' ? new Date(v).getTime() : v;
+    }
     const certs = [...picks.values()].filter(x => x.cb.checked).flatMap(x => x.list.map(c => c.id)).slice(0, globalThis.OpenTubeCore.PIECE.maxCerts);
     let image; if (img.files[0]) { image = await imageFileToDataUrl(img.files[0], 320); if (image.length > MARKET.img) image = await imageFileToDataUrl(img.files[0], 200); }
-    const x = { kind: kind.value, title: title.value.trim(), price: amt, ...(about.value.trim() ? { about: about.value.trim() } : {}), ...(contact.value.trim() ? { contact: contact.value.trim() } : {}),
+    if (qty > 1 && (court.value || kind.value !== 'fixed')) return toast('Several of the same sell at a fixed price, paid at once (no escrow)');
+    const x = { kind: kind.value, type: ltype.value, title: title.value.trim(), ...(amt ? { price: amt } : {}), ...(Object.keys(details).length ? { details } : {}), ...(qty > 1 ? { qty } : {}), ...(about.value.trim() ? { about: about.value.trim() } : {}), ...(contact.value.trim() ? { contact: contact.value.trim() } : {}),
       ...(kind.value === 'auction' ? { ends: Date.now() + Math.min(MARKET.maxDays, Math.max(1, Number(days.value) || 7)) * 86400000 } : {}),
       ...(certs.length ? { certs, category: 'adviews' } : cat.value ? { category: cat.value } : {}),
-      ...(place ? { place } : {}), ...(cat.value === 'housing' && !certs.length ? { deal: deal.value } : {}),
+      ...(place ? { place } : {}), ...(ltype.value === 'housing' && details.deal ? { deal: details.deal } : cat.value === 'housing' && !certs.length ? { deal: deal.value } : {}),
       ...(att.count() ? { media: await att.getRefs(false) } : {}), fee: priceNow('list'),
       ...(court.value ? { org: court.value, arbiter: derive(orgCh(court.value).id)?.owner || genesisFor(court.value).author, hold: 14 } : {}), ...(parseTags(tags.value).length ? { tags: parseTags(tags.value) } : {}), ...(image ? { image } : {}) };
     btn.disabled = true;
     try { await sendTx({ list: x }, me.pub, status); toast('Listed. Your browser is confirming it in a main-chain block, which can take a minute; it shows as “waiting for a block” until then.'); kept.delete('market-new'); location.hash = '#/market/mine'; }
     catch { btn.disabled = false; }
   } }, 'List it');
+  ltype.onchange = drawFields; setTimeout(drawFields, 0);
   return h('div', { class: 'panel', style: 'max-width:720px' }, h('h3', { style: 'margin-top:0' }, 'Sell something'),
     h('p', { class: 'sub', style: 'margin-top:0' }, 'Listings live on the main chain. Coins move through the network (10% of each sale feeds the network’s resource pools). Ad views move automatically. Anything else (goods, gift cards, services, cash or PayPal deals) is delivered by you, using the contact you give.'),
-    h('label', {}, 'Type'), kind, daysRow, h('label', {}, 'Payment protection'), court, h('label', {}, 'Title'), title, h('label', {}, 'Description'), about, h('label', {}, 'Price'), price, h('label', {}, 'Contact'), contact,
+    h('label', {}, 'What are you listing?'), ltype, h('label', {}, 'How it sells'), kind, daysRow, h('label', {}, 'Payment protection'), court, h('label', {}, 'Title'), title, h('label', {}, 'Description'), about,
+    fieldBox, priceLabel, price, h('label', {}, 'Contact'), contact,
     h('div', { class: 'split', style: 'gap:10px;margin-top:10px' }, cat, tags), dealRow, h('label', {}, 'Cover picture (optional)'), img,
     h('label', {}, 'More pictures and videos (from My media, up to 10)'), att,
     h('label', {}, 'Where (optional: helps people nearby find it)'), placePicker(null, (pl) => { place = pl; }), certBox,
@@ -3664,7 +3716,8 @@ function marketItem(id) {
   if (L.kind === 'auction') bidIn.value = (min / 100).toFixed(2);
   const actions = !open ? h('div', { class: 'sub' }, L.state === 'sold' ? `Sold to ${keyName(L.buyer)}.` : L.state === 'withdrawn' ? 'Withdrawn by the seller.' : 'Ended without bids.')
     : mine ? (L.high ? h('div', { class: 'sub' }, 'You can’t withdraw it: it has a bid.') : h('button', { onclick: (e) => { e.target.disabled = true; sendTx({ unlist: { id } }, me.pub, status).catch(() => {}); } }, 'Withdraw listing'))
-    : L.kind === 'fixed' ? h('button', { class: 'primary', onclick: (e) => { if (!confirm(`Buy “${L.title}” for ${fmtCoin(L.price)} coins?`)) return; e.target.disabled = true; sendTx({ buy: { id } }, me.pub, status).catch(() => { e.target.disabled = false; }); } }, `Buy for ${fmtCoin(L.price)} coins`)
+    : L.kind === 'fixed' && (!L.price || ['job', 'wanted'].includes(L.type)) ? h('a', { class: 'act', href: `#/messages/${E.ledger.resolve(L.seller)}`, onclick: () => { msgDraft = `About your listing “${L.title}”: `; } }, `✉ ${kindOf(L).act}`)
+    : L.kind === 'fixed' ? h('button', { class: 'primary', onclick: (e) => { if (!confirm(`${kindOf(L).act}: “${L.title}” for ${fmtCoin(L.price)} coins?`)) return; e.target.disabled = true; sendTx({ buy: { id } }, me.pub, status).catch(() => { e.target.disabled = false; }); } }, `${kindOf(L).act} for ${fmtCoin(L.price)} coins`)
     : h('div', { class: 'row' }, bidIn, h('button', { class: 'primary', onclick: (e) => { const a = coinsToUnits(bidIn.value); if (!a || a < min) return toast(`Bid at least ${fmtCoin(min)} coins`); e.target.disabled = true; sendTx({ bid: { id, amt: a } }, me.pub, status).catch(() => { e.target.disabled = false; }); } }, 'Place bid'),
       h('span', { class: 'sub' }, `at least ${fmtCoin(min)} · held until the end, refunded if someone outbids you`));
   return h('div', { class: 'split' },
@@ -3676,7 +3729,8 @@ function marketItem(id) {
       L.certs.length ? h('div', { class: 'panel', style: 'margin:10px 0' }, `🎟 ${L.certs.length} verified ad view${L.certs.length === 1 ? '' : 's'} of ${certAdv.map(advName).join(', ')}'s ads. They move to the buyer automatically and can be cashed in for ${fmtCoin(certVal)} coins, or sold back to the advertiser.`) : null,
       L.about ? rich(L.about, L.seller) : null,
       L.contact ? h('div', { class: 'sub' }, 'Contact: ', L.contact) : null,
-      L.deal ? h('div', {}, h('span', { class: 'badge' }, L.deal === 'rent' ? 'For rent · price per month' : 'For sale')) : null,
+      h('div', {}, h('span', { class: 'badge' }, kindOf(L).icon + ' ' + kindOf(L).name), L.deal ? h('span', { class: 'badge', style: 'margin-left:6px' }, L.deal === 'rent' ? 'For rent · price per month' : 'For sale') : null, L.qty > 1 ? h('span', { class: 'badge', style: 'margin-left:6px' }, `${L.qty} left`) : null, L.sold ? h('span', { class: 'badge ok', style: 'margin-left:6px' }, `${L.sold} sold`) : null),
+      detailsText(L).length ? h('div', { class: 'kv', style: 'margin:10px 0' }, detailsText(L).flatMap(([k, v]) => [h('div', {}, k), h('div', {}, v)])) : null,
       mediaView(L.media),
       L.place ? h('div', { style: 'margin:10px 0' }, h('div', { class: 'sub' }, '📍 ', L.place.label || `${L.place.lat}, ${L.place.lon}`, myPlace ? ` · ${km(myPlace, L.place).toFixed(1)} km from you` : ''), mapView([{ ...L.place, title: L.title, kind: L.category === 'housing' ? 'housing' : 'listing' }], { height: 220, zoom: 14 })) : null,
       L.org ? h('div', { class: 'sub' }, '🛡 Payment held in escrow; disputes heard by ', chainLink(L.org), ` (released after ${L.hold || 14} days unless disputed).`) : null,
@@ -3701,7 +3755,7 @@ views.market = { render() {
   const pending = [...E.txpool.values()].filter(t => t.list && !E.ledger.listings.has(t.hash)).map(t => [t.hash, { ...t.list, certs: t.list.certs || [], seller: t.from, ts: t.ts, high: null, bids: 0, state: 'open', pending: true }]);
   const tab = route.tab, all = [...pending, ...E.ledger.listings].sort((a, b) => b[1].ts - a[1].ts);
   const live = all.filter(([, L]) => L.state === 'open' && (L.kind === 'fixed' || L.ends > Date.now()));
-  const tabs = [['items', 'For sale'], ['housing', '🏠 Housing'], ['map', '🗺 Map'], ['auctions', 'Auctions'], ['adviews', 'Ad views'], ['ads', 'Ad board'], ['mine', 'Mine'], ['new', '＋ Sell something']];
+  const tabs = [['items', 'Listings'], ['housing', '🏠 Housing'], ['map', '🗺 Map'], ['auctions', 'Auctions'], ['adviews', 'Ad views'], ['ads', 'Ad board'], ['mine', 'Mine'], ['new', '＋ Sell something']];
   // near me: sort by distance and keep what's within the chosen radius (your location stays in this browser)
   const radius = Number(settings.nearKm || 0);
   const near = (list) => !myPlace || !radius ? list : list.filter(([, L]) => L.place && km(myPlace, L.place) <= radius).sort((a, b) => km(myPlace, a[1].place) - km(myPlace, b[1].place));
@@ -3729,7 +3783,9 @@ views.market = { render() {
   else if (tab === 'adviews') body = h('div', {}, h('p', { class: 'sub' }, 'Bundles of verified ad views. Creators collect them from their viewers and sell them back to the advertiser (or anyone). Each one can be cashed in for the coins it holds.'), grid(live.filter(([, L]) => L.certs.length), 'No ad-view bundles for sale.'));
   else if (tab === 'mine') body = h('div', {}, h('h3', {}, 'Your listings'), grid(all.filter(([, L]) => isMine(L.seller)), 'You haven’t listed anything.'),
     h('h3', {}, 'Your bids and purchases'), grid(all.filter(([, L]) => (L.high && isMine(L.high.by)) || (L.buyer && isMine(L.buyer))), 'None yet.'));
-  else body = h('div', {}, nearBar, grid(live.filter(([, L]) => L.kind === 'fixed'), 'Nothing for sale yet. Be the first: ＋ Sell something.'));
+  else { const kf = settings.marketKind || 'all';
+    body = h('div', {}, h('div', { class: 'row', style: 'justify-content:space-between' }, viewChips('marketKind', [['all', 'All'], ...Object.entries(KINDS).map(([k, v]) => [k, v.icon + ' ' + v.name])], () => render(true)), nearBar),
+      grid(live.filter(([, L]) => L.kind === 'fixed' && (kf === 'all' || (L.type || (L.category === 'housing' ? 'housing' : 'goods')) === kf)), 'Nothing listed yet. Be the first: ＋ Sell something.')); }
   return h('div', {}, h('h2', { style: 'margin:0' }, 'Market'),
     h('div', { class: 'tabs', style: 'flex-wrap:wrap' }, tabs.map(([k, l]) => h('a', { href: `#/market/${k}`, class: tab === k ? 'active' : '' }, l))), body);
 } };
