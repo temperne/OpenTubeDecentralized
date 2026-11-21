@@ -810,6 +810,10 @@ async function control(c) {
         groupKick(hostCfg, x => x.user === a.key); delete obsStore.users[a.key]; delete obsStore.profiles[a.key]; saveObs(); announceSoon?.();
         log(`[group] invitation of ${u.name || a.key.slice(0, 8)} cancelled`);
       }
+      else if (c.cmd === 'group.kick.all') {   // the host ended the stream from the site: everyone out
+        if (!isHost) return fail('only the host can end the group stream');
+        groupKick(hostCfg, () => true);
+      }
       else if (c.cmd === 'group.kick') {   // disconnect one input (they can come back while invited)
         if (!isHost && a.id && !String(a.id).includes(c.user)) return fail('only the host can disconnect others');
         if (!groupKick(hostCfg, x => x.id === a.id)) return fail('not connected');

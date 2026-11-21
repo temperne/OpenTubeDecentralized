@@ -5666,6 +5666,25 @@ views.livewatch = {
         } }, 'Join on camera'))));
     };
     const liveBadge = h('span', { class: 'badge live' }, 'LIVE');
+    // the channel's owner can end the stream from here: whether this browser is sending it, another device or a
+    // computer was, or it was left open (a closed page, a crash). It's marked ended on the channel for everyone.
+    const endBtn = h('button', { class: 'small', style: 'background:var(--live, #e11d48);color:#fff;border:none', onclick: async () => {
+      if (!confirm('End this stream for everyone?')) return;
+      endBtn.disabled = true; endBtn.textContent = 'Ending…';
+      try {
+        const own = broadcasts.get(id);
+        if (own?.stream === lb.payload.stream && !own.ended) { own.rtmp || own.obs ? (own.ended = true) : await stopLive(id); }
+        const dd = derive(id);
+        if (!dd.liveEnds.has(lb.payload.stream)) {
+          const stats = globalThis.OpenTubeCore.liveStatsOf(viewing.get(lb.payload.stream)?.viewers || lastViewers);
+          await append(id, { type: 'liveend', stream: lb.payload.stream, outcome: 'ended', ...(stats ? { stats } : {}) });
+        }
+        const n = lb.author !== dd.owner && E.nodes.get(lb.author);   // a computer's group stream: disconnect everyone in it
+        if (n && nodePerms(n).includes('o')) nodeCtl(n, 'group.kick.all').catch(() => {});
+        deadStreams.set(lb.payload.stream, Date.now());
+        toast('Stream ended.'); render(true);
+      } catch (e) { toast('Couldn’t end it: ' + e.message); endBtn.disabled = false; endBtn.textContent = '⏹ End stream'; }
+    } }, '⏹ End stream');
     const drawChat = () => {
       const dd = derive(id);
       if (dd.liveEnds.has(lb.payload.stream) && whoBox.isConnected) {   // it just ended: its public statistics replace the live counts
@@ -5702,7 +5721,8 @@ views.livewatch = {
     drawChat(); drawWho();
     views.livewatch.refresh = drawChat;   // new blocks (chat) shouldn't rebuild the player
     return h('div', { class: 'split', style: 'grid-template-columns:2fr 1fr' },
-      h('div', {}, player, h('div', { class: 'row', style: 'justify-content:space-between;margin-top:8px' }, h('h2', { style: 'margin:0' }, ended ? '' : liveBadge, ' ', lb.payload.title), unmute),
+      h('div', {}, player, h('div', { class: 'row', style: 'justify-content:space-between;margin-top:8px' }, h('h2', { style: 'margin:0' }, ended ? '' : liveBadge, ' ', lb.payload.title),
+          h('div', { class: 'row', style: 'gap:6px' }, unmute, !ended && isMine(d.owner) ? endBtn : null)),
         h('div', { class: 'sub' }, h('a', { href: `#/c/${id}` }, d.profile.name), ' · started ', ago(lb.ts), watchers), status, banner),
       h('div', {}, (() => {   // your own stream from one of your computers: the group stream's controls (who's on camera, disconnect, invites)
         const n = lb.author !== d.owner && E.nodes.get(lb.author);
