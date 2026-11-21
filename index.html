@@ -1542,7 +1542,8 @@ function permittedAt(chain, b) {
   const target = chain.blocks.get(b.payload.target);
   if (b.payload.type === 'hide') return target.author === b.author;              // only your own comments
   if (b.payload.type === 'vote' && target.payload.type === 'comment') return true;   // likes on comments (they pay the commenter)
-  if (target.author !== owner || !['video', 'live'].includes(target.payload.type)) return false;  // comments and votes attach to the channel's videos and live streams
+  const ownLive = target.payload.type === 'live' && target.author !== owner && relayAllowed(chain, target);   // a stream from a computer linked to the channel (OBS, group streams)
+  if ((target.author !== owner && !ownLive) || !['video', 'live'].includes(target.payload.type)) return false;  // comments and votes attach to the channel's videos and live streams
   if (b.payload.type === 'vote') return true;                                   // anyone not revoked may vote
   const pol = videoPolicy.get(target.hash) ?? def;
   return pol === 'anyone' || (pol === 'approved' && allowed.has(b.author));
