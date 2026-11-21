@@ -474,7 +474,7 @@ function validPayload(chain, b, CFG) {
     case 'allow': case 'revoke': return isKey(p.key);
     case 'profile': return (p.place === undefined || placeShape(p.place)) && (p.links === undefined || (Array.isArray(p.links) && p.links.length <= 12 && p.links.every(l => l && isStr(l.label, 40) && isStr(l.url, 300) && /^https:\/\/\S+$/.test(l.url))))
       && (p.location === undefined || isStr(p.location, 100)) && (p.join === undefined || (kind === 'group' && ['open', 'approved'].includes(p.join))) && (p.name === undefined || (isStr(p.name, LIMITS.name) && p.name.trim().length > 0)) && (p.about === undefined || isStr(p.about, LIMITS.about)) && (p.avatar === undefined || isImg(p.avatar)) && (p.comments === undefined || ['anyone', 'approved', 'off'].includes(p.comments));
-    case 'add': return kind === 'list' && isHex(p.target, 64) && isStr(p.note ?? '', LIMITS.about);
+    case 'add': return kind === 'list' && isHex(p.target, 64) && (p.video === undefined || isHex(p.video, 64)) && isStr(p.note ?? '', LIMITS.about);   // a whole channel, or one of its videos
     case 'vote': return (kind === 'channel' || kind === 'group') && isHex(p.target, 64) && [1, 0, -1].includes(p.v);
     // An ad. Its terms (price per view, max views…) are signed separately by the same key so a viewer's
     // claim can carry them to the main chain without the whole block.
@@ -3496,22 +3496,33 @@ const keep = (key, make) => kept.get(key) || kept.set(key, make()).get(key);
 
 // ---- feed
 function homeTimeline() {   // videos and posts from what you subscribe to and who you follow, newest first
-  const out = [], keep_ = new Set([...settings.following, ...settings.friends.map(f => f.key)]);
+  const out = [], keep_ = new Set([...settings.following, ...settings.friends.map(f => f.key)]), seenV = new Set();
   for (const id of Object.keys(subs)) {
     const d = chains.has(id) ? derive(id) : null; if (!d) continue;
     if (d.kind === 'channel') { for (const b of d.videos) if (E.postPaid(b)) out.push({ ts: b.ts, kind: 'video', id, b }); for (const b of d.posts) out.push({ ts: b.ts, kind: 'cpost', id, b }); }
     if (d.kind === 'group') for (const b of d.posts) if (!d.hidden.has(b.hash)) out.push({ ts: b.ts, kind: 'gpost', id, b });
+    if (d.kind === 'list' && !d.profile.ranking) for (const [c, v] of listFeed(id).slice(0, 40)) out.push({ ts: v.ts, kind: 'video', id: c, b: v, via: id });
   }
   const m = monthKey(Date.now()), sq = squareChain(m);
   if (sq) { const d = derive(sq.id); for (const b of d.posts) if (!d.hidden.has(b.hash) && (keep_.has(E.ledger.resolve(b.author)) || isMine(b.author))) out.push({ ts: b.ts, kind: 'square', id: sq.id, m, b }); }
-  return out.sort((a, b) => b.ts - a.ts);
+  return out.filter(x => x.kind !== 'video' || (!seenV.has(x.b.hash) && seenV.add(x.b.hash))).sort((a, b) => b.ts - a.ts);
 }
 function timelineItem(x) {
   const d = derive(x.id);
-  if (x.kind === 'video') { const card = videoCard(x.id, x.b); return card ? h('div', { class: 'item' }, h('div', { class: 'sub' }, '🎬 ', chainLink(x.id), ' posted a video · ', ago(x.ts)), h('div', { style: 'max-width:420px' }, card)) : null; }
+  if (x.kind === 'video') { const card = videoCard(x.id, x.b); return card ? h('div', { class: 'item' }, h('div', { class: 'sub' }, '🎬 ', chainLink(x.id), ' posted a video · ', ago(x.ts), x.via ? [' · in the list ', chainLink(x.via)] : ''), h('div', { style: 'max-width:420px' }, card)) : null; }
   if (x.kind === 'square') return squareItem(x.m, chains.get(x.id), x.b, d, false);
   if (x.kind === 'gpost') return h('div', {}, h('div', { class: 'sub' }, '👥 in ', chainLink(x.id)), groupPost(x.id, d, x.b));
   return h('div', { class: 'item' }, h('div', { class: 'sub' }, '📣 ', chainLink(x.id), ' · ', ago(x.ts)), rich(x.b.payload.text, d.owner));
+}
+function listFeed(listId) {   // [[chain, video block]] newest first
+  const d = derive(listId), out = new Map();
+  for (const b of d?.adds || []) {
+    const c = chains.get(b.payload.target) || (genesisFor(b.payload.target) ? (E.requestChain(openChain(b.payload.target)), chains.get(b.payload.target)) : null);
+    if (!c) continue;
+    if (b.payload.video) { const v = c.blocks.get(b.payload.video); if (v) out.set(v.hash, [c.id, v]); else E.send({ t: 'rq', c: c.id, w: [b.payload.video], h: headsOf(c) }); }
+    else for (const v of (derive(c.id)?.videos || []).filter(x => E.postPaid(x)).slice(0, 8)) out.set(v.hash, [c.id, v]);
+  }
+  return [...out.values()].sort((a, b) => b[1].ts - a[1].ts);
 }
 views.home = { render() {
   if ((settings.homeView || 'all') === 'all') {
@@ -3776,11 +3787,17 @@ views.square = { render() {
     if (!b) { E.send({ t: 'rq', c: c.id, w: [route.post], h: headsOf(c) }); return h('div', { class: 'empty' }, 'Fetching this post from peers…'); }
     return h('div', {}, h('a', { href: `#/square/${m}` }, '← ' + m), h('div', { class: 'panel', style: 'margin-top:10px' }, squareItem(m, c, b, d, true)));
   }
-  const posts = d.posts.filter(b => !d.hidden.has(b.hash));
+  let posts = d.posts.filter(b => !d.hidden.has(b.hash));
+  if ((settings.postSort || 'recent') === 'popular') {   // likes and replies, weighed toward recent ones
+    const replies = new Map(); for (const x of c.blocks.values()) if (x.payload.type === 'comment') replies.set(x.payload.target, (replies.get(x.payload.target) || 0) + 1);
+    const score = (b) => (votesOf(d, b.hash).up + 2 * (replies.get(b.hash) || 0) + 1) / Math.pow((Date.now() - b.ts) / 3600000 + 2, 1.5);
+    posts = posts.slice().sort((a, b) => score(b) - score(a));
+  }
   return h('div', { style: 'max-width:760px' },
     h('div', { class: 'row', style: 'justify-content:space-between' }, h('h2', { style: 'margin:0' }, 'Posts'), h('span', { class: 'sub' }, m, ' · ', h('a', { href: `#/square/${prevMonth(m)}` }, 'older ›'))),
     h('p', { class: 'sub' }, 'Say anything, publicly. Each month is its own chain that every node keeps; replies go on the chain of the post they answer, so an old thread stays together. This browser only syncs the months you open.'),
     m === monthKey(Date.now()) ? squareComposer(c.id, null, 'What’s happening?') : null,
+    viewChips('postSort', [['recent', 'Recent'], ['popular', 'Popular']], () => render(true)),
     posts.length ? h('div', { class: 'panel' }, posts.map(b => squareItem(m, c, b, d, false))) : h('div', { class: 'empty' }, E.syncState(c).state === 'synced' || !net.online() ? 'No posts yet this month.' : 'Syncing this month’s posts…'));
 } };
 
@@ -4718,7 +4735,7 @@ views.chain = { render() {
     : d.kind === 'case' ? ['docket', 'about'].concat(mine ? ['manage'] : [])
     : d.kind === 'group' ? ['discussion', 'members', 'about'].concat(mine ? ['manage'] : [])
     : d.kind === 'channel' ? (mine ? ['videos', 'upload', 'golive', 'posts', 'about', 'advertise', 'manage'] : ['videos', 'posts', 'about'])
-    : (c.genesis.payload.ranking ? ['ranking', 'about'] : ['channels', 'about']).concat(mine ? ['manage'] : []);
+    : (c.genesis.payload.ranking ? ['ranking', 'about'] : ['feed', 'channels', 'about']).concat(mine ? ['manage'] : []);
   const tab = tabs.includes(route.tab) ? route.tab : tabs[0];
   return h('div', {},
     h('div', { class: 'row' }, avatar(p.avatar, p.name),
@@ -5035,6 +5052,17 @@ const chainTab = {
     return h('div', {}, h('p', { class: 'sub' }, `${r.items.length} videos · algorithm ${r.algo} · published ${ago(r.at)}, signed by this list's key.`),
       h('div', { class: 'grid' }, r.items.slice(0, 100).map((i, n) => rankCard(i, n + 1))));
   },
+  feed(id, d) {   // what this list puts together: the newest videos of its channels plus the videos added one by one
+    const items = listFeed(id);
+    const vin = h('input', { type: 'text', placeholder: 'Add a video: paste its link (…#/v/…)', style: 'flex:1' }), note = h('input', { type: 'text', placeholder: 'Note (optional)', maxLength: 200, style: 'width:200px' });
+    return h('div', {},
+      isMine(d.owner) ? h('div', { class: 'panel row' }, vin, note, h('button', { class: 'primary', onclick: async () => {
+        const m = /#\/v\/([0-9a-f]{64})\/([0-9a-f]{64})/.exec(vin.value); if (!m) return toast('Paste a video link (it contains #/v/…)');
+        await append(id, { type: 'add', target: m[1], video: m[2], ...(note.value.trim() ? { note: note.value.trim() } : {}) }); vin.value = note.value = ''; toast('Added to the list');
+      } }, 'Add video')) : null,
+      h('p', { class: 'sub' }, 'Subscribe to this list and its feed shows up in your Home. ', d.adds.filter(b => !b.payload.video).length, ' channel(s), ', d.adds.filter(b => b.payload.video).length, ' single video(s).'),
+      items.length ? h('div', { class: 'grid' }, items.slice(0, 120).map(([c, b]) => videoCard(c, b))) : h('div', { class: 'empty' }, 'Nothing in this list yet.'));
+  },
   channels(id, d) {
     return h('div', {},
       isMine(d.owner) ? keep('add', () => {
@@ -5043,7 +5071,7 @@ const chainTab = {
         return h('div', { class: 'panel' }, h('label', {}, 'Add a channel to this list'), sel, h('div', { style: 'margin-top:8px' }, note),
           h('button', { class: 'primary', style: 'margin-top:8px', onclick: async () => { if (!sel.value) return; await append(id, { type: 'add', target: sel.value, note: note.value.trim() }); note.value = ''; } }, 'Add')); }) : null,
       h('div', { class: 'panel', style: 'padding:8px' }, d.adds.length ? d.adds.map(b => h('div', { class: 'row' },
-        h('div', { style: 'flex:1' }, chanRow(b.payload.target) || h('span', { class: 'sub' }, 'Unknown channel ' + b.payload.target.slice(0, 10))),
+        h('div', { style: 'flex:1' }, b.payload.video ? h('a', { href: `#/v/${b.payload.target}/${b.payload.video}` }, '🎬 ', chains.get(b.payload.target)?.blocks.get(b.payload.video)?.payload.title || 'a video') : chanRow(b.payload.target) || h('span', { class: 'sub' }, 'Unknown channel ' + b.payload.target.slice(0, 10))),
         b.payload.note ? h('span', { class: 'sub' }, b.payload.note) : null,
         isMine(d.owner) ? h('button', { class: 'small', onclick: () => append(id, { type: 'hide', target: b.hash }) }, 'Remove') : null)) : h('div', { class: 'sub', style: 'padding:10px' }, 'This list is empty.')));
   },
@@ -5375,6 +5403,10 @@ views.watch = {
           h('span', { class: 'votes' }, upBtn, downBtn), voteStatus,
           h('button', { class: 'small', onclick: () => { const url = location.href; navigator.clipboard?.writeText(url).then(() => toast('Link copied'), () => prompt('Copy link', url)); } }, 'Copy link'),
           h('button', { class: 'small', onclick: (e) => { const box = e.target.closest('.watch').querySelector('.report-slot'); box.replaceChildren(box.childElementCount ? '' : reportBox(id, video)); } }, '⚑ Report'),
+          (() => { const lists = [...new Set([...E.directory.keys(), ...mempool.keys()])].filter(x => genesisFor(x)?.payload.kind === 'list' && !genesisFor(x).payload.ranking && isMine(chains.get(x)?.owner || genesisFor(x).author)); if (!lists.length) return null;
+            const sel = h('select', { style: 'width:auto' }, h('option', { value: '' }, '＋ Add to list…'), lists.map(x => h('option', { value: x }, channelTitle(x))));
+            sel.onchange = async () => { if (!sel.value) return; if (!chains.has(sel.value)) openChain(sel.value); await append(sel.value, { type: 'add', target: id, video }); toast('Added to ' + channelTitle(sel.value)); sel.value = ''; };
+            return sel; })(),
           isMine(d.owner) ? h('button', { class: 'small', onclick: async () => { await append(id, { type: 'hide', target: video }); location.hash = `#/c/${id}`; } }, 'Hide video') : null),
         h('div', { class: 'report-slot' }),
         fl.length ? h('div', { class: 'panel', style: 'margin-top:8px;border-color:var(--warn)' }, '⚑ Flagged as ', flagText(fl)) : null,

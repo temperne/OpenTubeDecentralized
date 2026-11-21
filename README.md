@@ -395,6 +395,16 @@ Known limits: the recording is WebM straight from the browser's recorder, so som
 
 Camera streams work with no hub at all. OBS needs one of your computers running OpenTube.
 
+## Lists: curated feeds
+
+A **list** is a feed someone curates, like a radio station. It can hold whole channels and single videos, each with an optional note:
+
+- **Adding:** use *＋ Add to list…* on any video, or paste a video link on the list's *Feed* tab.
+- **The Feed tab:** the newest videos of the list's channels, together with the videos added one by one.
+- **Subscribing:** subscribe to a list and its feed shows up in your Home, marked "in the list …".
+
+*Posts* can be sorted by **Recent**, or by **Popular**: likes and replies, weighed toward recent ones.
+
 ## Subscribe vs. Join
 
 - **Subscribe:** your node keeps that channel's chain in sync and shows its videos in your feed. Videos download only when you watch them.
