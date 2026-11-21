@@ -204,6 +204,7 @@ function mp4Boxes(onInit, onFrag) {
 let pubIp = null;
 async function publicIp() {
   if (pubIp !== null) return pubIp || null;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(process.env.PUBLIC_IP || '')) return (pubIp = process.env.PUBLIC_IP);
   for (const u of ['https://api.ipify.org', 'https://ifconfig.me/ip', 'https://icanhazip.com']) { try { const t = (await (await fetch(u, { signal: AbortSignal.timeout(4000) })).text()).trim(); if (/^\d{1,3}(\.\d{1,3}){3}$/.test(t)) return (pubIp = t); } catch {} }
   pubIp = ''; return null;
 }
@@ -403,6 +404,28 @@ async function onRoute(body, reply) {
   if (!body || typeof body !== 'object') return;
   if (body.kind === 'nodectl') return reply(await control(body));
   if (body.kind === 'pchal') return reply(await answerChallenge(body));
+  if (body.kind === 'reach') return reply(await reachProbe(body));
+}
+// ---- "can the internet reach that computer?": another node asks us to connect to its OBS and web ports from here.
+// A computer can't test this itself: its public address is on its own network card, so the connection never leaves
+// it and skips the firewalls in between. Only addresses and ports a node announced for itself, and a few per minute.
+const reachTimes = [];
+async function reachProbe(b) {
+  const now = Date.now(); while (reachTimes.length && now - reachTimes[0] > 60000) reachTimes.shift();
+  if (reachTimes.length >= 10) return { ok: false, error: 'busy' }; reachTimes.push(now);
+  const host = String(b.host || ''), rtmp = Number(b.rtmp) || 0, http = Number(b.http) || 0;
+  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return { ok: false, error: 'bad address' };
+  if (host === await publicIp()) return { ok: false, error: 'same network', same: true };
+  const announced = [...engine.nodes.values()].filter(n => n.info?.publicIp === host || (n.addrs || []).some(a => { try { return new URL(a).hostname === host; } catch { return false; } }));
+  if (!announced.length) return { ok: false, error: 'no node announced that address' };
+  const out = { by: signer.pub, name: (process.env.NODE_LABEL || os.hostname()).slice(0, 60), from: await publicIp() };
+  if (rtmp && announced.some(n => n.info?.obs?.port === rtmp)) out.rtmp = await rtmpProbe(host, rtmp);
+  if (http && announced.some(n => n.addrs.some(a => { try { const u = new URL(a); return (u.hostname === host || n.info?.publicIp === host) && Number(u.port || 80) === http; } catch { return false; } }))) {
+    const t0 = Date.now();
+    try { const r = await fetch(`http://${host}:${http}/status`, { signal: AbortSignal.timeout(6000) }); out.http = { ok: r.ok, ms: Date.now() - t0, port: http }; }
+    catch (e) { out.http = { ok: false, port: http, ms: Date.now() - t0, error: /abort|timeout/i.test(e.name + e.message) ? 'no answer (blocked by a firewall?)' : /ECONNREFUSED/.test(String(e.cause?.code || e.message)) ? 'refused' : (e.cause?.code || e.message) }; }
+  }
+  return out;
 }
 async function signed(x) { x.sig = await signer.sign(core.ctlPreimage(x)); return x; }
 async function control(c) {
@@ -450,8 +473,13 @@ async function control(c) {
       const os = await import('node:os');
       const ips = Object.values(os.networkInterfaces()).flat().filter(i => i && i.family === 'IPv4' && !i.internal).map(i => i.address);
       if (c.cmd === 'obs' && a.test) {   // can OBS reach us from the internet? connect to our own public address and do the RTMP greeting
-        const pub = await publicIp(), port = Number(process.env.RTMP_PORT);
-        data = { test: pub ? await rtmpProbe(pub, port) : { ok: false, error: 'couldn’t find this computer’s public address' }, publicIp: pub };
+        const pub = await publicIp(), port = Number(process.env.RTMP_PORT), httpPort = Number(PORT);
+        // ask up to 3 other online nodes, elsewhere on the internet, to connect to us (the honest test)
+        const others = pub ? [...engine.nodes.values()].filter(n => n.node !== signer.pub && Date.now() - n.at < 120000 && !(n.addrs || []).some(x => x.includes('//' + pub + ':') || x.includes('//' + pub + '/')))
+          .sort(() => Math.random() - 0.5).slice(0, 4) : [];
+        const outside = (await Promise.all(others.map(n => engine.route(n.node, { kind: 'reach', host: pub, rtmp: port, http: httpPort, nonce: crypto.randomBytes(8).toString('hex') }, 20000).catch(() => null))))
+          .filter(r => r && !r.same && (r.rtmp || r.http)).slice(0, 3);
+        data = { test: pub ? await rtmpProbe(pub, port) : { ok: false, error: 'couldn’t find this computer’s public address' }, outside, asked: others.length, publicIp: pub, httpPort };
         return signed({ v: 1, kind: 'nodectlr', node: signer.pub, re: c.nonce, at: Date.now(), ok: true, data });
       }
       data = { version: { name: core.VERSION, build: BUILD }, key: obsCfg.key, port: Number(process.env.RTMP_PORT) || null, ips, publicIp: await publicIp(), listen: globalThis.openTubeRtmp?.status?.().host || process.env.RTMP_HOST || '::', lastConn: globalThis.openTubeRtmp?.lastConn?.() || null, publicHost: process.env.PUBLIC_URL ? new URL(process.env.PUBLIC_URL).hostname : null, channel: obsCfg.channel, title: obsCfg.title,
@@ -535,7 +563,7 @@ else if (GRANT) {
   const announce = async () => {
     let host = globalThis.openTubeHost?.status() || null;
     if (!host) try { host = JSON.parse(fs.readFileSync(process.env.HOST_STATUS_FILE, 'utf8')); if (Date.now() - host.at > 120000) host = { ...host, stale: true }; } catch {}
-    const info = { users: Object.fromEntries(Object.entries(obsStore.users).slice(0, 20).map(([k, u]) => [k, u.can.map(x => x[0]).join('')])),   // who may use it: o(bs) h(ost) m(anage)
+    const info = { publicIp: (await publicIp()) || null, users: Object.fromEntries(Object.entries(obsStore.users).slice(0, 20).map(([k, u]) => [k, u.can.map(x => x[0]).join('')])),   // who may use it: o(bs) h(ost) m(anage)
       version: { name: core.VERSION, build: BUILD }, peerId: nodePeerId(signer.pub), name: (process.env.NODE_LABEL || os.hostname()).slice(0, 60), os: `${os.platform()} ${os.arch()}`, node: process.version, height: engine.main.best.height,
       peers: peers.size, chains: engine.chains.size, site: process.env.NODE_SITE || null, host, obs: globalThis.openTubeRtmp?.status?.() || null };
     try { await engine.publishNodeInfo({ grant: GRANT, roles, addrs: addrs(), info }); } catch (e) { log('announce failed:', e.message); }

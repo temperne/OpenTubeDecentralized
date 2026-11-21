@@ -6556,6 +6556,23 @@ async function nodeCtl(n, cmd, args = {}) {
 const openManagers = new Map();   // node key -> its open file manager (kept while the page redraws)
 // OBS on one of your computers: where to send it (server and stream key), which channel it goes live on, YouTube
 // forwarding and tiles. Settings are signed commands to that computer (nodeCtl); the key is shown only to you.
+// The reachability test: other OpenTube nodes elsewhere connect to this computer's OBS and web ports. Its own test of
+// itself is shown too, but it proves little: the public address is on its own network card, so that connection never
+// leaves the computer and skips the firewalls OBS's connection has to pass.
+function reachReport(t, data) {
+  const ip = t.publicIp || '(its public address)', port = data?.port || 1935;
+  const line = (ok, text) => h('div', {}, (ok ? '✅ ' : '❌ ') + text);
+  const out = t.outside || [];
+  const rows = out.map(r => h('div', { style: 'margin-top:4px' }, h('b', {}, `From ${r.name || 'another node'}${r.from ? ' (' + r.from + ')' : ''}:`),
+    r.rtmp ? line(r.rtmp.ok, r.rtmp.ok ? `OBS port ${port} reachable (${r.rtmp.ms} ms)` : `OBS port ${port}: ${r.rtmp.error}`) : null,
+    r.http ? line(r.http.ok, r.http.ok ? `web port ${r.http.port} reachable` : `web port ${r.http.port}: ${r.http.error}`) : null));
+  const blocked = out.some(r => r.rtmp && !r.rtmp.ok);
+  return h('div', { class: 'sub', style: 'margin:6px 0 0 128px' },
+    out.length ? rows : h('div', {}, `⚠ No other OpenTube computer on another network answered, so this couldn’t be tested from outside (${t.asked || 0} asked).`),
+    blocked ? h('p', { style: 'margin:6px 0' }, `Connections from outside don’t get through, so OBS can’t either. Open TCP port ${port} (and the web port) for incoming connections: in the hosting provider’s control panel (its firewall or “security group”), and on the server (sudo iptables -I INPUT -p tcp --dport ${port} -j ACCEPT, or the nftables / firewalld equivalent).`) : null,
+    h('div', { style: 'margin-top:6px' }, `This computer testing itself: ${t.test.ok ? 'answers' : '❌ ' + t.test.error}. That doesn’t prove outside access: the connection never leaves the computer.`),
+    h('div', { style: 'margin-top:6px' }, 'Test from the computer where OBS runs: Windows PowerShell ', h('code', {}, `Test-NetConnection ${ip} -Port ${port}`), ' (TcpTestSucceeded: True means it works) · Mac/Linux ', h('code', {}, `nc -vz ${ip} ${port}`), '.'));
+}
 function obsPanel(n, { chainId = null } = {}) {
   const box = h('div', { class: 'panel', style: 'margin-top:8px;background:var(--panel-2)' }), st = h('span', { class: 'sub' });
   let data = null;
@@ -6583,7 +6600,7 @@ function obsPanel(n, { chainId = null } = {}) {
       row('Status', h('span', { class: 'sub', style: 'flex:1' }, data.live?.error ? '⚠ ' + data.live.error : data.live?.listening === false ? '⚠ not listening' : `listening on ${data.listen === '::' ? 'all addresses (IPv4 + IPv6)' : data.listen}, port ${data.port}`,
         data.lastConn ? ` · last OBS connection ${ago(data.lastConn.at)} from ${data.lastConn.from}: ${data.lastConn.stage}` : ' · no OBS connection has reached this computer yet'),
         h('button', { class: 'small', onclick: () => run('obs', { test: true }) }, 'Test from the internet'), h('button', { class: 'small', onclick: () => run('obs') }, 'Refresh')),
-      testResult ? h('div', { class: 'sub', style: 'margin-left:128px' }, testResult.test.ok ? `✅ Reachable: rtmp://${testResult.test.host}:${testResult.test.port} answers like OBS expects (${testResult.test.ms} ms).` : `❌ ${testResult.test.host ? testResult.test.host + ':' + testResult.test.port + ' — ' : ''}${testResult.test.error}`) : null,
+      testResult ? reachReport(testResult, data) : null,
       row('Stream key', mask(data.key), h('button', { class: 'small', onclick: () => confirm('Make a new stream key? OBS will need the new one.') && run('obs.rotate') }, 'New key')),
       row('Channel', ch, linked ? h('span', { class: 'badge ok' }, 'linked') : selected ? h('button', { class: 'small primary', onclick: async () => { await append(selected, { type: 'relay', key: n.node, on: true }); toast('Linked: this computer can go live on ' + channelTitle(selected)); await run('obs.set', { channel: selected, title: title.value }); } }, 'Link this computer to it') : null),
       row('Title', title, h('button', { class: 'small', onclick: () => run('obs.set', { channel: ch.value || null, title: title.value }) }, 'Save')),
