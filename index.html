@@ -1948,7 +1948,12 @@ async function createEngine(o) {
     return body;
   }
   async function append(chainId, payload, onProgress, as = null) {
-    const c = chains.get(chainId);
+    let c = chains.get(chainId);
+    if (!c) {   // not loaded in this browser yet (e.g. right after opening the page): fetch it from peers first
+      c = openChain(chainId); if (c) requestChain(c);
+      for (let i = 0; i < 40 && c && c.blocks.size < 1; i++) await new Promise(r => setTimeout(r, 250));
+      if (!c || !c.blocks.size) throw new Error('This channel hasn’t loaded yet. Wait a moment and try again.');
+    }
     const parents = [...c.heads].slice(0, LIMITS.parents);
     const height = Math.max(...parents.map(p => c.blocks.get(p).height)) + 1;
     // Owner actions are signed with the channel's key; everyone else uses their personal key (or `as`: e.g. a
@@ -5033,9 +5038,7 @@ function liveStudio(chainId) {
   };
   function setup() {
     const head = h('h3', { style: 'margin-top:0' }, '🔴 Go live');
-    if (!LIVE_MIME) return [head, h('p', { class: 'sub' }, 'This browser can’t record video for streaming. Use Chrome, Edge or Firefox on a computer.')];
     const meshNote = liveNet.available() ? '' : h('p', { class: 'sub' }, 'No home node here: the stream goes out over the peer-to-peer mesh only (camera streams; OBS needs one of your computers running OpenTube).');
-    if (!canHost()) return [head, folderPrompt('Going live (the recording is kept in your video folder)')];
     const source = h('select', {}, h('option', { value: '' }, 'Choose a camera…'));
     const mic = h('select', {}, h('option', { value: '' }, 'No microphone'));
     const title = h('input', { type: 'text', placeholder: 'Stream title', maxLength: LIMITS.title });
@@ -5083,6 +5086,10 @@ function liveStudio(chainId) {
     } }, 'Get a stream key');
     if (!diag.home && !box.probed) { box.probed = true; probeHome().then(() => { if (diag.home?.ingest && !broadcasts.get(chainId) && !title.value && !obsTitle.value) ui(); }); }
     const comps = usableNodes('o').filter(n => n.roles.includes('obs') && Date.now() - n.at < 120000);
+    if (!comps.length) setTimeout(() => {   // computers announce themselves every 30 s: show one as soon as it does (unless the person started typing)
+      if (box.isConnected && !broadcasts.get(chainId) && !title.value && !obsTitle.value && usableNodes('o').some(n => n.roles.includes('obs') && Date.now() - n.at < 120000)) ui();
+      else if (box.isConnected && !usableNodes('o').length) ui();
+    }, 3000);
     const nodeSel = h('select', {}, comps.map(n => h('option', { value: n.node }, (n.info?.name || n.grant.label || 'computer') + (n.info?.obs?.live ? ' (busy)' : ''))));
     const nodeTitle = h('input', { type: 'text', placeholder: 'Stream title', maxLength: LIMITS.title });
     const nodeStatus = h('span', { class: 'sub' });
@@ -5098,6 +5105,10 @@ function liveStudio(chainId) {
     const obs = diag.home?.ingest ? h('details', { style: 'margin-top:14px' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Or send the stream from OBS with a stream key'),
       h('p', { class: 'sub' }, 'OBS sends the video straight to this site’s server, which relays it. Viewers watch a few seconds behind. Your browser records it, so keep this page open.'),
       h('label', {}, 'Title'), obsTitle, h('div', { class: 'row', style: 'margin-top:8px' }, obsGo, obsStatus)) : null;
+    // OBS through one of your computers (or one shared with you) needs nothing in this browser: the computer records
+    // and streams. Only streaming from this browser (camera, screen) needs a video folder and in-browser recording.
+    if (!LIVE_MIME) return [head, viaComputer, h('p', { class: 'sub' }, 'To stream from this browser (camera or screen), use Chrome, Edge or Firefox on a computer.')];
+    if (!canHost()) return [head, meshNote, viaComputer, folderPrompt('Streaming from this browser (camera or screen; the recording is kept in your video folder)')];
     return [head, meshNote, viaComputer,
       h('p', { class: 'sub', style: 'margin-top:0' }, 'Or stream from this browser: a camera, your screen, or OBS’s “Start Virtual Camera” (pick “OBS Virtual Camera” below). Your stream is recorded into this channel’s folder; when you end it you choose whether to publish the recording.'),
       ask, h('div', { class: 'split', style: 'margin-top:8px' }, h('div', {}, h('label', {}, 'Video'), source), h('div', {}, h('label', {}, 'Audio'), mic)),
@@ -6638,10 +6649,10 @@ function fileManager(n) {
 let pageBuild = null;
 (async () => { try { if (!/^https?:$/.test(location.protocol)) return; const t = await (await fetch(location.pathname, { cache: 'no-store' })).text(); pageBuild = (await globalThis.OpenTubeCore.sha256hex(t)).slice(0, 12); scheduleRender(); } catch {} })();
 function versionBadge(v) {   // a node's version compared with this page's
-  if (!v?.build) return h('span', { class: 'badge warn', title: 'This computer runs an OpenTube from before versions were reported. Stop it and run your command again to update.' }, 'old version: restart it to update');
+  if (!v?.build) return h('span', { class: 'badge warn', title: 'This computer runs an OpenTube from before versions were reported. Stop it and run your command again to update.' }, 'old version: stop it and run your command again');
   const same = pageBuild && v.build === pageBuild;
   return h('span', { class: 'badge' + (same ? ' ok' : pageBuild ? ' warn' : ''), title: `node ${v.name} · build ${v.build}${pageBuild ? ' · this page ' + globalThis.OpenTubeCore.VERSION + ' · build ' + pageBuild : ''}` },
-    same ? `v${v.name} · up to date` : pageBuild ? `v${v.name} (${v.build.slice(0, 7)}) · differs from this page: restart it to update` : `v${v.name} (${v.build.slice(0, 7)})`);
+    same ? `v${v.name} · up to date` : pageBuild ? `v${v.name} (${v.build.slice(0, 7)}) · differs from this page: press ⟳ Update` : `v${v.name} (${v.build.slice(0, 7)})`);
 }
 function nodeRow(n) {
   const age = Date.now() - n.at, online = age < 90000, i = n.info || {}, owner = n.grant.user === me.pub, perms = nodePerms(n);
@@ -6665,10 +6676,15 @@ function nodeRow(n) {
       h('div', { class: 'row' }, h('button', { class: 'small', onclick: check }, 'Test connection'),
         n.roles.includes('obs') && perms.includes('o') ? h('button', { class: 'small', onclick: toggle('obs:' + n.node, () => obsPanel(n)) }, '🎥 OBS & streaming') : null,
         owner ? h('button', { class: 'small', onclick: toggle('people:' + n.node, () => peoplePanel(n)) }, '👥 People') : null,
+        perms.includes('m') && online ? h('button', { class: 'small' + (i.version?.build && pageBuild && i.version.build !== pageBuild ? ' primary' : ''), title: 'Download the site’s current OpenTube on that computer and restart it', onclick: async (e) => {
+          const b = e.target; b.disabled = true; test.textContent = 'Asking it to update…';
+          try { await nodeCtl(n, 'update'); test.textContent = '⟳ Updating: it restarts with the current version and reports back here within a minute.'; }
+          catch (err) { b.disabled = false; test.textContent = /unknown command|bad command/.test(err.message) ? '✗ This computer runs an OpenTube from before remote updates: stop it on that computer (Ctrl+C) and run your command again, once.' : '✗ ' + err.message; }
+        } }, '⟳ Update') : null,
         n.roles.includes('host') && perms.includes('m') ? h('button', { class: 'small', onclick: (e) => { const row = e.target.closest('.item'); if (openManagers.has(n.node)) { openManagers.get(n.node).remove(); openManagers.delete(n.node); return; } const fm = fileManager(n); openManagers.set(n.node, fm); row.append(fm); } }, openManagers.has(n.node) ? 'Close files' : 'Manage files') : null)),
     h('div', { class: 'sub' }, [i.os, i.node && 'Node ' + i.node, i.height != null && `main #${i.height}`, i.peers != null && `${i.peers} peer(s)`, i.chains != null && `${i.chains} chains`].filter(Boolean).join(' · '), ' ', versionBadge(i.version)),
     i.host ? h('div', { class: 'sub' }, `Hosting ${i.host.hosting ?? 0} videos (${fmtBytes(i.host.hostedBytes || 0)}) for ${i.host.channels ?? 0} joined channels in ${i.host.videoDir || 'its folder'}` + (i.host.downloading ? ` · downloading ${i.host.downloading}` : '') + (i.host.stale ? ' · host not reporting' : '')) : null,
-    i.obs ? h('div', { class: 'sub' }, i.obs.live ? `OBS: streaming now (${fmtBytes(i.obs.bytes || 0)})` : i.obs.armed ? 'OBS: ready, waiting for Start Streaming' : `OBS: listening on port ${i.obs.port} (stream key and server under 🎥 OBS & streaming)`) : null,
+    i.obs ? h('div', { class: 'sub', style: i.obs.error || i.obs.listening === false ? 'color:var(--warn)' : '' }, i.obs.error ? '⚠ OBS: ' + i.obs.error : i.obs.listening === false ? '⚠ OBS: not listening' : i.obs.live ? `OBS: streaming now (${fmtBytes(i.obs.bytes || 0)})` : i.obs.armed ? 'OBS: ready, waiting for Start Streaming' : `OBS: listening on port ${i.obs.port} (stream key and server under 🎥 OBS & streaming)`) : null,
     h('div', { class: 'sub mono' }, n.addrs.join('  ')), test, openManagers.get('obs:' + n.node) || null, openManagers.get('people:' + n.node) || null, openManagers.get(n.node) || null);
 }
 function folderPanel() {

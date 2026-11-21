@@ -48,13 +48,49 @@ const want = { node: !args['no-node'], host: !args['no-host'], obs: !args['no-ob
 await fsp.mkdir(APP, { recursive: true });
 
 // The site's current code. If the site can't be reached, the copy from last time is used.
+// It says so when it can't update, since an old copy can behave differently (an old OBS receiver listened on localhost only).
+const stale = [];
 for (const f of ['index.html', 'server.mjs', 'headless.mjs', 'rtmp.mjs', 'host.mjs', 'tls.mjs', 'sw.js']) {
   try {
-    const r = await fetch(new URL(f, site), { cache: 'no-store' });
+    const r = await fetch(new URL(f, site) + '?v=' + Date.now(), { cache: 'no-store' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     await fsp.writeFile(path.join(APP, f), Buffer.from(await r.arrayBuffer()));
-  } catch (e) { if (!fs.existsSync(path.join(APP, f))) log(`couldn’t download ${f} from ${site.origin} (${e.message})`); }
+  } catch (e) {
+    if (!fs.existsSync(path.join(APP, f))) log(`couldn’t download ${f} from ${site.origin} (${e.message})`);
+    else stale.push(`${f} (${e.message}; using the copy from ${fs.statSync(path.join(APP, f)).mtime.toISOString().slice(0, 16).replace('T', ' ')})`);
+  }
 }
+if (stale.length) log('⚠ Couldn’t update: ' + stale.join(', ') + '. OpenTube may be out of date.');
+else log(`Up to date with ${site.origin} (code in ${APP})`);
+
+// Only one OpenTube per computer (they'd share ~/.opentube, and an older one keeps ports such as OBS's 1935, so the
+// new one can't listen there). Stop any earlier one first: the one in running.json, and on Linux any process
+// running our code from this folder (an older version left behind).
+const RUNNING = path.join(HOME, 'running.json');
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+async function stopEarlier() {
+  const pids = new Set();
+  try { for (const pid of JSON.parse(fs.readFileSync(RUNNING, 'utf8')).pids || []) if (pid !== process.pid && alive(pid)) pids.add(pid); } catch {}
+  if (process.platform === 'linux') {
+    for (const d of fs.readdirSync('/proc').filter(x => /^\d+$/.test(x))) {
+      const pid = Number(d); if (pid === process.pid || pid === process.ppid) continue;
+      try { const cmd = fs.readFileSync(`/proc/${d}/cmdline`, 'utf8').split('\0'); if (cmd.some(a => a.startsWith(HOME + path.sep) && /\.(mjs)$/.test(a))) pids.add(pid); } catch {}
+    }
+    // and the launcher that started them (it runs as "node -e …opentube.mjs…" and would restart them)
+    for (const pid of [...pids]) try {
+      const pp = Number(/PPid:\s*(\d+)/.exec(fs.readFileSync(`/proc/${pid}/status`, 'utf8'))[1]);
+      if (pp > 1 && pp !== process.pid && pp !== process.ppid && fs.readFileSync(`/proc/${pp}/cmdline`, 'utf8').includes('opentube.mjs')) pids.add(pp);
+    } catch {}
+  }
+  if (!pids.size) return;
+  log(`Stopping the OpenTube that was already running (process ${[...pids].join(', ')}), so this one can use its ports…`);
+  for (const pid of pids) try { process.kill(pid, 'SIGTERM'); } catch {}
+  for (let i = 0; i < 50 && [...pids].some(alive); i++) await new Promise(r => setTimeout(r, 100));
+  for (const pid of pids) if (alive(pid)) try { process.kill(pid, 'SIGKILL'); } catch {}
+  await new Promise(r => setTimeout(r, 300));
+}
+await stopEarlier();
+const noteRunning = () => { try { fs.writeFileSync(RUNNING, JSON.stringify({ pids: [process.pid, ...[...children].map(c => c.pid)], at: Date.now() })); } catch {} };
 
 const freePort = (p) => new Promise((res) => { const s = net.createServer().once('error', () => res(freePort(p + 1))).once('listening', () => s.close(() => res(p))).listen(p); });
 const port = await freePort(Number(args.port) || 8090);
@@ -66,17 +102,31 @@ let stopping = false;
 function run(label, file, argv, env) {
   const start = () => {
     if (stopping) return;
-    const child = spawn(process.execPath, [path.join(APP, file), ...argv], { env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
-    children.add(child);
+    const child = spawn(process.execPath, [path.join(APP, file), ...argv], { env: { ...process.env, ...env, OPENTUBE_LAUNCHER: '1' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    children.add(child); noteRunning();
     const out = (d) => { for (const line of String(d).split('\n')) if (line.trim()) console.log(`[${label}] ${line}`); };
     child.stdout.on('data', out); child.stderr.on('data', out);
-    child.on('exit', (code) => { children.delete(child); if (stopping) return; log(`[${label}] stopped (${code}); restarting in 5 s`); setTimeout(start, 5000); });
+    child.on('exit', (code) => { children.delete(child); if (stopping) return; if (code === UPDATE_EXIT) return relaunch(); log(`[${label}] stopped (${code}); restarting in 5 s`); setTimeout(start, 5000); });
   };
   start();
 }
-const stopAll = () => { stopping = true; for (const c of children) c.kill(); };
+const stopAll = () => { stopping = true; for (const c of children) c.kill(); try { fs.rmSync(RUNNING, { force: true }); } catch {} };
+// "Update" on the site (Devices): the node exits with UPDATE_EXIT; this program stops the other parts and starts itself
+// again the same way it was started, which downloads the site's current code (this launcher included). It stays as a
+// thin parent so the terminal, Ctrl+C and service managers keep working.
+const UPDATE_EXIT = 75;
+let next = null;
+async function relaunch() {
+  if (next || stopping) return;
+  log('Updating: downloading the site’s current OpenTube and restarting…');
+  stopAll();
+  for (let i = 0; i < 50 && children.size; i++) await new Promise(r => setTimeout(r, 100));
+  const viaEval = process.execArgv.some(a => a === '-e' || a === '--eval');   // the one-line command: node -e "…" -- --site=… --grant=…
+  next = spawn(process.execPath, [...process.execArgv, ...(viaEval ? ['--'] : []), ...process.argv.slice(1)], { stdio: 'inherit', env: process.env });
+  next.on('exit', (code) => process.exit(code ?? 0));
+}
 process.on('exit', stopAll);
-for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => { stopAll(); process.exit(0); });
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => { if (next) { try { next.kill(sig); } catch {} return; } stopAll(); process.exit(0); });
 
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm', npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
 const installed = (pkg) => fs.existsSync(path.join(HOME, 'node_modules', pkg, 'package.json'));

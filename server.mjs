@@ -292,7 +292,9 @@ if (process.env.RTMP_PORT) {
       return best;
     };
     // OBS needs this computer's stream key; with one, any address may connect (OBS on another computer, or a VPS)
-    const rtmp = startRtmp({ port: Number(process.env.RTMP_PORT), host: process.env.RTMP_HOST || '::', log: (...a) => log('[obs]', ...a),
+    const rtmpHost = process.env.RTMP_HOST || '::';
+    if (/^(127\.|::1$|localhost$)/.test(rtmpHost)) log(`[obs] ⚠ RTMP_HOST=${rtmpHost}: OBS on other computers can’t reach this one. Unset RTMP_HOST to listen on all addresses.`);
+    const rtmp = startRtmp({ port: Number(process.env.RTMP_PORT), host: rtmpHost, log: (...a) => log('[obs]', ...a),
       onPublish: (key) => {
         key = String(key || '').trim();
         let user = null, slot = 0;   // whose key is it? the key itself, or key-2…key-4 for tiles
@@ -413,6 +415,13 @@ async function control(c) {
   try {
     let data;
     const owner = c.user === GRANT.user;
+    if (c.cmd === 'update') {   // download the site's current code and restart (needs the one-command launcher, which restarts us)
+      if (!owner && !may(c.user, 'manage')) return fail('only the owner can update this computer');
+      if (!process.env.OPENTUBE_LAUNCHER) return fail('this node wasn’t started with the OpenTube command, so it can’t update itself: stop it and start it again');
+      log(`[control] update from ${owner ? 'the owner' : obsStore.users[c.user]?.name || c.user.slice(0, 8)}'s console: restarting with the site’s current code`);
+      setTimeout(() => process.exit(75), 800);
+      return signed({ v: 1, kind: 'nodectlr', node: signer.pub, re: c.nonce, at: Date.now(), ok: true, data: { restarting: true } });
+    }
     if (c.cmd === 'users' || c.cmd === 'users.set') {   // the owner shares this computer: who may use OBS, hosting, management
       if (!owner) return fail('only the owner can share this computer');
       const a = c.args || {};

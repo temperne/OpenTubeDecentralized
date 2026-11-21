@@ -487,6 +487,12 @@ These overrides live in `<video folder>/.opentube-node.json`. When a channel is 
 
 Commands are signed by your personal key, and the node obeys only the user in its grant. It refuses stale or repeated commands, and its answers are signed by the node. The page first connects **directly** to the node's addresses. That works for a public node with HTTPS, or a node on the same computer (localhost); a secure page can't open plain `ws://` to other IP addresses, and home computers sit behind routers. Otherwise the same signed command is passed node to node over the mesh, addressed to the node's key, and the answer comes back the same way.
 
+### Updating a computer from the site
+
+Each computer on Devices has **⟳ Update** (highlighted when its version differs from the site's). It asks the computer, with a signed command, to download the site's current OpenTube and restart, so you don't need its terminal. This works for computers started with the one-line command. Computers running a version from before this button: stop OpenTube there and run the command again once.
+
+When OpenTube starts, it also stops any older OpenTube still running from the same `~/.opentube`. An old leftover kept port 1935 bound to `127.0.0.1`, so OBS from other computers couldn't connect. It now says so if it couldn't update itself, and Devices shows a warning when the OBS port is taken.
+
 ### Letting other people use your computer
 
 On Devices, each of your computers has a **👥 People** button. Add someone by their `@@name` or user ID, and choose what they may do:
