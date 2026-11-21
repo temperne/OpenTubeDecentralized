@@ -137,6 +137,83 @@ if (!MAIN_ONLY) { openSquare(); setInterval(openSquare, 3600000); }
 
 // ---- OBS "Start Streaming" (RTMP_PORT): OBS → rtmp://localhost/live → this node → the live hub. The owner first clicks
 // Go live → Stream from OBS on the site and picks this computer; that live block names this node's key as `relay`.
+// ---- the segment tree on this node (see dcSend in the core): WebRTC data channels to viewers, who pass the segments
+// on to others. Needs webrtc-polyfill (installed with the peer mesh); without it the site's hub feeds the viewers.
+let RTCPC = null;
+const liveStats = new Map();   // stream -> the hub's latest viewer counts
+const rtcReady = import('webrtc-polyfill').then(m => { RTCPC = m.RTCPeerConnection; }).catch(() => {});
+function liveKids(stream, sendWs) {
+  const kids = new Map(); let seg0 = null; const recent = [];
+  const cand = (c) => ({ candidate: c.candidate, sdpMid: c.sdpMid, sdpMLineIndex: c.sdpMLineIndex });
+  return {
+    child(peer) {
+      if (!RTCPC) return;
+      kids.get(peer)?.pc.close();
+      const pc = new RTCPC({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] }), ch = pc.createDataChannel('live', { ordered: true });
+      const kid = { pc, ch, waiting: [] }; kids.set(peer, kid);
+      ch.onopen = () => { if (seg0) core.dcSend(ch, seg0); for (const g of recent) if (g.n !== 0) core.dcSend(ch, g); };
+      pc.onicecandidate = (e) => { if (e.candidate) sendWs({ t: 'signal', stream, to: peer, data: { c: cand(e.candidate) } }); };
+      pc.onconnectionstatechange = () => { if (['failed', 'closed'].includes(pc.connectionState) && kids.get(peer) === kid) kids.delete(peer); };
+      (async () => { await pc.setLocalDescription(await pc.createOffer()); sendWs({ t: 'signal', stream, to: peer, data: { sdp: { type: pc.localDescription.type, sdp: pc.localDescription.sdp } } }); })().catch(e => log('[live] offer failed:', e.message));
+    },
+    unchild(peer) { kids.get(peer)?.pc.close(); kids.delete(peer); },
+    async signal(peer, data) {
+      const k = kids.get(peer); if (!k || !data) return;
+      try {
+        if (data.sdp) { await k.pc.setRemoteDescription(data.sdp); for (const c of k.waiting.splice(0)) await k.pc.addIceCandidate(c).catch(() => {}); }
+        else if (data.c) { if (k.pc.remoteDescription) await k.pc.addIceCandidate(data.c).catch(() => {}); else k.waiting.push(data.c); }
+      } catch (e) { log('[live] signal:', e.message); }
+    },
+    seg(g) { if (g.n === 0) seg0 = g; recent.push(g); if (recent.length > 8) recent.shift(); for (const { ch } of kids.values()) core.dcSend(ch, g); },
+    close() { for (const k of kids.values()) try { k.pc.close(); } catch {} kids.clear(); },
+    get size() { return kids.size; }
+  };
+}
+// The site's live hub over a WebSocket, as this node's key: for broadcasting (OBS) or relaying (watch).
+function hubSocket(onMsg, onOpen) {
+  let ws = null, ready = false, closed = false;
+  const connect = () => {
+    ready = false; ws = new WebSocket(process.env.NODE_SITE.replace(/^http/, 'ws') + '/live');
+    ws.onmessage = async (e) => {
+      let m; try { m = JSON.parse(e.data); } catch { return; }
+      if (m.t === 'hi') { await rtcReady; ws.send(JSON.stringify({ t: 'auth', key: signer.pub, sig: await signer.sign(core.liveAuthPreimage(m.nonce)) })); ready = true; onOpen(); }
+      else onMsg(m);
+    };
+    ws.onclose = () => { ready = false; if (!closed) setTimeout(connect, 2000); };
+    ws.onerror = () => {};
+  };
+  connect();
+  return { send: (m) => { if (ready) try { ws.send(JSON.stringify(m)); } catch {} }, get ready() { return ready; }, close: () => { closed = true; try { ws.close(); } catch {} } };
+}
+// Relaying: when this node's owner (or someone sharing it) streams from a browser, or a channel they joined is live,
+// this node watches the stream as a member (it gets every segment from the hub) and serves many viewers over WebRTC
+// data channels, so neither the streamer's browser nor the hub has to.
+const relaying = new Map();   // stream -> { hub, kids }
+const relayAsked = new Map();  // stream -> { chain, at }: the owner's browser asked us to relay it (they went live)
+function liveRelays() {
+  if (!process.env.NODE_SITE || !GRANT || process.env.LIVE_RELAY === '0') return;
+  const people = [GRANT.user, ...Object.keys(obsStore.users)];
+  const chans = new Set(people.flatMap(u => { const m = engine.memberships.get(u); return [...(m?.own || []), ...(m?.joined || [])]; }));
+  const want = new Map();
+  for (const c of chans) { const d = engine.chains.has(c) && engine.derive(c); if (!d?.liveNow) continue; for (const lb of d.liveNow) if (lb.author !== signer.pub && lb.payload.relay !== signer.pub) want.set(lb.payload.stream, c); }
+  for (const [stream, x] of relayAsked) { if (Date.now() - x.at > 24 * 3600000 || engine.chains.has(x.chain) && engine.derive(x.chain)?.liveEnds?.has(stream)) relayAsked.delete(stream); else want.set(stream, x.chain); }
+  for (const [stream, r] of relaying) if (!want.has(stream)) { r.close(); relaying.delete(stream); }
+  for (const [stream, chain] of want) {
+    if (relaying.has(stream) || relaying.size >= 6) continue;
+    const kids = liveKids(stream, (m) => hub.send(m));
+    let got = 0;
+    const hub = hubSocket((m) => {
+      if (m.t === 'seg' && m.seg?.stream === stream) { kids.seg(m.seg); if (!got++) log(`[live] relaying “${engine.derive(chain)?.streams.find(b => b.payload.stream === stream)?.payload.title || 'a stream'}” on ${engine.derive(chain)?.profile.name || chain.slice(0, 8)} to viewers over WebRTC`); }
+      else if (m.t === 'child' && m.dc) kids.child(m.peer);
+      else if (m.t === 'unchild') kids.unchild(m.peer);
+      else if (m.t === 'signal') kids.signal(m.from, m.data);
+      else if (m.t === 'ended' || m.t === 'nostream') { r.close(); relaying.delete(stream); }
+    }, () => { kids.close(); if (RTCPC) hub.send({ t: 'watch', stream, segOnly: true, media: false, dcSlots: 16, slots: 0 }); });
+    const r = { close: () => { hub.send({ t: 'leave', stream }); kids.close(); hub.close(); } };
+    relaying.set(stream, r);
+  }
+}
+setInterval(liveRelays, 10000);
 function liveSink(chain, stream, mime) {
   let n = 0, o = 0, queue = Promise.resolve(), ended = false;
   const seg = (bytes, k) => (queue = queue.then(async () => {
@@ -150,23 +227,20 @@ function liveSink(chain, stream, mime) {
   if (!site) {   // this node is the site: feed its own hub
     const src = liveHub.local(stream, chain, mime);
     send = (g) => src.seg(g); finish = () => src.end();
-  } else {       // relay to the site's hub as the broadcaster (segments only: this node has no WebRTC)
-    let ws = null, ready = false; const pending = [];
-    const flush = () => { while (ready && pending.length) ws.send(JSON.stringify({ t: 'seg', seg: pending.shift() })); };
-    const connect = () => {
-      ready = false; ws = new WebSocket(site.replace(/^http/, 'ws') + '/live');
-      ws.onmessage = async (e) => {
-        let m; try { m = JSON.parse(e.data); } catch { return; }
-        if (m.t === 'hi') { ws.send(JSON.stringify({ t: 'auth', key: signer.pub, sig: await signer.sign(core.liveAuthPreimage(m.nonce)) })); ws.send(JSON.stringify({ t: 'broadcast', stream, chain, mime, rtc: false })); }
-        else if (m.t === 'broadcasting') { ready = true; flush(); log('[obs] relaying to ' + site); }
-        else if (m.t === 'error') log('[obs] the site refused the stream:', m.error);
-      };
-      ws.onclose = () => { ready = false; if (!ended) setTimeout(connect, 2000); };
-      ws.onerror = () => {};
-    };
-    connect();
-    send = (g) => { pending.push(g); flush(); };
-    finish = () => { const done = () => { try { ws.send(JSON.stringify({ t: 'leave', stream })); } catch {} ended = true; setTimeout(() => ws.close(), 500); };
+  } else {       // relay to the site's hub as the broadcaster, and feed the segment tree ourselves
+    const pending = []; let on = false;
+    const kids = liveKids(stream, (m) => hub.send(m));
+    const flush = () => { while (on && hub.ready && pending.length) hub.send({ t: 'seg', seg: pending.shift() }); };
+    const hub = hubSocket((m) => {
+      if (m.t === 'broadcasting') { on = true; flush(); log('[obs] relaying to ' + site + (RTCPC ? ' (and to viewers directly, over WebRTC)' : '')); }
+      else if (m.t === 'child' && m.dc) kids.child(m.peer);
+      else if (m.t === 'unchild') kids.unchild(m.peer);
+      else if (m.t === 'signal') kids.signal(m.from, m.data);
+      else if (m.t === 'viewers') liveStats.set(stream, m);
+      else if (m.t === 'error') log('[obs] the site refused the stream:', m.error);
+    }, () => { on = false; kids.close(); hub.send({ t: 'broadcast', stream, chain, mime, rtc: false, dcSlots: RTCPC ? Number(process.env.LIVE_DC_SLOTS) || 8 : 0 }); });
+    send = (g) => { pending.push(g); flush(); kids.seg(g); };
+    finish = () => { const done = () => { hub.send({ t: 'leave', stream }); ended = true; kids.close(); setTimeout(() => hub.close(), 500); };
       const wait = () => (pending.length && Date.now() - t0 < 15000 ? setTimeout(wait, 200) : done()); const t0 = Date.now(); wait(); };
   }
   return { init: (bytes) => seg(bytes, false), fragment: (bytes, k) => seg(bytes, k), end: () => { queue.then(() => finish()); } };
@@ -192,6 +266,7 @@ const ownsChannel = (user, ch) => { const d = ch && engine.derive(ch); return !!
 const may = (user, what) => user === GRANT?.user || !!obsStore.users[user]?.can?.includes(what);
 if (GRANT) profileOf(GRANT.user);
 saveObs();
+setTimeout(() => { for (const p of Object.values(obsStore.profiles)) if (p.channel) { const ch = engine.openChain(p.channel); if (ch) engine.requestChain(ch); } }, 3000);   // keep the linked channels loaded
 // fMP4 splitting (ffmpeg output): ftyp+moov is the header, then moof+mdat pairs
 function mp4Boxes(onInit, onFrag) {
   let buf = Buffer.alloc(0), init = null, moof = null;
@@ -353,7 +428,7 @@ if (process.env.RTMP_PORT) {
         log(`[obs] stream from ${obsStore.users[user]?.name || (obsCfg.owner ? 'the owner' : user.slice(0, 8))}`);
         if (obsCfg.tile.on) { if (!ffmpegOk) return 'Tiles need ffmpeg on this computer.'; if (slot > obsCfg.tile.n) return `Only ${obsCfg.tile.n} tiles are set up.`; return tileSlot(slot, log, obsCfg); }
         if (slot > 1) return 'Tiles are off on this computer: use the main stream key.';
-        if (obsCfg.channel && !obsCfg.owner && !ownsChannel(user, obsCfg.channel)) return 'That channel isn’t yours.';
+        if (obsCfg.channel && !obsCfg.owner && obsCfg.channelBy !== user && !ownsChannel(user, obsCfg.channel)) return 'That channel isn’t yours.';
         if (!(obsCfg.owner && armed()) && !(obsCfg.channel && engine.derive(obsCfg.channel)?.relays.has(signer.pub))) return 'Not linked to a channel yet. On the site: Go live → OBS → pick this computer and link it to your channel.';
         return goLiveSink(log, obsCfg);
       } });
@@ -486,6 +561,13 @@ async function control(c) {
   try {
     let data;
     const owner = c.user === GRANT.user;
+    if (c.cmd === 'relay') {   // "I just went live: help serve it" (from the owner's or a sharing person's browser)
+      const a = c.args || {};
+      if (!owner && !may(c.user, 'host')) return fail('you may not use this computer for relaying');
+      if (!/^[0-9a-f]{64}$/.test(a.stream || '') || !/^[0-9a-f]{64}$/.test(a.chain || '')) return fail('bad stream');
+      relayAsked.set(a.stream, { chain: a.chain, at: Date.now() }); setTimeout(liveRelays, 500);
+      return signed({ v: 1, kind: 'nodectlr', node: signer.pub, re: c.nonce, at: Date.now(), ok: true, data: { relaying: !!RTCPC } });
+    }
     if (c.cmd === 'update') {   // download the site's current code and restart (needs the one-command launcher, which restarts us)
       if (!owner && !may(c.user, 'manage')) return fail('only the owner can update this computer');
       if (!process.env.OPENTUBE_LAUNCHER) return fail('this node wasn’t started with the OpenTube command, so it can’t update itself: stop it and start it again');
@@ -511,7 +593,16 @@ async function control(c) {
       const a = c.args || {}, obsCfg = profileOf(c.user);
       if (c.cmd === 'obs.rotate') obsCfg.key = newStreamKey();
       if (c.cmd === 'obs.set') {
-        if (a.channel !== undefined) { if (a.channel && !ownsChannel(c.user, a.channel)) return fail('that channel isn’t yours'); obsCfg.channel = /^[0-9a-f]{64}$/.test(a.channel) ? a.channel : null; }
+        if (a.channel && /^[0-9a-f]{64}$/.test(a.channel) && !engine.chains.has(a.channel)) {   // not loaded here yet: fetch it first
+          const ch = engine.openChain(a.channel); if (ch) engine.requestChain(ch);
+          for (let i = 0; i < 40 && !(engine.derive(a.channel)?.owner); i++) await new Promise(r => setTimeout(r, 250));
+        }
+        let proved = false;
+        if (a.channel && typeof a.channelSig === 'string') {   // signed by the channel's key itself
+          const key = engine.derive(a.channel)?.owner || engine.directory.get(a.channel)?.genesis.author;
+          proved = !!key && await core.verify(key, core.obsChannelPreimage(signer.pub, c.user, a.channel), a.channelSig).catch(() => false);
+        }
+        if (a.channel !== undefined) { if (a.channel && !proved && !ownsChannel(c.user, a.channel)) return fail('that channel isn’t yours (or this computer couldn’t load it yet: try again)'); obsCfg.channelBy = a.channel && (proved || ownsChannel(c.user, a.channel)) ? c.user : null; obsCfg.channel = /^[0-9a-f]{64}$/.test(a.channel) ? a.channel : null; }
         if (typeof a.title === 'string') obsCfg.title = a.title.slice(0, 140) || 'Live';
         if (a.youtube) { if (typeof a.youtube.key === 'string') obsCfg.youtube.key = a.youtube.key.trim().slice(0, 200); if (typeof a.youtube.on === 'boolean') obsCfg.youtube.on = a.youtube.on; }
         if (a.tile) { if (typeof a.tile.on === 'boolean') obsCfg.tile.on = a.tile.on; if ([2, 3, 4].includes(a.tile.n)) obsCfg.tile.n = a.tile.n; }
@@ -649,6 +740,7 @@ const liveHub = core.createLiveHub({
   ownerOf: (c) => engine.directory.get(c)?.genesis.author || engine.chains.get(c)?.owner || null,
   signerOf: (c, s) => { if (!engine.chains.has(c)) return null; const b = engine.derive(c)?.streams.find(x => x.payload.stream === s); return b ? (b.payload.relay || (b.author !== engine.derive(c).owner ? b.author : null)) : null; },   // the relay named in the live block, or the linked computer that wrote it
   isJoined: (k, c) => !!engine.memberships.get(k)?.joined?.includes(c),
+  userOf: (k) => engine.nodes.get(k)?.grant?.user || null,   // a computer counts as its owner (it relays their channels)
   ingest: { ticket: (t) => { const key = crypto.randomBytes(18).toString('base64url'); ingestTickets.set(key, { ...t, exp: Date.now() + 12 * 3600000 }); return key; } }
 });
 

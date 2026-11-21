@@ -172,6 +172,7 @@ export function startRtmp({ port = 1935, host = '::', onPublish, log = () => {} 
     const shake = setTimeout(() => { if (stage < 2) { log(`${who}: no RTMP handshake within 10 s (is this OBS, with Service “Custom…” and a server starting rtmp://?)`); sock.destroy(); } }, 10000);
     let buf = Buffer.alloc(0), stage = 0, inChunk = 128, outChunk = 4096, sink = null, published = false;
     const streams = new Map();   // chunk stream id -> { ts, len, type, sid, body: [], got }
+    let lastKey = null, warnedKey = false;
     let video = null, audio = null, vq = [], aq = [], seq = 1, sentInit = false, lastV = null, lastA = null, fragStart = null;
     const write = (csid, type, sid, payload, ts = 0) => {
       const out = [];
@@ -212,6 +213,11 @@ export function startRtmp({ port = 1935, host = '::', onPublish, log = () => {} 
         const pt = body[1], cto = body.readIntBE(2, 3), key = (body[0] >> 4) === 1;
         if (pt === 0) { const avcC = Buffer.from(body.subarray(5)); const dim = sps(avcC) || { width: 1280, height: 720 }; video = { avcC, ...dim, codec: 'avc1.' + avcC.subarray(1, 4).toString('hex') }; return; }
         if (pt !== 1 || !video?.avcC) return;
+        if (key) {   // how often OBS sends keyframes: YouTube and quick joining need one every few seconds
+          if (lastKey !== null && ts > lastKey) { const gap = (ts - lastKey) / 1000; state.keyInterval = Math.round(gap * 10) / 10;
+            if (gap > 4.5 && !warnedKey) { warnedKey = true; log(`OBS sends a keyframe only every ${state.keyInterval} s. Set OBS → Settings → Output → Keyframe Interval to 2 (YouTube needs 4 s or less, and viewers join faster).`); } }
+          lastKey = ts;
+        }
         if (key && fragStart !== null && ts - fragStart >= 500) flush(false, ts);   // start fragments at keyframes
         if (fragStart === null) fragStart = ts;
         vq.push({ dts: ts, cto, key, data: Buffer.from(body.subarray(5)) });
@@ -319,5 +325,5 @@ export function startRtmp({ port = 1935, host = '::', onPublish, log = () => {} 
     log('OBS receiver: ' + state.error);
   });
   listen(host);
-  return { status: () => ({ port, host: state.host || host, listening: !!state.listening, error: state.error || null, live: state.live > 0, bytes: state.bytes, lastConn: state.lastConn || null }), close: () => server.close() };
+  return { status: () => ({ port, host: state.host || host, listening: !!state.listening, error: state.error || null, live: state.live > 0, bytes: state.bytes, lastConn: state.lastConn || null, keyInterval: state.keyInterval || null }), close: () => server.close() };
 }

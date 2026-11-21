@@ -635,6 +635,9 @@ function createPieceTabs(o) {
 }
 // ---- controlling your nodes: signed commands from the owner's console, answered signed by the node (routed over the mesh)
 const ctlPreimage = (c) => { const { sig, ...rest } = c; return 'opentube-nodectl:' + canon(rest); };
+// "this person may go live on this channel through this computer", signed by the channel's own key (works before the
+// channel key's binding to the person's identity is confirmed in a block)
+const obsChannelPreimage = (node, user, chain) => `opentube-obs-channel:${node}:${user}:${chain}`;
 const receiptShape = (r) => !!r && typeof r === 'object' && r.v === 1 && r.kind === 'receipt' && Object.hasOwn(SERVE.res, r.res) && isKey(r.provider) && isKey(r.by)
   && r.by !== r.provider && Number.isSafeInteger(r.epoch) && Number.isSafeInteger(r.amt) && r.amt > 0 && typeof r.sig === 'string';
 // Usernames: a channel can hold one @name and a list one ~name (links: site/@name, site/~name). A `name` transaction,
@@ -1283,7 +1286,34 @@ function createTracker() {
 // broadcaster's recording, each signed by the channel key and carrying its byte offset in the recording. Viewers whose
 // WebRTC fails play the segments instead; members always receive them and write them into the channel's folder, so
 // their copy is the broadcaster's recording byte for byte (with holes only for what they missed).
-const LIVE = { keepMs: 60000, maxSeg: 1 << 20, srcSlots: 4, maxSlots: 6, maxDepth: 8 };
+const LIVE = { keepMs: 60000, maxSeg: 1 << 20, srcSlots: 4, maxSlots: 6, maxDepth: 8, maxDcSlots: 32 };
+// The segment tree: viewers who can't get the video itself over WebRTC (all of them for a stream from a computer,
+// which has no video stack) get the signed segments from a parent over a WebRTC data channel instead, and pass them
+// on to their own children. Messages over a data channel are kept under 64 KB (the size every browser accepts);
+// bigger ones go in numbered pieces.
+const DC_PART = 60000;
+function dcSend(ch, obj) {
+  if (!ch || ch.readyState !== 'open' || ch.bufferedAmount > 8 * 1024 * 1024) return false;   // too far behind: drop (the child has the hub as fallback)
+  const s = JSON.stringify(obj);
+  try {
+    if (s.length <= DC_PART) ch.send(s);
+    else { const id = Math.random().toString(36).slice(2, 10), n = Math.ceil(s.length / DC_PART); for (let i = 0; i < n; i++) ch.send(JSON.stringify({ f: id, i, n, d: s.slice(i * DC_PART, (i + 1) * DC_PART) })); }
+    return true;
+  } catch { return false; }
+}
+function dcReceiver(onObj) {   // -> (message data) => void
+  const parts = new Map();
+  return (data) => {
+    let m; try { m = JSON.parse(typeof data === 'string' ? data : new TextDecoder().decode(data)); } catch { return; }
+    if (m && typeof m.f === 'string' && Number.isSafeInteger(m.i) && Number.isSafeInteger(m.n) && m.n > 0 && m.n < 64 && typeof m.d === 'string') {
+      const p = parts.get(m.f) || (parts.size > 20 ? (parts.clear(), null) : null) || parts.set(m.f, new Array(m.n)).get(m.f);
+      p[m.i] = m.d;
+      if (p.filter(x => x !== undefined).length === m.n) { parts.delete(m.f); try { onObj(JSON.parse(p.join(''))); } catch {} }
+      return;
+    }
+    onObj(m);
+  };
+}
 const liveSegPreimage = (g) => `opentube-live:${g.stream}:${g.n}:${g.o}:${g.h}`;   // h = sha256 hex of the bytes
 const liveAuthPreimage = (nonce) => 'opentube-live-auth:' + nonce;
 function createLiveHub(o) {   // o: { ownerOf(chain) -> key|null, signerOf(chain, stream) -> extra key allowed to send, isJoined(user, chain) }
@@ -1291,39 +1321,50 @@ function createLiveHub(o) {   // o: { ownerOf(chain) -> key|null, signerOf(chain
   const streams = new Map();   // stream -> { chain, src, mime, seg0, segs, nodes: Map(sid -> node) }
   const out = (sid, m) => { try { sockets.get(sid)?.send(JSON.stringify(m)); } catch {} };
   const hex = (n) => [...crypto.getRandomValues(new Uint8Array(n))].map(b => b.toString(16).padStart(2, '0')).join('');
-  const member = (sid, chain) => [...(sockets.get(sid)?.keys || [])].some(k => k === o.ownerOf(chain) || o.isJoined(k, chain));
+  const member = (sid, chain) => [...(sockets.get(sid)?.keys || [])].some(k => { const u = o.userOf?.(k); return [k, u].some(x => x && (x === o.ownerOf(chain) || o.isJoined(x, chain))); });   // a member, or a computer of one (its grant's user)
   function counts(st) {
-    let members = 0, rtc = 0, seg = 0;
-    for (const [sid, n] of st.nodes) if (sid !== st.src) { if (n.member) members++; if (n.mode === 'rtc') rtc++; else if (n.mode === 'seg') seg++; }
-    return { viewers: st.nodes.size - 1, members, rtc, seg, direct: st.nodes.get(st.src)?.children.size || 0 };
+    let members = 0, rtc = 0, seg = 0, dc = 0;
+    for (const [sid, n] of st.nodes) if (sid !== st.src) { if (n.member) members++; if (n.mode === 'rtc') rtc++; else if (n.mode === 'seg') seg++; else if (n.mode === 'dc') dc++; }
+    const src = st.nodes.get(st.src);
+    return { viewers: st.nodes.size - 1, members, rtc, seg, dc, direct: (src?.children.size || 0) + (src?.dcKids?.size || 0) };
   }
   const report = (st) => out(st.src, { t: 'viewers', stream: st.id, ...counts(st) });
   function sendSegs(sid, st) { if (st.seg0) out(sid, { t: 'seg', seg: st.seg0 }); for (const g of st.segs) if (g.n !== 0) out(sid, { t: 'seg', seg: g }); }
   function detach(st, sid) {   // cut sid from its parent; its subtree stays attached to it
     const n = st.nodes.get(sid); if (!n || !n.parent) return;
-    const p = st.nodes.get(n.parent); if (p) { p.children.delete(sid); out(n.parent, { t: 'unchild', stream: st.id, peer: sid }); }
+    const p = st.nodes.get(n.parent); if (p) { p.children.delete(sid); p.dcKids?.delete(sid); out(n.parent, { t: 'unchild', stream: st.id, peer: sid }); }
     out(sid, { t: 'unparent', stream: st.id, peer: n.parent }); n.parent = null;
   }
-  function subtree(st, sid, acc = new Set()) { acc.add(sid); for (const c of st.nodes.get(sid)?.children || []) subtree(st, c, acc); return acc; }
+  function subtree(st, sid, acc = new Set()) { acc.add(sid); const x = st.nodes.get(sid); for (const c of [...(x?.children || []), ...(x?.dcKids || [])]) subtree(st, c, acc); return acc; }
+  const kidsOf = (n) => { const k = [...n.children, ...(n.dcKids || [])]; n.children.clear(); n.dcKids?.clear(); return k; };
+  const node = (x) => ({ parent: null, children: new Set(), dcKids: new Set(), slots: 0, dcSlots: 0, member: false, depth: 0, mode: 'pending', media: true, ...x });
   function assign(st, sid) {
     const n = st.nodes.get(sid); if (!n) return;
     const below = subtree(st, sid);
-    const free = (x, id) => (x.mode === 'src' || x.mode === 'rtc') && x.children.size < x.slots && x.depth < LIVE.maxDepth && !below.has(id);
     const src = st.nodes.get(st.src);
-    if (n.member && src.children.size >= src.slots) {   // members first: move a non-member off the broadcaster
-      const bump = [...src.children].find(c => !st.nodes.get(c)?.member);
-      if (bump) { detach(st, bump); queueMicrotask(() => assign(st, bump)); }
+    const place = (pid, p, dc) => {
+      n.parent = pid; n.depth = p.depth + 1; n.mode = dc ? 'dc' : 'rtc'; (dc ? p.dcKids : p.children).add(sid);
+      for (const c of below) if (c !== sid) { const x = st.nodes.get(c), px = st.nodes.get(x.parent); if (px) x.depth = px.depth + 1; }
+      out(sid, { t: 'parent', stream: st.id, peer: pid, ...(dc ? { dc: true } : {}) });
+      out(pid, { t: 'child', stream: st.id, peer: sid, ...(dc ? { dc: true } : {}) });
+      report(st);
+    };
+    if (st.media !== false && n.media !== false) {   // the video itself, over WebRTC (a broadcasting browser)
+      const free = (x, id) => (x.mode === 'src' || x.mode === 'rtc') && x.children.size < x.slots && x.depth < LIVE.maxDepth && !below.has(id);
+      if (n.member && src.children.size >= src.slots) {   // members first: move a non-member off the broadcaster
+        const bump = [...src.children].find(c => !st.nodes.get(c)?.member);
+        if (bump) { detach(st, bump); queueMicrotask(() => assign(st, bump)); }
+      }
+      const cands = [...st.nodes].filter(([id, x]) => id !== sid && free(x, id));
+      cands.sort(([ia, a], [ib, b]) => (n.member ? (ib === st.src) - (ia === st.src) : (b.member - a.member)) || a.depth - b.depth || a.children.size - b.children.size);
+      if (cands[0]) return place(cands[0][0], cands[0][1], false);
     }
-    const cands = [...st.nodes].filter(([id, x]) => id !== sid && free(x, id));
-    cands.sort(([ia, a], [ib, b]) => (n.member ? (ib === st.src) - (ia === st.src) : (b.member - a.member)) || a.depth - b.depth || a.children.size - b.children.size);
-    const pick = cands[0];
-    if (!pick) { n.mode = 'seg'; out(sid, { t: 'mode', stream: st.id, mode: 'seg' }); if (!n.member) sendSegs(sid, st); return report(st); }
-    const [pid, p] = pick;
-    n.parent = pid; n.depth = p.depth + 1; n.mode = 'rtc'; p.children.add(sid);
-    for (const c of below) if (c !== sid) st.nodes.get(c).depth = st.nodes.get(st.nodes.get(c).parent).depth + 1;
-    out(sid, { t: 'parent', stream: st.id, peer: pid });
-    out(pid, { t: 'child', stream: st.id, peer: sid });
-    report(st);
+    // the segment tree: under someone who gets every segment (the source, a data-channel viewer, or one the hub feeds)
+    const freeDc = (x, id) => (x.mode === 'src' || x.mode === 'dc' || x.mode === 'seg') && x.dcKids.size < x.dcSlots && x.depth < LIVE.maxDepth && !below.has(id);
+    const dcs = [...st.nodes].filter(([id, x]) => id !== sid && freeDc(x, id));
+    dcs.sort(([, a], [, b]) => a.depth - b.depth || (b.dcSlots - b.dcKids.size) - (a.dcSlots - a.dcKids.size));
+    if (dcs[0]) return place(dcs[0][0], dcs[0][1], true);
+    n.mode = 'seg'; n.depth = 1; out(sid, { t: 'mode', stream: st.id, mode: 'seg' }); if (!n.member) sendSegs(sid, st); return report(st);
   }
   function leave(st, sid) {
     const n = st.nodes.get(sid); if (!n) return;
@@ -1332,7 +1373,7 @@ function createLiveHub(o) {   // o: { ownerOf(chain) -> key|null, signerOf(chain
       streams.delete(st.id); return;
     }
     detach(st, sid);
-    const orphans = [...n.children]; n.children.clear();
+    const orphans = kidsOf(n);
     st.nodes.delete(sid); sockets.get(sid)?.watching.delete(st.id);
     for (const c of orphans) { const x = st.nodes.get(c); if (x) { x.parent = null; out(c, { t: 'unparent', stream: st.id, peer: sid }); assign(st, c); } }
     report(st);
@@ -1342,13 +1383,13 @@ function createLiveHub(o) {   // o: { ownerOf(chain) -> key|null, signerOf(chain
     if (g.n === 0) st.seg0 = g;
     st.segs.push(g);
     while (st.segs.length && st.segs[0].at < g.at - LIVE.keepMs) st.segs.shift();
-    for (const [id, n] of st.nodes) if (id !== st.src && (n.mode === 'seg' || n.member)) out(id, { t: 'seg', seg: g });
+    for (const [id, n] of st.nodes) if (id !== st.src && (n.mode === 'seg' || n.mode === 'pending' && n.dcSlots > 0 || n.member)) out(id, { t: 'seg', seg: g });
   }
   return {
     // A stream whose segments come from this node itself (OBS ingest on server.mjs). Viewers get segments.
     local(stream, chain, mime) {
       const src = 'local:' + stream;
-      const st = { id: stream, chain, src, mime, seg0: null, segs: [], nodes: new Map([[src, { parent: null, children: new Set(), slots: 0, member: true, depth: 0, mode: 'src' }]]) };
+      const st = { id: stream, chain, src, mime, media: false, seg0: null, segs: [], nodes: new Map([[src, node({ member: true, mode: 'src' })]]) };
       streams.set(stream, st);
       return { seg: (g) => streams.get(stream) === st && relaySeg(st, g), end: () => streams.get(stream) === st && leave(st, src) };
     },
@@ -1380,8 +1421,8 @@ function createLiveHub(o) {   // o: { ownerOf(chain) -> key|null, signerOf(chain
         if (!(owner && s.keys.has(owner)) && !(relay && s.keys.has(relay))) return out(sid, { t: 'error', stream: m.stream, error: 'not the owner of this channel' });
         if (st && st.chain !== m.chain) return;
         if (st && st.src !== sid) leave(st, st.src);   // a reconnecting broadcaster replaces the old connection
-        const fresh = { id: m.stream, chain: m.chain, src: sid, mime: m.mime, seg0: st?.seg0 || null, segs: st?.segs || [], nodes: new Map() };
-        fresh.nodes.set(sid, { parent: null, children: new Set(), slots: m.rtc === false ? 0 : Math.min(Math.max(m.slots | 0, 0), LIVE.maxSlots) || LIVE.srcSlots, member: true, depth: 0, mode: 'src' });
+        const fresh = { id: m.stream, chain: m.chain, src: sid, mime: m.mime, media: m.rtc !== false, seg0: st?.seg0 || null, segs: st?.segs || [], nodes: new Map() };
+        fresh.nodes.set(sid, node({ slots: m.rtc === false ? 0 : Math.min(Math.max(m.slots | 0, 0), LIVE.maxSlots) || LIVE.srcSlots, dcSlots: Math.min(Math.max(m.dcSlots | 0, 0), LIVE.maxDcSlots), member: true, mode: 'src', media: m.rtc !== false }));
         streams.set(m.stream, fresh); s.watching.add(m.stream);
         return out(sid, { t: 'broadcasting', stream: m.stream });
       }
@@ -1400,20 +1441,25 @@ function createLiveHub(o) {   // o: { ownerOf(chain) -> key|null, signerOf(chain
       }
       if (m.t === 'watch') {
         if (st.nodes.has(sid) || s.watching.size >= 20) return;
-        const n = { parent: null, children: new Set(), slots: Math.min(Math.max(m.slots | 0, 0), LIVE.maxSlots), member: member(sid, st.chain), depth: 0, mode: 'pending' };
+        const n = node({ slots: Math.min(Math.max(m.slots | 0, 0), LIVE.maxSlots), dcSlots: Math.min(Math.max(m.dcSlots | 0, 0), LIVE.maxDcSlots), member: member(sid, st.chain), media: m.media !== false });
         st.nodes.set(sid, n); s.watching.add(st.id);
         out(sid, { t: 'watching', stream: st.id, mime: st.mime, member: n.member });
         if (n.member) sendSegs(sid, st);   // members save the stream: give them what we have
-        if (m.segOnly) { n.mode = 'seg'; out(sid, { t: 'mode', stream: st.id, mode: 'seg' }); if (!n.member) sendSegs(sid, st); return report(st); }
-        return assign(st, sid);
+        if (m.segOnly) { n.mode = 'seg'; n.depth = 1; out(sid, { t: 'mode', stream: st.id, mode: 'seg' }); if (!n.member) sendSegs(sid, st); }
+        else assign(st, sid);
+        // a relay with room (e.g. a computer): move viewers the hub feeds under it, so the hub sends fewer copies
+        if (n.dcSlots >= 4 && (n.mode === 'seg' || n.mode === 'dc')) {
+          for (const [id, x] of [...st.nodes]) if (n.dcKids.size < n.dcSlots && id !== sid && x.mode === 'seg' && !x.member && x.dcKids.size === 0 && x.dcSlots >= 0) { x.mode = 'pending'; assign(st, id); }
+        }
+        return report(st);
       }
       if (m.t === 'leave') return leave(st, sid);
       if (m.t === 'fallback') {   // WebRTC didn't work for this viewer: segments instead
         const n = st.nodes.get(sid); if (!n || n.mode === 'src') return;
         detach(st, sid);
-        const orphans = [...n.children]; n.children.clear();
+        const orphans = kidsOf(n);
         for (const c of orphans) { const x = st.nodes.get(c); if (x) { x.parent = null; out(c, { t: 'unparent', stream: st.id, peer: sid }); assign(st, c); } }
-        n.mode = 'seg'; out(sid, { t: 'mode', stream: st.id, mode: 'seg' }); if (!n.member) sendSegs(sid, st);
+        n.mode = 'seg'; n.depth = 1; out(sid, { t: 'mode', stream: st.id, mode: 'seg' }); if (!n.member) sendSegs(sid, st);
         return report(st);
       }
       if (m.t === 'signal') {   // WebRTC offer/answer/candidates, only between a parent and its child
@@ -2012,7 +2058,7 @@ async function createEngine(o) {
 }
 
 const VERSION = '2026.11.21';   // the release name; the build fingerprint is a hash of index.html (see pageBuild / BUILD in server.mjs)
-globalThis.OpenTubeCore = { VERSION, MAIN_GENESIS, LIMITS, ORG_TYPES, LISTING_TYPES, XCHG, noteUnlock, mediaRefShape, placeShape, domainOf, MAIL, ORG, orgRoles, orderPreimage, courtPreimage, bindPreimage, retirePreimage, rekeyPreimage, SQUARE, SEAL, monthKey, squareMonths, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
+globalThis.OpenTubeCore = { VERSION, MAIN_GENESIS, LIMITS, ORG_TYPES, LISTING_TYPES, XCHG, noteUnlock, mediaRefShape, placeShape, domainOf, MAIL, ORG, orgRoles, orderPreimage, courtPreimage, bindPreimage, retirePreimage, rekeyPreimage, SQUARE, SEAL, monthKey, squareMonths, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, obsChannelPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, dcSend, dcReceiver, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
 })();
 </script>
 
@@ -2949,6 +2995,23 @@ function offerTo(stream, peer, media, kids) {
   (async () => { await pc.setLocalDescription(await pc.createOffer()); liveNet.send({ t: 'signal', stream, to: peer, data: { sdp: pc.localDescription.toJSON() } }); })().catch(e => console.warn('live offer', e.message));
   return pc;
 }
+// The segment tree (see dcSend in the core): a data channel to a child, which gets the start of the stream and the last
+// few segments right away, then every segment as it arrives here.
+const { dcSend, dcReceiver } = globalThis.OpenTubeCore;
+function dcOfferTo(sess, peer) {
+  sess.dcKids.get(peer)?.pc.close();
+  const pc = newPc(), ch = pc.createDataChannel('live', { ordered: true });
+  const kid = { pc, ch }; sess.dcKids.set(peer, kid);
+  ch.onopen = () => { if (sess.seg0) dcSend(ch, sess.seg0); for (const g of sess.recent || []) if (g.n !== 0) dcSend(ch, g); };
+  pc.onicecandidate = (e) => { if (e.candidate) liveNet.send({ t: 'signal', stream: sess.stream, to: peer, data: { c: e.candidate.toJSON() } }); };
+  pc.onconnectionstatechange = () => { if (['failed', 'closed'].includes(pc.connectionState) && sess.dcKids.get(peer) === kid) sess.dcKids.delete(peer); };
+  (async () => { await pc.setLocalDescription(await pc.createOffer()); liveNet.send({ t: 'signal', stream: sess.stream, to: peer, data: { sdp: pc.localDescription.toJSON() } }); })().catch(e => console.warn('live dc offer', e.message));
+}
+function dcForward(sess, g) {   // a verified segment: keep the start and the last few, pass it to our data-channel children
+  if (g.n === 0) sess.seg0 = g;
+  (sess.recent ||= []).push(g); if (sess.recent.length > 8) sess.recent.shift();
+  for (const { ch } of sess.dcKids?.values() || []) dcSend(ch, g);
+}
 // Point every relayed connection at new tracks (after we got a new parent).
 function retarget(kids, media) {
   for (const pc of kids.values()) for (const s of pc.getSenders()) { const t = media.getTracks().find(x => x.kind === s.track?.kind); if (t) s.replaceTrack(t).catch(() => {}); }
@@ -2980,6 +3043,8 @@ async function startLive(chainId, media, title) {
   });
   liveNet.send({ t: 'broadcast', stream, chain: chainId, mime: LIVE_MIME, slots: 4 });
   sess.block = await append(chainId, { type: 'live', title, stream, mime: LIVE_MIME });
+  // your computers (and ones shared with you for hosting) join the stream and serve viewers over WebRTC
+  for (const n of usableNodes('h').filter(n => Date.now() - n.at < 120000)) nodeCtl(n, 'relay', { stream, chain: chainId }).catch(() => {});
   const opts = { mimeType: LIVE_MIME, videoBitsPerSecond: 2_000_000, audioBitsPerSecond: 128_000, videoKeyFrameIntervalDuration: 2000 };
   const recorder = sess.recorder = new MediaRecorder(media, opts);
   recorder.ondataavailable = (e) => { if (e.data.size) sess.queue = sess.queue.then(() => pushSegment(sess, e.data)).catch(err => console.warn('live segment', err)); };
@@ -3081,7 +3146,7 @@ async function joinLive(chainId, lb, ui = null) {
   if (sess) { sess.ui = ui || sess.ui; if (ui) ui.attach(sess); return sess; }
   const hub = await liveNet.connect();
   sess = { chainId, stream, block: lb.hash, mime: lb.payload.mime, title: lb.payload.title, keys: liveSigner(chainId, lb), ui, parent: null, parentPc: null, media: null,
-    kids: new Map(), pendingKids: new Set(), mode: 'pending', member: false, capture: null, ended: false, tries: 0, background: !ui };
+    kids: new Map(), dcKids: new Map(), pendingKids: new Set(), mode: 'pending', member: false, capture: null, ended: false, tries: 0, background: !ui };
   viewing.set(stream, sess);
   sess.gotN = new Set();
   // over the mesh, always (and only, when no hub answers): ask peers for the stream every 20 s
@@ -3092,13 +3157,13 @@ async function joinLive(chainId, lb, ui = null) {
   if (ui) ui.attach(sess);
   return sess;
 }
-const sendWatch = (sess) => liveNet.send({ t: 'watch', stream: sess.stream, slots: sess.background ? 3 : 2, segOnly: !sess.background && params.get('live') === 'segments' });   // ?live=segments: skip WebRTC (testing)
+const sendWatch = (sess) => liveNet.send({ t: 'watch', stream: sess.stream, slots: sess.background ? 3 : 2, dcSlots: sess.background ? 4 : 3, media: params.get('live') !== 'dc', segOnly: !sess.background && params.get('live') === 'segments' });   // ?live=segments: skip WebRTC (testing)
 function leaveLive(stream, { keepIfMember = true } = {}) {
   const sess = viewing.get(stream); if (!sess) return;
   sess.ui = null;
   if (keepIfMember && sess.capture && !sess.ended) { sess.background = true; return; }   // members keep relaying and saving
   liveNet.send({ t: 'leave', stream }); liveNet.off(stream); clearInterval(sess.wantTimer);
-  sess.parentPc?.close(); for (const pc of sess.kids.values()) pc.close();
+  sess.parentPc?.close(); for (const pc of sess.kids.values()) pc.close(); for (const k of sess.dcKids.values()) k.pc.close();
   clearTimeout(sess.mediaTimer);
   sess.capture?.store.close();
   viewing.delete(stream);
@@ -3115,9 +3180,10 @@ async function onLiveMsg(sess, m) {
       else { sess.ended = true; sess.ui?.ended('This stream isn’t live right now.'); }
       return;
     case 'parent':
-      sess.parent = m.peer; sess.mode = 'rtc'; sess.ui?.status('Connecting…');
+      sess.parent = m.peer; sess.mode = m.dc ? 'dc' : 'rtc'; sess.dcAt = 0; sess.ui?.status('Connecting…');
+      if (m.dc) setTimeout(() => sess.ui?.segmentMode(), 0);
       clearTimeout(sess.mediaTimer);
-      sess.mediaTimer = setTimeout(() => { if (!sess.media && sess.mode === 'rtc') { liveNet.send({ t: 'fallback', stream: sess.stream }); } }, 12000);
+      sess.mediaTimer = setTimeout(() => { if (m.dc ? !sess.dcAt && sess.mode === 'dc' : !sess.media && sess.mode === 'rtc') { liveNet.send({ t: 'fallback', stream: sess.stream }); } }, 12000);
       return;
     case 'unparent':
       if (sess.parent === m.peer) { sess.parent = null; sess.parentPc?.close(); sess.parentPc = null; }
@@ -3135,21 +3201,27 @@ async function onLiveMsg(sess, m) {
             for (const k of sess.pendingKids) offerTo(sess.stream, k, media, sess.kids); sess.pendingKids.clear();
             sess.ui?.media(media);
           };
+          pc.ondatachannel = (e) => {   // the segment tree: segments from our parent
+            const recv = dcReceiver((g) => { sess.dcAt = Date.now(); onLiveMsg(sess, { t: 'seg', seg: g, via: 'dc' }); });
+            e.channel.onmessage = (ev) => recv(ev.data);
+          };
           pc.onconnectionstatechange = () => { if (pc.connectionState === 'failed' && sess.parentPc === pc) { sess.media = null; liveNet.send({ t: 'fallback', stream: sess.stream }); } };
           await onSignal(pc, m.data);
           await pc.setLocalDescription(await pc.createAnswer());
           liveNet.send({ t: 'signal', stream: sess.stream, to: m.from, data: { sdp: pc.localDescription.toJSON() } });
         } else if (sess.parentPc) await onSignal(sess.parentPc, m.data);
-      } else { const pc = sess.kids.get(m.from); if (pc) await onSignal(pc, m.data); }
+      } else { const pc = sess.kids.get(m.from) || sess.dcKids.get(m.from)?.pc; if (pc) await onSignal(pc, m.data); }
       return;
     case 'child':   // relay to someone further from the broadcaster
+      if (m.dc) return dcOfferTo(sess, m.peer);
       if (sess.media) offerTo(sess.stream, m.peer, sess.media, sess.kids); else sess.pendingKids.add(m.peer);
       return;
     case 'unchild':
-      sess.pendingKids.delete(m.peer); sess.kids.get(m.peer)?.close(); sess.kids.delete(m.peer);
+      sess.pendingKids.delete(m.peer); sess.kids.get(m.peer)?.close(); sess.kids.delete(m.peer); sess.dcKids.get(m.peer)?.pc.close(); sess.dcKids.delete(m.peer);
       return;
     case 'mode':
       sess.mode = m.mode; sess.media = null; clearTimeout(sess.mediaTimer);
+      if (m.mode === 'seg' && sess.parentPc) { sess.parentPc.close(); sess.parentPc = null; sess.parent = null; }
       sess.ui?.segmentMode();
       return;
     case 'seg': {
@@ -3161,6 +3233,7 @@ async function onLiveMsg(sess, m) {
       let ok = false; for (const k of sess.keys) if (await coreVerify(k, liveSegPreimage(g), g.sig)) { ok = true; break; }
       if (!ok) { if (params.get('debug')) console.log('live seg bad signature', g.n, sess.keys); return; }
       if (sess.capture) sess.capture.store.put(g.o, u8, () => {});
+      dcForward(sess, g);
       if (g.n === 0) { const c = clusterAt(u8); sess.init = isMp4(sess.mime) ? u8 : c > 0 ? u8.slice(0, c) : null; }
       const own = broadcasts.get(sess.chainId);
       if (own?.obs && own.stream === sess.stream) { own.bytes = g.o + u8.length; own.lastSeg = Date.now(); own.preview?.(g, u8); }
@@ -5245,10 +5318,10 @@ views.livewatch = {
     };
     let segp = null, how = '';
     const ui = {
-      attach(sess) { ui.sess = sess; if (sess.media) ui.media(sess.media); else if (sess.mode === 'seg') ui.segmentMode(); },
+      attach(sess) { ui.sess = sess; if (sess.media) ui.media(sess.media); else if (sess.mode === 'seg' || sess.mode === 'dc') ui.segmentMode(); },
       media(ms) { segp = null; player.srcObject = ms; player.play().catch(() => {}); how = ui.sess?.parent && ui.sess.parent === ui.sess.parentHint ? '' : ''; status.textContent = 'Live · by WebRTC (about a second behind)'; },
       segmentMode() { if (segp) return; player.srcObject = null; segp = segmentPlayer(player, lb.payload.mime, ui.sess?.init); status.textContent = segp ? 'Live · by segments through the home node (a few seconds behind)' : 'This browser can’t play this stream format.'; },
-      segment(g, u8) { if (ui.sess?.mode === 'seg') segp?.push(g, u8); },
+      segment(g, u8) { if (ui.sess?.mode === 'seg' || ui.sess?.mode === 'dc' || !ui.sess?.media) segp?.push(g, u8); },
       status(t) { status.textContent = t; },
       ended(t) { status.textContent = t + (d.recordings.get(lb.payload.stream) ? '' : ' If the streamer publishes the recording, it appears with the channel’s videos.'); }
     };
@@ -6616,6 +6689,10 @@ function obsPanel(n, { chainId = null } = {}) {
   let testResult = null, pick = null;
   const run = async (cmd, args) => { st.textContent = 'asking the computer…'; try { const r = await nodeCtl(n, cmd, args); if (args?.test) testResult = r.data; else data = r.data; st.textContent = ''; draw(); }
     catch (e) { st.textContent = /unknown command|bad command/.test(e.message) ? '✗ This computer runs an older OpenTube. On it, stop OpenTube (Ctrl+C) and run your command again: it updates itself on start.' : '✗ ' + e.message; draw(); } };
+  const chanArgs = async (chain, extra = {}) => {   // the channel, with proof that it's ours (signed by its key)
+    const sg = chain && signerFor(derive(chain)?.owner);
+    return { channel: chain, ...(sg ? { channelSig: await sg.sign(globalThis.OpenTubeCore.obsChannelPreimage(n.node, me.pub, chain)) } : {}), ...extra };
+  };
   const mask = (v) => h('span', { class: 'row', style: 'gap:6px;flex:1' }, (() => { const i = h('input', { type: 'password', readOnly: true, value: v, class: 'mono', style: 'flex:1' }); return [i, h('button', { class: 'small', type: 'button', onclick: (e) => { i.type = i.type === 'password' ? 'text' : 'password'; e.target.textContent = i.type === 'password' ? 'Show' : 'Hide'; } }, 'Show'), h('button', { class: 'small', type: 'button', onclick: () => copyText(v, 'Stream key') }, 'Copy')]; })());
   const draw = () => {
     if (!data) return box.replaceChildren(h('b', {}, `OBS on ${n.info?.name || 'this computer'}`), ' ', st);
@@ -6638,12 +6715,13 @@ function obsPanel(n, { chainId = null } = {}) {
         'the system says port ' + data.port + ' is open on ' + data.bound.map(b => (b.addr === '0.0.0.0' ? 'all IPv4 addresses (0.0.0.0)' : b.addr === '::' ? 'all addresses (::)' : b.addr) + (b.self ? '' : ` by another program (process ${b.pid}: ${b.cmd})`)).join(', ')
         + (data.bound.every(b => /^127\.|^::1$/.test(b.addr)) ? ' — localhost only: OBS on other computers can’t connect' : ''))) : null,
       row('Status', h('span', { class: 'sub', style: 'flex:1' }, data.live?.error ? '⚠ ' + data.live.error : data.live?.listening === false ? '⚠ not listening' : `listening on ${data.listen === '::' ? 'all addresses (IPv4 + IPv6)' : data.listen}, port ${data.port}`,
-        data.lastConn ? ` · last OBS connection ${ago(data.lastConn.at)} from ${data.lastConn.from}: ${data.lastConn.stage}` : ' · no OBS connection has reached this computer yet'),
+        data.lastConn ? ` · last OBS connection ${ago(data.lastConn.at)} from ${data.lastConn.from}: ${data.lastConn.stage}` : ' · no OBS connection has reached this computer yet',
+        data.live?.keyInterval ? h('div', { style: data.live.keyInterval > 4.5 ? 'color:var(--warn)' : '' }, `keyframe every ${data.live.keyInterval} s` + (data.live.keyInterval > 4.5 ? ' — too rare: in OBS set Output → Keyframe Interval to 2 (YouTube needs 4 s or less)' : ' ✓')) : null),
         h('button', { class: 'small', onclick: () => run('obs', { test: true }) }, 'Test from the internet'), h('button', { class: 'small', onclick: () => run('obs') }, 'Refresh')),
       testResult ? reachReport(testResult, data) : null,
       row('Stream key', mask(data.key), h('button', { class: 'small', onclick: () => confirm('Make a new stream key? OBS will need the new one.') && run('obs.rotate') }, 'New key')),
-      row('Channel', ch, linked ? h('span', { class: 'badge ok' }, 'linked') : selected ? h('button', { class: 'small primary', onclick: async () => { await append(selected, { type: 'relay', key: n.node, on: true }); toast('Linked: this computer can go live on ' + channelTitle(selected)); await run('obs.set', { channel: selected, title: title.value }); } }, 'Link this computer to it') : null),
-      row('Title', title, h('button', { class: 'small', onclick: () => run('obs.set', { channel: ch.value || null, title: title.value }) }, 'Save')),
+      row('Channel', ch, linked ? h('span', { class: 'badge ok' }, 'linked') : selected ? h('button', { class: 'small primary', onclick: async () => { await append(selected, { type: 'relay', key: n.node, on: true }); toast('Linked: this computer can go live on ' + channelTitle(selected)); await run('obs.set', await chanArgs(selected, { title: title.value })); } }, 'Link this computer to it') : null),
+      row('Title', title, h('button', { class: 'small', onclick: async () => run('obs.set', await chanArgs(ch.value || null, { title: title.value })) }, 'Save')),
       row('YouTube', ytOn, h('span', {}, 'Also send it to YouTube'), ytKey, h('button', { class: 'small', onclick: () => run('obs.set', { youtube: { on: ytOn.checked, ...(ytKey.value.trim() ? { key: ytKey.value.trim() } : {}) } }) }, 'Save')),
       data.ffmpeg ? null : h('div', { class: 'sub', style: 'margin-left:128px' }, 'YouTube forwarding and tiles need ffmpeg on that computer (install it, then restart OpenTube there).'),
       row('Tiles', tileSel, h('button', { class: 'small', onclick: () => { const v = Number(tileSel.value); run('obs.set', { tile: { on: v > 1, ...(v > 1 ? { n: v } : {}) } }); } }, 'Save')),

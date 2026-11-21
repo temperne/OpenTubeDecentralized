@@ -54,7 +54,8 @@ export class OpenTubeNode {
     this.liveHub = core.createLiveHub({
       ownerOf: (c) => this.engine?.directory.get(c)?.genesis.author || this.engine?.chains.get(c)?.owner || null,
       signerOf: (c, s) => { if (!this.engine?.chains.has(c)) return null; const b = this.engine.derive(c)?.streams.find(x => x.payload.stream === s); return b ? (b.payload.relay || (b.author !== this.engine.derive(c).owner ? b.author : null)) : null; },   // the relay named in the live block, or the linked computer that wrote it
-      isJoined: (k, c) => !!this.engine?.memberships.get(k)?.joined?.includes(c)
+      isJoined: (k, c) => !!this.engine?.memberships.get(k)?.joined?.includes(c),
+      userOf: (k) => this.engine?.nodes?.get(k)?.grant?.user || null   // a computer counts as its owner (it relays their channels)
     });
     this.ready = this.ctx.blockConcurrencyWhile(() => this.init());
   }

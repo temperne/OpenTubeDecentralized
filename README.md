@@ -494,6 +494,18 @@ Many VPS providers only let a few ports in from the internet (often 22 and 80), 
 - **Open the port:** in the provider's control panel (Firewall or Security group), and on the server with `sudo iptables -I INPUT -p tcp --dport 1935 -j ACCEPT`.
 - **Or use a port that's already open:** add `--obs-port=80` to the command, or set "OBS port" when you create it on Devices. In OBS, use `rtmp://<its-ip>:80/live`. Only one program can use a port, so pick one nothing else on the server is using.
 
+### Live delivery: video tree, segment tree, and your computers as relays
+
+Every stream is cut into ~1 s **segments**, each signed by the channel (or by the computer streaming for it) and checked by every viewer, so whoever passes them on can't alter them. They travel in three ways, and the site's hub only introduces peers:
+
+- **Video tree (browser streams):** the broadcaster's browser sends the video itself over WebRTC to a few viewers, who pass it on to a few more.
+- **Segment tree (every stream):** viewers who can't get the video itself get the segments from a parent over a **WebRTC data channel**, and pass them to their own children. That covers streams from a computer (OBS), which has no video stack, and viewers whose video connection failed. The parent can be the computer itself, another viewer, or a viewer the hub feeds directly. The hub feeds a viewer itself only when no parent has room. Big segments go in pieces under 64 KB, a size every browser accepts.
+- **Your computers relay:** when you go live from a browser, it asks your online computers (and ones shared with you for hosting) to join. Each one takes every segment and serves up to 16 viewers over data channels, so your browser's upload isn't the limit. A computer also relays live streams of channels you joined. `LIVE_RELAY=0` turns this off.
+
+The peer mesh still carries the segments too, hop by hop, when no hub is reachable.
+
+OBS through a computer: the node measures how often OBS sends a keyframe and warns (in its log and in the OBS panel) when it's over 4 s. YouTube refuses streams like that ("no keyframes"), and viewers take longer to join. Set OBS → Settings → Output → Keyframe Interval to 2.
+
 ### Recordings of streams through your computer
 
 When you go live with OBS through one of your computers, it records the stream into that channel's folder in its video folder as `<title>.mp4`. When the stream ends, it shares the recording over BitTorrent and announces it on the channel (its `liveend` block carries the recording's infohash, size and a thumbnail). On the channel's page and under Go live, the owner sees **📼 Recording ready**: **Publish recording** posts it as a video like any other (the computer keeps sharing it, others download it), and **Discard** deletes it from the computer. Recording needs video hosting on that computer (the default). With `--no-host`, the file is kept under `~/.opentube/node-data/recordings` but isn't offered for publishing.
