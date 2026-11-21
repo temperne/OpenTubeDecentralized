@@ -169,6 +169,29 @@ The public profile lives on your page chain, the same chain as your friends page
 
 **Every link gets 👍/👎** (a `linkvote` transaction, priced like a like). An up-vote pays whoever shared the link and a down-vote is burned. Votes add up **per domain** across the network, and each link shows its domain's score, so sites earn a reputation.
 
+## Notifications
+
+The 🔔 in the header counts what's new; the *Notifications* page lists it.
+
+They're made in your browser from what arrives on the network, so nothing about what you follow is published. The kinds:
+
+- new videos, live streams and posts on what you subscribe to (channels, groups, lists, organizations);
+- comments, replies, likes and @@mentions on your things;
+- posts from friends and from people you follow;
+- private messages;
+- market activity: bids, outbids, sales, payment released, disputes, rulings, appeals;
+- swaps: coins locked for you, claimed, refunded;
+- organizations: flags on your videos, filings for you as a clerk, roles given to you;
+- coins received.
+
+Settings come in layers, and the most specific one wins:
+
+1. each kind on or off (*Notifications → Settings*);
+2. each channel, group, list or organization set to Default, All or None (also next to its Subscribe button);
+3. a single kind overridden for one of them.
+
+Desktop notifications are available when the tab is in the background.
+
 ## Identities own channels (and keys can be replaced)
 
 Your **identity** is your personal key. Every channel or list you create has its own key, and that key is **bound** to your identity by a `bind` transaction. The channel key signs "this identity owns me" and your identity sends it. From then on:

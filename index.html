@@ -74,6 +74,7 @@
   .media-item { max-width: 100%; } .media-play { min-width: 200px; min-height: 112px; background-size: cover; background-position: center; color: #fff; font-size: 22px; border-radius: 8px; }
   .media-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 6px; margin-top: 6px; } .media-grid.big { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
   .media-pick { padding: 0; border: 2px solid transparent; border-radius: 8px; overflow: hidden; aspect-ratio: 1; background: var(--panel-2); } .media-pick.on { border-color: var(--accent); } .media-pick img { width: 100%; height: 100%; object-fit: cover; }
+  #bell { position: relative; } .bell-n { position: absolute; top: -4px; right: -6px; background: #e11d48; color: #fff; border-radius: 999px; font-size: 10px; padding: 0 5px; line-height: 16px; }
   .rich ul { margin: 4px 0; padding-left: 22px; } .rich code { background: var(--panel-2); padding: 0 4px; border-radius: 4px; }
   .linkchip { white-space: nowrap; } .linkchip .tagx { background: none; border: 0; cursor: pointer; padding: 0 2px; font-size: 12px; }
   a.person { color: inherit; text-decoration: none; } a.person:hover { text-decoration: underline; }
@@ -145,7 +146,7 @@
     <a href="#/me" data-nav="me" title="Your computers, video folder and the network">Devices</a>
     <a href="#/mine" data-nav="mine" id="nav-mine" class="hidden">My channel</a>
   </nav>
-  <span class="actions"><a class="act" href="#/new/video">＋ Add video</a><a class="act live" href="#/new/live">● Go live</a></span>
+  <span class="actions"><a class="act" href="#/notifications" id="bell" title="Notifications">🔔<span id="bell-n" class="bell-n hidden"></span></a><a class="act" href="#/new/video">＋ Add video</a><a class="act live" href="#/new/live">● Go live</a></span>
   <a class="status" href="#/network" title="Network & diagnostics" style="color:inherit;text-decoration:none">
     <span><span class="dot" id="dot-health"></span><span id="st-health">checking…</span></span>
     <span><span class="dot" id="dot-net"></span><span id="st-net">connecting…</span></span>
@@ -2297,7 +2298,7 @@ engine = await createEngine({
   peers: () => [...net.links.keys()],
   onLiveSeg: (g) => { const sess = viewing.get(g.stream); if (sess) onLiveMsg(sess, { t: 'seg', seg: g, via: 'mesh' }); },
   persist: (chainId, b) => { idb('blocks', 'readwrite', s => s.put({ hash: b.hash, chainId, block: b })).catch(() => {}); chainDisk?.queue(chainId, b); },
-  onBlock: (chain, b) => { if (subs[chain.id] === 'join' && b.payload.type === 'video' && b.author === chain.owner && E.postPaid(b)) hostVideo(chain.id, b.payload); if (b.author === chain.owner) liveHooks?.onBlock(chain.id, b); },
+  onBlock: (chain, b) => { notifyBlock(chain, b); if (subs[chain.id] === 'join' && b.payload.type === 'video' && b.author === chain.owner && E.postPaid(b)) hostVideo(chain.id, b.payload); if (b.author === chain.owner) liveHooks?.onBlock(chain.id, b); },
   onChange: () => scheduleRender(),
   onMembership: (m) => { if (m.author === me.pub) kv.set('membership', m); },
   onWatch: (m) => adSession?.onMessage(m),
@@ -3424,6 +3425,7 @@ function parseRoute() {
   if (p[0] === 'explore') return { name: 'explore', tab: p[1] || 'trending' };
   if (p[0] === 'me') return { name: 'me' };
   if (p[0] === 'friends') return { name: 'friends' };
+  if (p[0] === 'notifications') return { name: 'notifications', tab: p[1] || 'all' };
   if (p[0] === 'exchange') return { name: 'exchange', tab: p[1] || 'book' };
   if (p[0] === 'you') return { name: 'you', tab: p[1] || 'profile' };
   if (p[0] === 'u' && isKey(p[1])) return { name: 'user', key: p[1] };
@@ -4763,6 +4765,123 @@ views.exchange = { render() {
         h('li', {}, h('b', {}, 'Prices. '), 'The order book shows what people ask and bid for each currency; there is no central price.')),
       h('p', { class: 'sub' }, 'Your swap secrets stay in this browser. Never paste a preimage anywhere but the claim box of the swap it belongs to.')));
 } };
+// ---------------------------------------------------------------- notifications (made in this browser, from what arrives)
+// Each kind can be on or off; each thing you subscribe to (channel, group, list, organization) can be Default / All /
+// None; and a kind can be overridden for one thing. The most specific setting wins: thing+kind > thing > kind.
+const NOTIF_TYPES = {
+  video: ['New videos', true], live: ['Live streams starting', true], post: ['New posts (channels, groups, lists)', true],
+  comment: ['Comments on your videos and posts', true], reply: ['Replies to you', true], mention: ['@@mentions of you', true], like: ['Likes on your things', false],
+  friend: ['Friends’ posts', true], follow: ['Posts by people you follow', true], message: ['Private messages', true],
+  market: ['Market: bids, sales, escrow, disputes', true], swap: ['Exchange: swaps for you', true], org: ['Organizations: flags, filings, roles', true], coins: ['Coins you receive', false]
+};
+settings.notif = Object.assign({ types: {}, objects: {}, typeObj: {}, desktop: false, since: Date.now() }, settings.notif);
+let notifs = (await kv.get('notifications')) || [];
+saveSettings();   // keep the moment notifications start from
+const notifOn = (type, obj) => {
+  const n = settings.notif;
+  if (obj && n.typeObj[obj + '|' + type] !== undefined) return n.typeObj[obj + '|' + type];
+  if (obj && n.objects[obj] === 'none') return false;
+  if (obj && n.objects[obj] === 'all') return true;
+  return n.types[type] ?? NOTIF_TYPES[type][1];
+};
+const seenNotif = new Set(notifs.map(x => x.id));
+function notify(type, text, href, obj, ts = Date.now(), id = null) {
+  id = id || type + ':' + href + ':' + text.slice(0, 40);
+  if (seenNotif.has(id) || ts < settings.notif.since - 3600000 || !notifOn(type, obj)) return;
+  seenNotif.add(id); notifs.unshift({ id, type, text, href, obj: obj || null, ts, read: false }); notifs = notifs.slice(0, 400);
+  clearTimeout(notify.t); notify.t = setTimeout(() => { kv.set('notifications', notifs); bell(); }, 300);
+  if (settings.notif.desktop && document.visibilityState !== 'visible' && window.Notification?.permission === 'granted') try { new Notification('OpenTube', { body: text, tag: id }); } catch {}
+}
+function bell() { const n = notifs.filter(x => !x.read).length, el = $('#bell-n'); if (!el) return; el.textContent = n > 99 ? '99+' : String(n); el.classList.toggle('hidden', !n); }
+const mineK = (k) => !!k && (isMine(k) || E.ledger.resolve(k) === me.pub);
+const nm = (k) => keyName(E.ledger.resolve(k));
+let myHandle = null;
+function notifyBlock(chain, b) {
+  try {
+    if (!b || !b.payload || b.ts < settings.notif.since - 3600000) return;
+    const kind = chain.genesis.payload.kind, p = b.payload, id = chain.id, me_ = mineK(b.author);
+    if (chain === main) return notifyMain(b);
+    const target = p.target ? chain.blocks.get(p.target) : null, title = (x) => x?.payload.title || (x?.payload.text || '').slice(0, 60);
+    const d = derive(id), subscribed = !!subs[id], ownerBlock = chain.isOwnerBlock?.(b);
+    if (!me_) {
+      if (kind === 'channel' && subscribed && ownerBlock) {
+        if (p.type === 'video') notify('video', `${d.profile.name} posted “${p.title}”`, `#/v/${id}/${b.hash}`, id, b.ts, b.hash);
+        if (p.type === 'post') notify('post', `${d.profile.name}: ${p.text.slice(0, 80)}`, `#/c/${id}/posts`, id, b.ts, b.hash);
+      }
+      if (kind === 'channel' && p.type === 'live' && (subscribed || mineK(d.owner))) notify('live', `🔴 ${d.profile.name} is live: ${p.title}`, `#/live/${id}/${b.hash}`, id, b.ts, b.hash);
+      if (kind === 'group' && subscribed && p.type === 'post') notify('post', `${d.profile.name}: ${nm(b.author)} posted “${(p.text || '').slice(0, 60)}”`, `#/c/${id}/discussion`, id, b.ts, b.hash);
+      if (kind === 'list' && subscribed && p.type === 'add' && ownerBlock) notify('post', `${d.profile.name} added ${p.video ? 'a video' : 'a channel'}`, `#/c/${id}/feed`, id, b.ts, b.hash);
+      if (p.type === 'comment' && target && mineK(target.author)) notify(target.payload.type === 'comment' ? 'reply' : 'comment', `${nm(b.author)}: “${p.text.slice(0, 80)}” on ${title(target) ? '“' + title(target) + '”' : 'your post'}`,
+        kind === 'square' ? `#/square/${chain.genesis.payload.month}/${target.hash}` : target.payload.type === 'video' ? `#/v/${id}/${target.hash}` : `#/c/${id}`, id, b.ts, b.hash);
+      if (p.type === 'vote' && p.v > 0 && target && mineK(target.author)) notify('like', `${nm(b.author)} liked ${title(target) ? '“' + title(target) + '”' : 'your post'}`, target.payload.type === 'video' ? `#/v/${id}/${target.hash}` : `#/c/${id}`, id, b.ts, b.hash);
+      if (kind === 'square' && p.type === 'post') {
+        const who = E.ledger.resolve(b.author);
+        if (settings.friends.some(f => f.key === who) || settings.following.includes(who)) notify('follow', `${nm(b.author)}: ${p.text.slice(0, 90)}`, `#/square/${chain.genesis.payload.month}/${b.hash}`, null, b.ts, b.hash);
+      }
+      if (kind === 'circle' && p.type === 'sealed' && !p.target && settings.friends.some(f => circleOf(f.key) === id)) notify('friend', `${nm(b.author)} shared something with friends`, '#/friends', id, b.ts, b.hash);
+      if (kind === 'circle' && p.type === 'sealed' && target && mineK(target.author)) notify('reply', `${nm(b.author)} replied to your friends post`, '#/friends', id, b.ts, b.hash);
+      if (kind === 'mail' && p.type === 'msg') checkMail(b);
+      if (kind === 'org') {
+        if (p.type === 'flag' && p.on && mineK(chains.get(p.ref.chain)?.owner)) notify('org', `${d.profile.name} flagged your video as ${p.cls}`, `#/v/${p.ref.chain}/${p.ref.block}`, id, b.ts, b.hash);
+        if (p.type === 'role' && p.on && mineK(p.key)) notify('org', `${d.profile.name} gave you the role ${p.role === 'judge' ? 'arbitrator' : p.role}`, `#/c/${id}/people`, id, b.ts, b.hash);
+        if (p.type === 'submit' && iAm(id, 'clerk')) notify('org', `New filing with ${d.profile.name}: ${p.what} “${p.title}”`, `#/c/${id}/filings`, id, b.ts, b.hash);
+        if ((p.type === 'post' || p.type === 'flag') && subscribed && settings.notif.objects[id] === 'all') notify('post', `${d.profile.name} has news`, `#/c/${id}`, id, b.ts, b.hash);
+      }
+    }
+    // @@mentions of you, anywhere
+    if (!me_ && typeof p.text === 'string' && p.text.includes('@@')) {
+      myHandle ??= (() => { const pg = myPage(); return pg ? nameOf(pg) : null; })();
+      if (myHandle && new RegExp(myHandle.replace(/[.]/g, '\\.') + '(?![\\w.-])', 'i').test(p.text)) notify('mention', `${nm(b.author)} mentioned you: “${p.text.slice(0, 80)}”`, kind === 'square' ? `#/square/${chain.genesis.payload.month}/${p.target || b.hash}` : `#/c/${id}`, id, b.ts, 'm:' + b.hash);
+    }
+  } catch (e) { console.warn('notify', e); }
+}
+async function checkMail(b) {   // a new private message: is it for us?
+  try {
+    for (const k of await myMsgKeys()) { const secret = await secretFor(k.key, b.payload.eph); if (await tagFor(secret, b.payload.salt) === b.payload.tag) return notify('message', 'You have a new private message', '#/messages', null, b.ts, b.hash); }
+  } catch {}
+}
+function notifyMain(b) {
+  for (const t of b.payload.txs || []) {
+    const from = t.from, fromMe = mineK(from), L = (id) => E.ledger.listings.get(id);
+    if (fromMe) continue;
+    for (const o of t.pay || []) if (mineK(o.to)) notify('coins', `${nm(from)} sent you ${fmtCoin(o.amt)} coins`, '#/wallet', null, b.ts, t.hash + o.to);
+    if (t.bid && L(t.bid.id) && mineK(L(t.bid.id).seller)) notify('market', `New bid: ${fmtCoin(t.bid.amt)} coins on “${L(t.bid.id).title}”`, `#/market/item/${t.bid.id}`, null, b.ts, t.hash);
+    if (t.bid && L(t.bid.id)?.bids > 1 && E.ledger.listings.get(t.bid.id)?.high?.by !== me.pub && [...E.history(me.pub, 50)].some(x => x.tx?.bid?.id === t.bid.id)) notify('market', `You were outbid on “${L(t.bid.id).title}”`, `#/market/item/${t.bid.id}`, null, b.ts, t.hash + 'o');
+    if (t.buy && L(t.buy.id) && mineK(L(t.buy.id).seller)) notify('market', `${nm(from)} bought “${L(t.buy.id).title}”`, `#/market/item/${t.buy.id}`, null, b.ts, t.hash);
+    for (const k of ['release', 'dispute', 'rule', 'appeal']) if (t[k] && L(t[k].id) && (mineK(L(t[k].id).seller) || mineK(L(t[k].id).escrow?.buyer))) notify('market', `“${L(t[k].id).title}”: ${{ release: 'payment released', dispute: 'a dispute was opened', rule: 'an arbitrator ruled', appeal: 'the ruling was appealed' }[k]}`, `#/market/item/${t[k].id}`, null, b.ts, t.hash);
+    if (t.htlc && mineK(t.htlc.to)) notify('swap', `${nm(from)} locked ${fmtCoin(t.htlc.amt)} coins for you (swap)`, '#/exchange/swaps', null, b.ts, t.hash);
+    if ((t.unlock || t.refund) && mineK(E.ledger.htlcs.get((t.unlock || t.refund).id)?.from)) notify('swap', t.unlock ? 'Your swap was claimed: the secret is revealed' : 'A swap was refunded', '#/exchange/swaps', null, b.ts, t.hash);
+    if (t.judge && t.judge.on && mineK(t.judge.key)) notify('org', `You can now rule for ${nm(from)}`, '#/orgs', null, b.ts, t.hash);
+  }
+}
+function notifObjSelect(id) {   // Default / All / None for one thing you follow
+  const v = settings.notif.objects[id] || 'default';
+  return h('select', { style: 'width:auto', title: 'Notifications from this', onchange: (e) => { if (e.target.value === 'default') delete settings.notif.objects[id]; else settings.notif.objects[id] = e.target.value; saveSettings(); } },
+    [['default', '🔔 Default'], ['all', '🔔 All'], ['none', '🔕 None']].map(([k, l]) => h('option', { value: k, selected: v === k }, l)));
+}
+views.notifications = { render() {
+  const tab = route.tab;
+  if (tab === 'settings') {
+    const n = settings.notif;
+    const objs = [...new Set([...Object.keys(subs), ...Object.keys(n.objects), ...Object.keys(settings.orgs || {})])].filter(id => genesisFor(id));
+    return h('div', { style: 'max-width:820px' }, h('h2', { style: 'margin-top:0' }, 'Notification settings'), h('div', { class: 'tabs' }, h('a', { href: '#/notifications' }, 'Notifications'), h('a', { href: '#/notifications/settings', class: 'active' }, 'Settings')),
+      h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Kinds'), h('p', { class: 'sub', style: 'margin-top:0' }, 'What you’re told about, in general. Below, each thing you follow can override this.'),
+        Object.entries(NOTIF_TYPES).map(([k, [label, def]]) => h('label', { style: 'display:flex;gap:8px;align-items:center;font-weight:400' }, h('input', { type: 'checkbox', checked: n.types[k] ?? def, onchange: (e) => { n.types[k] = e.target.checked; saveSettings(); } }), label)),
+        h('label', { style: 'display:flex;gap:8px;align-items:center;font-weight:400;margin-top:8px' }, h('input', { type: 'checkbox', checked: n.desktop, onchange: async (e) => { n.desktop = e.target.checked; if (n.desktop && window.Notification && Notification.permission !== 'granted') await Notification.requestPermission(); saveSettings(); } }), 'Also show them on my desktop when this tab is in the background')),
+      h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Per channel, group, list and organization'),
+        objs.length ? objs.map(id => h('details', { class: 'item' }, h('summary', { class: 'row', style: 'justify-content:space-between;cursor:pointer' }, chainLink(id), notifObjSelect(id)),
+          h('div', { class: 'sub' }, 'Override single kinds for this one:'), Object.entries(NOTIF_TYPES).map(([k, [label]]) => {
+            const cur = n.typeObj[id + '|' + k];
+            return h('div', { class: 'row', style: 'gap:8px' }, h('span', { style: 'min-width:260px' }, label), h('select', { style: 'width:auto', onchange: (e) => { if (e.target.value === '') delete n.typeObj[id + '|' + k]; else n.typeObj[id + '|' + k] = e.target.value === 'on'; saveSettings(); } },
+              [['', 'as above'], ['on', 'on'], ['off', 'off']].map(([v, l]) => h('option', { value: v, selected: v === '' ? cur === undefined : (cur === (v === 'on')) }, l))));
+          }))) : h('div', { class: 'sub' }, 'You don’t follow anything yet.')));
+  }
+  for (const x of notifs) x.read = true; kv.set('notifications', notifs); setTimeout(bell, 0);
+  return h('div', { style: 'max-width:820px' }, h('div', { class: 'row', style: 'justify-content:space-between' }, h('h2', { style: 'margin:0' }, 'Notifications'), h('button', { class: 'small', onclick: () => { notifs = []; kv.set('notifications', notifs); render(true); } }, 'Clear all')),
+    h('div', { class: 'tabs' }, h('a', { href: '#/notifications', class: 'active' }, 'Notifications'), h('a', { href: '#/notifications/settings' }, 'Settings')),
+    notifs.length ? h('div', { class: 'panel' }, notifs.map(x => h('a', { class: 'item', href: x.href, style: 'display:block;color:inherit' }, h('span', { class: 'badge' }, NOTIF_TYPES[x.type]?.[0].split(' ')[0] || x.type), ' ', x.text, h('span', { class: 'sub' }, ' · ' + ago(x.ts)))))
+      : h('div', { class: 'empty' }, 'Nothing new. You’ll be told about the things you follow (Settings to choose what).'));
+} };
 views.tag = { render() {
   const t = route.tag, found = [];
   for (const c of chains.values()) {
@@ -4857,7 +4976,7 @@ views.chain = { render() {
         nameOf(id) ? h('div', { class: 'row', style: 'gap:8px;margin:2px 0' }, h('a', { href: nameLink(nameOf(id)), style: 'font-weight:600' }, nameOf(id)),
           h('button', { class: 'small', onclick: () => copyText(nameLink(nameOf(id))) }, 'Copy link')) : null,
         h('div', { class: 'sub' }, h('span', { class: 'fp' }, 'owner ' + fp(d.owner)), ` · ${d.blockCount} blocks · `, reg ? `registered in main block #${reg.height}` : h('span', { class: 'badge warn' }, 'registration pending'))),
-      subBtn, joinBtn,
+      subBtn, joinBtn, subs[id] || settings.orgs?.[id] ? notifObjSelect(id) : null,
       (() => { const who = ownerIdentity(id); return who && who !== me.pub && !isMine(d.owner) ? h('span', { class: 'row', style: 'gap:6px' }, h('span', { class: 'sub' }, 'by'), personLink(who), addFriendControl(who, personName(who) || ''), h('a', { class: 'small', href: `#/messages/${who}` }, '✉')) : null; })(),
       !mine ? h('button', { title: 'Send this channel some of your coins', onclick: async () => {
         const n = coinsToUnits(prompt(`Tip ${p.name} how many coins? You have ${fmtCoin(balanceOf(me.pub))}.`, '1')); if (!n) return;
@@ -6595,6 +6714,7 @@ views.me = { render(all = false) {
 // Wallet, Friends and Messages are part of You: show them with your tabs
 for (const v of ['wallet']) { const r = views[v].render; views[v].render = function () { const body = r.call(this); return v === 'wallet' && route.key && !myAccounts().includes(route.key) ? body : h('div', {}, youTabs(v), body); }; }
 uiReady = true;
+setTimeout(bell, 500);
 try { if (!localStorage.getItem('opentube-terms')) $('#terms-banner').classList.remove('hidden'); } catch {}
 $('#terms-ok').onclick = () => { try { localStorage.setItem('opentube-terms', '1'); } catch {} $('#terms-banner').classList.add('hidden'); };
 render(true);
