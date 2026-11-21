@@ -1474,6 +1474,7 @@ function createLiveHub(o) {   // o: { ownerOf(chain) -> key|null, signerOf(chain
       if (m.t === 'watch') {
         if (st.nodes.has(sid) || s.watching.size >= 20) return;
         const n = node({ slots: Math.min(Math.max(m.slots | 0, 0), LIVE.maxSlots), dcSlots: Math.min(Math.max(m.dcSlots | 0, 0), LIVE.maxDcSlots), member: member(sid, st.chain), media: m.media !== false, relay: m.relay === true });
+        o.debug?.('[hub] watch', st.id.slice(0, 8), 'keys', [...s.keys].map(k => k.slice(0, 6) + (o.isJoined(k, st.chain) ? ':joined' : '')).join(','), 'member', n.member);
         st.nodes.set(sid, n); s.watching.add(st.id);
         out(sid, { t: 'watching', stream: st.id, mime: st.mime, member: n.member });
         for (const c of (st.chunks || []).slice(-600)) out(sid, { t: 'lchunk', stream: st.id, chunk: c });   // what's been bundled so far
@@ -3227,8 +3228,11 @@ async function joinLive(chainId, lb, ui = null) {
   // over the mesh, always (and only, when no hub answers): ask peers for the stream every 20 s
   const wantIt = () => { if (viewing.get(stream) !== sess || sess.ended) return clearInterval(sess.wantTimer); E.liveMesh.want(stream, null, 6, true); };
   wantIt(); sess.wantTimer = setInterval(wantIt, 20000);
-  if (hub) { liveNet.on(stream, (m) => onLiveMsg(sess, m)); sendWatch(sess); sess.alive = setInterval(() => { if (viewing.get(stream) !== sess || sess.ended) return clearInterval(sess.alive); liveNet.send({ t: 'alive', stream }); }, 15000); }
-  else { sess.mode = 'seg'; setTimeout(() => sess.ui?.segmentMode(), 0); ui?.status('Watching through the peer-to-peer mesh…'); }
+  // listen to the hub even if it didn't answer in time: when it does ('reconnected'), we join it (tree, membership)
+  liveNet.on(stream, (m) => onLiveMsg(sess, m));
+  sess.alive = setInterval(() => { if (viewing.get(stream) !== sess || sess.ended) return clearInterval(sess.alive); liveNet.send({ t: 'alive', stream }); }, 15000);
+  if (hub) sendWatch(sess);
+  else { sess.mode = 'seg'; setTimeout(() => sess.ui?.segmentMode(), 0); ui?.status('Watching through the peer-to-peer mesh…'); if (liveNet.available()) setTimeout(() => liveNet.connect(), 5000); }
   if (ui) ui.attach(sess);
   return sess;
 }

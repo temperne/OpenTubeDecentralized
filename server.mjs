@@ -281,13 +281,18 @@ function liveSink(chain, stream, mime) {
     const chunks = chunker(stream, (c) => hub.send({ t: 'lchunk', stream, chunk: c }));
     const flush = () => { while (on && hub.ready && pending.length) hub.send({ t: 'seg', seg: pending.shift() }); };
     const hub = hubSocket((m) => {
-      if (m.t === 'broadcasting') { on = true; flush(); log('[obs] relaying to ' + site + (RTCPC ? ' (and to viewers directly, over WebRTC)' : '')); }
+      if (m.t === 'broadcasting') { on = true; refused = 0; flush(); log('[obs] relaying to ' + site + (RTCPC ? ' (and to viewers directly, over WebRTC)' : '')); }
       else if (m.t === 'child' && m.dc) kids.child(m.peer);
       else if (m.t === 'unchild') kids.unchild(m.peer);
       else if (m.t === 'signal') kids.signal(m.from, m.data);
       else if (m.t === 'viewers') { liveStats.set(stream, m); liveStats.current = m; }
-      else if (m.t === 'error') log('[obs] the site refused the stream:', m.error);
-    }, () => { on = false; kids.close(); hub.send({ t: 'broadcast', stream, chain, mime, rtc: false, dcSlots: RTCPC ? Number(process.env.LIVE_DC_SLOTS) || 8 : 0 }); });
+      else if (m.t === 'error') {   // usually: the site hasn't received our live block yet, so it doesn't know we may broadcast. Ask again.
+        if (++refused === 1 || refused % 15 === 0) log('[obs] the site refused the stream:', m.error, refused < 60 ? '(asking again)' : '');
+        if (refused < 60 && !ended) setTimeout(() => hub.send(hello()), 2000);
+      }
+    }, () => { on = false; kids.close(); hub.send(hello()); });
+    let refused = 0;
+    const hello = () => ({ t: 'broadcast', stream, chain, mime, rtc: false, dcSlots: RTCPC ? Number(process.env.LIVE_DC_SLOTS) || 8 : 0 });
     send = (g) => { pending.push(g); flush(); kids.seg(g); chunks.seg(g); };
     finish = () => { const done = () => { chunks.end().then(() => setTimeout(() => { hub.send({ t: 'leave', stream }); ended = true; kids.close(); setTimeout(() => hub.close(), 500); }, 500)); };
       const wait = () => (pending.length && Date.now() - t0 < 15000 ? setTimeout(wait, 200) : done()); const t0 = Date.now(); wait(); };
@@ -926,6 +931,7 @@ const liveHub = core.createLiveHub({
   signerOf: (c, s) => { if (!engine.chains.has(c)) return null; const b = engine.derive(c)?.streams.find(x => x.payload.stream === s); return b ? (b.payload.relay || (b.author !== engine.derive(c).owner ? b.author : null)) : null; },   // the relay named in the live block, or the linked computer that wrote it
   isJoined: (k, c) => !!engine.memberships.get(k)?.joined?.includes(c),
   userOf: (k) => engine.nodes.get(k)?.grant?.user || null,   // a computer counts as its owner (it relays their channels)
+  debug: process.env.LIVE_DEBUG ? (...a) => log(...a) : null,
   ingest: { ticket: (t) => { const key = crypto.randomBytes(18).toString('base64url'); ingestTickets.set(key, { ...t, exp: Date.now() + 12 * 3600000 }); return key; } }
 });
 
