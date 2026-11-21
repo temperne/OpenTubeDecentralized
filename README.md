@@ -220,6 +220,17 @@ A single 2-cent view is too small to sell, but a bundle of thousands of views of
 
 Anything that isn't coins or certificates (goods, gift cards, services) is delivered by the seller off the network, using the contact in the listing.
 
+## My media (private until you share it)
+
+*You → Media* is your own library of pictures and videos. It's kept in **My media** inside your video folder, or in the browser when you have no folder, and nothing in it is shared on its own. Each item can carry a place. Attaching an item (*📎 Attach* on a post, group post, friends post or listing) shares it according to where it goes:
+
+- **Public** (public posts, groups, listings): an ordinary torrent, with a small preview in the post.
+- **Friends** (all friends, or one level): the file is first encrypted with a fresh key (AES-GCM), and only the encrypted copy is shared. The key and the file's details travel inside the sealed post, so only that audience can open it. Anyone can store and pass on the encrypted copy, but only the audience can read it. Once a friend has opened it they can save it; the sharing level decides who gets that chance.
+
+Your browser keeps sharing what you've attached, re-sharing it from your own copy on each visit.
+
+**Listings** can carry up to 10 pictures and videos from your library, besides the cover picture. Posting a listing costs a **listing fee**, a price the network adjusts like the others. It's paid to the arbitration body named on the listing, or to the network's reward pools when there's none.
+
 ## Maps (OpenStreetMap)
 
 Listings, organizations and channels (for shops, venues and businesses) can carry a **place**: map coordinates plus a label. You set it by searching an address, by *Use my location*, or by clicking the map; only the pin and the label you type are published.

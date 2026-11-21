@@ -70,6 +70,10 @@
   a.tag { color: var(--accent, inherit); text-decoration: none; }
   .osm-pin { font-size: 22px; line-height: 26px; text-align: center; background: none; border: 0; filter: drop-shadow(0 1px 1px rgba(0,0,0,.4)); }
   .osm .leaflet-popup-content a { color: #2563eb; }
+  .media-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0; } .media-item img, .media-item video { max-width: 100%; max-height: 420px; border-radius: 8px; display: block; }
+  .media-item { max-width: 100%; } .media-play { min-width: 200px; min-height: 112px; background-size: cover; background-position: center; color: #fff; font-size: 22px; border-radius: 8px; }
+  .media-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 6px; margin-top: 6px; } .media-grid.big { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+  .media-pick { padding: 0; border: 2px solid transparent; border-radius: 8px; overflow: hidden; aspect-ratio: 1; background: var(--panel-2); } .media-pick.on { border-color: var(--accent); } .media-pick img { width: 100%; height: 100%; object-fit: cover; }
   .rich ul { margin: 4px 0; padding-left: 22px; } .rich code { background: var(--panel-2); padding: 0 4px; border-radius: 4px; }
   .linkchip { white-space: nowrap; } .linkchip .tagx { background: none; border: 0; cursor: pointer; padding: 0 2px; font-size: 12px; }
   a.person { color: inherit; text-decoration: none; } a.person:hover { text-decoration: underline; }
@@ -372,6 +376,10 @@ async function checkSigned(b) {
 // they're not interested in a tag or category; that choice stays on their device and only filters what they see.
 const TAG_RE = /^[a-z0-9][a-z0-9-]{0,23}$/;
 const AD_CATEGORIES = ['apparel', 'autos', 'beauty', 'books', 'education', 'electronics', 'entertainment', 'finance', 'food', 'games', 'health', 'home', 'housing', 'jobs', 'pets', 'services', 'software', 'sports', 'travel', 'other'];
+// Media attached to a public post or listing: a torrent of the file (plus a small preview). Media shared with friends
+// travels encrypted, and its reference (with the key) sits inside the sealed post instead.
+const mediaRefShape = (m) => !!m && typeof m === 'object' && isHex(m.ih, 40) && isStr(m.name, 200) && isStr(m.mime, 80) && Number.isSafeInteger(m.size) && m.size > 0 && (m.thumb === undefined || (isImg(m.thumb) && m.thumb.length <= 16000));
+const mediaListOk = (x) => x === undefined || (Array.isArray(x) && x.length <= 10 && x.every(mediaRefShape));
 // A place on the map (OpenStreetMap coordinates) with a label, e.g. a listing's or a business's location.
 const placeShape = (x) => !!x && typeof x === 'object' && Number.isFinite(x.lat) && Math.abs(x.lat) <= 90 && Number.isFinite(x.lon) && Math.abs(x.lon) <= 180 && isStr(x.label ?? '', 120);
 const validTags = (t) => t === undefined || (Array.isArray(t) && t.length <= 8 && t.every(x => typeof x === 'string' && TAG_RE.test(x)) && new Set(t).size === t.length);
@@ -384,7 +392,7 @@ function validPayload(chain, b, CFG) {
   if (kind === 'square') {   // nobody owns it: everything is a member's block with anti-spam work
     if (owner || zeroBits(b.hash) < CFG.commentDifficulty) return false;
     const month = chain.genesis.payload.month, start = monthStart(month), next = new Date(start); next.setUTCMonth(next.getUTCMonth() + 1);
-    if (p.type === 'post') return isStr(p.text, SQUARE.text) && p.text.trim().length > 0 && isStr(p.name ?? '', LIMITS.name) && (p.image === undefined || isImg(p.image)) && b.ts >= start - 600000 && b.ts < next.getTime() + 600000;
+    if (p.type === 'post') return isStr(p.text, SQUARE.text) && (p.text.trim().length > 0 || p.media?.length > 0) && isStr(p.name ?? '', LIMITS.name) && (p.image === undefined || isImg(p.image)) && mediaListOk(p.media) && b.ts >= start - 600000 && b.ts < next.getTime() + 600000;
     if (p.type === 'comment') return isHex(p.target, 64) && chain.ancestors(b.parents).has(p.target) && isStr(p.text, SQUARE.text) && p.text.trim().length > 0 && isStr(p.name ?? '', LIMITS.name);
     if (p.type === 'vote') return isHex(p.target, 64) && chain.ancestors(b.parents).has(p.target) && [1, 0, -1].includes(p.v);
     if (p.type === 'hide') return isHex(p.target, 64) && chain.blocks.get(p.target)?.author === b.author;
@@ -428,7 +436,7 @@ function validPayload(chain, b, CFG) {
   }
   if (!owner && kind === 'group') {
     if (zeroBits(b.hash) < CFG.commentDifficulty) return false;
-    if (p.type === 'post') return isStr(p.text, LIMITS.text) && p.text.trim().length > 0 && (p.image === undefined || isImg(p.image)) && isStr(p.name ?? '', LIMITS.name) && groupPermitted(chain, b);
+    if (p.type === 'post') return isStr(p.text, LIMITS.text) && (p.text.trim().length > 0 || p.media?.length > 0) && (p.image === undefined || isImg(p.image)) && mediaListOk(p.media) && isStr(p.name ?? '', LIMITS.name) && groupPermitted(chain, b);
     if (p.type === 'comment') return isHex(p.target, 64) && isStr(p.text, LIMITS.comment) && p.text.trim().length > 0 && isStr(p.name ?? '', LIMITS.name) && groupPermitted(chain, b);
     if (p.type === 'hide') return isHex(p.target, 64) && groupPermitted(chain, b);
     if (p.type === 'vote') return isHex(p.target, 64) && [1, 0, -1].includes(p.v) && groupPermitted(chain, b);
@@ -449,7 +457,7 @@ function validPayload(chain, b, CFG) {
     case 'live': return kind === 'channel' && isStr(p.title, LIMITS.title) && p.title.trim().length > 0 && isHex(p.stream, 64) && isStr(p.mime, 80) && (p.relay === undefined || isKey(p.relay));
     case 'liveend': return kind === 'channel' && isHex(p.stream, 64) && ['published', 'discarded', 'ended'].includes(p.outcome);
     case 'settings': return kind === 'channel' && isHex(p.target, 64) && ['default', 'anyone', 'approved', 'off'].includes(p.comments);
-    case 'post': return isStr(p.text, LIMITS.text) && p.text.trim().length > 0 && (p.image === undefined || isImg(p.image));
+    case 'post': return isStr(p.text, LIMITS.text) && (p.text.trim().length > 0 || p.media?.length > 0) && (p.image === undefined || isImg(p.image)) && mediaListOk(p.media);
     case 'comment': return isHex(p.target, 64) && isStr(p.text, LIMITS.comment) && p.text.trim().length > 0;
     case 'hide': return isHex(p.target, 64);
     case 'allow': case 'revoke': return isKey(p.key);
@@ -513,9 +521,9 @@ const rankingPreimage = (r) => { const { sig, ...rest } = r; return 'opentube-ra
 // attention. Version-1 transactions (the old per-person tokens) stay valid in history and only advance `seq`.
 const COIN = {
   unit: 100, txBits: 10, starterBits: 20, starter: 1000, reward: 100, maxTxs: 200, maxOuts: 100, memo: 140, maxAmt: 1e12,
-  price0: { post: 100, view: 5, like: 10, piece: 2 }, // post is per GB (minimum 1 unit); piece: one BitTorrent piece of a video
-  min: { post: 10, view: 1, like: 1, piece: 0.2 }, max: { post: 1e7, view: 1e5, like: 1e5, piece: 1e4 },
-  target: { post: 2, view: 30, like: 30, piece: 5000 },   // GB posted, views, votes and video pieces paid per block
+  price0: { post: 100, view: 5, like: 10, piece: 2, list: 25 },   // list: posting a market listing // post is per GB (minimum 1 unit); piece: one BitTorrent piece of a video
+  min: { post: 10, view: 1, like: 1, piece: 0.2, list: 1 }, max: { post: 1e7, view: 1e5, like: 1e5, piece: 1e4, list: 1e6 },
+  target: { post: 2, view: 30, like: 30, piece: 5000, list: 10 },   // GB posted, views, votes and video pieces paid per block
   step: 0.125, slack: 0.75,                          // a payment may be up to 25% under the current price (prices move while it waits)
   epoch: Date.UTC(2026, 10, 19, 9)                   // videos and votes from before the coin (2026-11-19 09:00 UTC) are free
 };
@@ -645,7 +653,7 @@ const tabShape = (x) => !!x && typeof x === 'object' && x.v === 1 && x.kind === 
 // until the end; outbid bids are refunded; the winner is settled automatically when the auction ends). A listing can
 // carry ad-view certificates, which move to the buyer; anything else (goods, gift cards, services) is delivered by the
 // seller off the network, using the contact the listing gives.
-const MARKET = { maxDays: 30, minStep: 0.05, title: 120, about: 2000, contact: 200, img: 24000 };
+const MARKET = { feeStart: Date.UTC(2026, 10, 20, 6), maxDays: 30, minStep: 0.05, title: 120, about: 2000, contact: 200, img: 24000 };
 // With an ARBITER (a key named by the seller, typically an org's arbiter) the buyer's coins are held in escrow: the buyer
 // releases them on delivery, they're released automatically after `hold` days, and either side may open a dispute,
 // which freezes them until the arbiter rules how to split them (`rule`). Without an arbiter the seller is paid at once.
@@ -653,7 +661,7 @@ const listingShape = (x) => !!x && typeof x === 'object' && ['fixed', 'auction']
   && isStr(x.contact ?? '', MARKET.contact) && (x.image === undefined || (isImg(x.image) && x.image.length <= MARKET.img)) && amtOk(x.price)
   && (x.kind === 'fixed' || (Number.isSafeInteger(x.ends) && x.ends > 0)) && (x.category === undefined || AD_CATEGORIES.includes(x.category) || x.category === 'adviews')
   && (x.certs === undefined || (Array.isArray(x.certs) && x.certs.length <= PIECE.maxCerts && x.certs.every(c => isHex(c, 64)) && new Set(x.certs).size === x.certs.length)) && validTags(x.tags)
-  && (x.place === undefined || placeShape(x.place)) && (x.deal === undefined || ['sale', 'rent'].includes(x.deal));   // housing: for sale or for rent (price per month)
+  && (x.place === undefined || placeShape(x.place)) && (x.deal === undefined || ['sale', 'rent'].includes(x.deal)) && mediaListOk(x.media) && (x.fee === undefined || amtOk(x.fee));   // housing: for sale or for rent (price per month)
 const postCost = (price, size) => Math.max(1, Math.ceil(price * size / 1e9));
 const priceOf = (L, k) => Math.max(1, Math.ceil(L.prices[k]));   // what to pay now for a view or a vote (whole units)
 class Ledger {
@@ -662,7 +670,7 @@ class Ledger {
     this.paid = new Map(src?.paid);          // 'post:<video>' | 'view:<video>:<viewer>' | 'vote:<vote block>' -> { from, amt, to }
     this.hosts = new Map([...(src?.hosts || [])].map(([k, v]) => [k, new Set(v)]));   // chain -> Set(host keys)
     this.prices = { ...COIN.price0, ...(src?.prices || {}) };
-    this.use = { post: 0, view: 0, like: 0, piece: 0 }; this.fees = 0;   // this block's load and unclaimed fees
+    this.use = { post: 0, view: 0, like: 0, piece: 0, list: 0 }; this.fees = 0;   // this block's load and unclaimed fees
     this.minted = src?.minted || 0; this.burned = src?.burned || 0; this.txCount = src?.txCount || 0;
     this.claimed = new Set(src?.claimed); this.slotUsed = new Set(src?.slotUsed); this.adViews = new Map(src?.adViews); this.adPaid = new Map(src?.adPaid);
     this.adBusy = new Map(src?.adBusy);
@@ -722,6 +730,10 @@ class Ledger {
       const x = t.list;
       if (x.kind === 'auction' && (x.ends <= t.ts || x.ends > t.ts + MARKET.maxDays * 86400000)) return 'auctions end between now and 30 days from now';
       if ((x.certs || []).some(id => this.certs.get(id)?.owner !== t.from)) return 'you don’t own those ad views';
+      if (t.ts >= MARKET.feeStart) {   // listing costs a fee (network-adjusted), paid to the arbitration body named on it
+        if (!(x.fee >= Math.floor(Math.ceil(this.prices.list) * COIN.slack))) return 'the listing fee went up; try again';
+        if (this.balance(t.from) < x.fee) return `listing costs ${x.fee} units; you don’t have enough coins`;
+      }
       return null;
     }
     if (t.release || t.dispute || t.rule) {
@@ -843,6 +855,8 @@ class Ledger {
       for (const id of t.certs.ids) this.certs.get(id).owner = t.certs.to;
     } else if (t.list) {
       for (const id of t.list.certs || []) this.certs.get(id).owner = 'listing:' + t.hash;   // held by the listing
+      const fee = t.ts >= MARKET.feeStart ? t.list.fee : 0;
+      if (fee) { this.add(t.from, -fee); if (t.list.arbiter) this.add(t.list.arbiter, fee - this.feeCut(t, fee)); else { const e = epochOf(t.ts); this.poolFees.set(e, (this.poolFees.get(e) || 0) + fee); } this.use.list++; }
       this.listings.set(t.hash, { ...t.list, certs: [...(t.list.certs || [])], seller: t.from, ts: t.ts, high: null, bids: 0, state: 'open' });
     } else if (t.unlist) {
       const L = this.listings.get(t.unlist.id); this.closeListing(t.unlist.id, L, null, 'withdrawn');
@@ -962,11 +976,11 @@ class Ledger {
     if (ts > this.clock) { this.clock = ts; this.settle(ts); this.settleAuctions(ts); }
     if (isKey(miner)) { this.add(miner, COIN.reward + this.fees); this.minted += COIN.reward; }
     else this.burned += this.fees;
-    for (const k of ['post', 'view', 'like', 'piece']) {
+    for (const k of ['post', 'view', 'like', 'piece', 'list']) {
       const f = Math.max(-1, Math.min(1, (this.use[k] - COIN.target[k]) / COIN.target[k]));
       this.prices[k] = Math.min(COIN.max[k], Math.max(COIN.min[k], Math.round(this.prices[k] * (1 + COIN.step * f) * 1000) / 1000));   // kept to 0.001 unit
     }
-    this.use = { post: 0, view: 0, like: 0, piece: 0 }; this.fees = 0;
+    this.use = { post: 0, view: 0, like: 0, piece: 0, list: 0 }; this.fees = 0;
   }
   supply() {   // coins in wallets, plus those held in ad-view certificates and in the high bids of open auctions
     let s = 0; for (const v of this.bal.values()) s += v;
@@ -1885,7 +1899,7 @@ async function createEngine(o) {
   });
 }
 
-globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, placeShape, domainOf, MAIL, ORG, orgRoles, orderPreimage, courtPreimage, bindPreimage, retirePreimage, rekeyPreimage, SQUARE, SEAL, monthKey, squareMonths, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
+globalThis.OpenTubeCore = { MAIN_GENESIS, LIMITS, mediaRefShape, placeShape, domainOf, MAIL, ORG, orgRoles, orderPreimage, courtPreimage, bindPreimage, retirePreimage, rekeyPreimage, SQUARE, SEAL, monthKey, squareMonths, PIECE, MARKET, tabPreimage, tabShape, createPieceTabs, TAG_RE, AD_CATEGORIES, validTags, COIN, SERVE, epochOf, receiptPreimage, PROOF, pieceProof, proofPreimage, ctlPreimage, postCost, priceOf, paidTally, waveScores, WAVES, nodeGrantPreimage, nodeInfoPreimage, validNodeGrant, NAMES, LIVE, liveSegPreimage, liveAuthPreimage, createLiveHub, verify, canon, sha256hex, zeroBits, isStr, isImg, isHex, isKey, b64u, preimage, hashBlock, newIdentity, signer, Chain, validGenesis, checkSigned, derive, createEngine, createTracker, rankVideos, LEDGER, Ledger, checkTx, ADS, termsIdOf, sessionIdOf, witnessPreimage, termsPreimage };
 })();
 </script>
 
@@ -3339,7 +3353,7 @@ views.home = { render() {
         const rows = [];
         for (const f of settings.friends) { const id = circleOf(f.key); if (!id) continue; if (!chains.has(id)) E.requestChain(openChain(id)); const d = chains.has(id) ? derive(id) : null; for (const b of d?.sealed || []) if (!b.payload.target && Date.now() - b.ts < 30 * 86400000) { const x = await openBlock(chains.get(id), b); if (x) rows.push([b, x, f]); } }
         rows.sort((a, z) => z[0].ts - a[0].ts);
-        friendsBox.replaceChildren(...rows.slice(0, 10).map(([b, x, f]) => h('div', { class: 'item' }, h('div', { class: 'sub' }, '🔒 ', personLink(f.key, f.name || keyName(f.key)), ' · friends only · ', ago(b.ts)), rich(x.text, b.author), x.image ? h('img', { src: x.image, style: 'max-width:100%;max-height:320px;border-radius:8px' }) : null)));
+        friendsBox.replaceChildren(...rows.slice(0, 10).map(([b, x, f]) => h('div', { class: 'item' }, h('div', { class: 'sub' }, '🔒 ', personLink(f.key, f.name || keyName(f.key)), ' · friends only · ', ago(b.ts)), rich(x.text, b.author), mediaView(x.media), x.image ? h('img', { src: x.image, style: 'max-width:100%;max-height:320px;border-radius:8px' }) : null)));
       } catch {}
     })();
     return h('div', { style: 'max-width:820px' },
@@ -3409,7 +3423,7 @@ function marketNew() {
   const cat = h('select', {}, h('option', { value: '' }, 'Category (optional)'), AD_CATEGORIES.map(c => h('option', { value: c }, CAT_NAMES[c])));
   cat.onchange = () => dealRow.classList.toggle('hidden', cat.value !== 'housing');
   const tags = h('input', { type: 'text', placeholder: 'Tags (optional)' });
-  const img = h('input', { type: 'file', accept: 'image/*' });
+  const img = h('input', { type: 'file', accept: 'image/*' }), att = attachBox();
   const daysRow = h('div', { class: 'row hidden' }, h('span', {}, 'Ends in'), days, h('span', {}, 'days'));
   let place = null;
   const deal = h('select', { style: 'width:auto' }, h('option', { value: 'sale' }, 'For sale'), h('option', { value: 'rent' }, 'For rent (price per month)'));
@@ -3429,6 +3443,7 @@ function marketNew() {
       ...(kind.value === 'auction' ? { ends: Date.now() + Math.min(MARKET.maxDays, Math.max(1, Number(days.value) || 7)) * 86400000 } : {}),
       ...(certs.length ? { certs, category: 'adviews' } : cat.value ? { category: cat.value } : {}),
       ...(place ? { place } : {}), ...(cat.value === 'housing' && !certs.length ? { deal: deal.value } : {}),
+      ...(att.count() ? { media: await att.getRefs(false) } : {}), fee: priceNow('list'),
       ...(court.value ? { org: court.value, arbiter: derive(orgCh(court.value).id)?.owner || genesisFor(court.value).author, hold: 14 } : {}), ...(parseTags(tags.value).length ? { tags: parseTags(tags.value) } : {}), ...(image ? { image } : {}) };
     btn.disabled = true;
     try { await sendTx({ list: x }, me.pub, status); toast('Listed. Your browser is confirming it in a main-chain block, which can take a minute; it shows as “waiting for a block” until then.'); kept.delete('market-new'); location.hash = '#/market/mine'; }
@@ -3437,9 +3452,10 @@ function marketNew() {
   return h('div', { class: 'panel', style: 'max-width:720px' }, h('h3', { style: 'margin-top:0' }, 'Sell something'),
     h('p', { class: 'sub', style: 'margin-top:0' }, 'Listings live on the main chain. Coins move through the network (10% of each sale feeds the network’s resource pools). Ad views move automatically. Anything else (goods, gift cards, services, cash or PayPal deals) is delivered by you, using the contact you give.'),
     h('label', {}, 'Type'), kind, daysRow, h('label', {}, 'Payment protection'), court, h('label', {}, 'Title'), title, h('label', {}, 'Description'), about, h('label', {}, 'Price'), price, h('label', {}, 'Contact'), contact,
-    h('div', { class: 'split', style: 'gap:10px;margin-top:10px' }, cat, tags), dealRow, h('label', {}, 'Picture (optional)'), img,
+    h('div', { class: 'split', style: 'gap:10px;margin-top:10px' }, cat, tags), dealRow, h('label', {}, 'Cover picture (optional)'), img,
+    h('label', {}, 'More pictures and videos (from My media, up to 10)'), att,
     h('label', {}, 'Where (optional: helps people nearby find it)'), placePicker(null, (pl) => { place = pl; }), certBox,
-    h('div', { class: 'row', style: 'margin-top:12px' }, btn, status));
+    h('div', { class: 'row', style: 'margin-top:12px' }, btn, status, h('span', { class: 'sub' }, `Listing costs ${fmtCoin(priceNow('list'))} coins (set by the network), paid to the arbitration body you choose above, or to the network’s reward pools without one. You have ${fmtCoin(balanceOf(me.pub))}.`)));
 }
 function escrowBox(id, L) {
   const E_ = L.escrow; if (!E_) return null;
@@ -3481,6 +3497,7 @@ function marketItem(id) {
       L.about ? rich(L.about, L.seller) : null,
       L.contact ? h('div', { class: 'sub' }, 'Contact: ', L.contact) : null,
       L.deal ? h('div', {}, h('span', { class: 'badge' }, L.deal === 'rent' ? 'For rent · price per month' : 'For sale')) : null,
+      mediaView(L.media),
       L.place ? h('div', { style: 'margin:10px 0' }, h('div', { class: 'sub' }, '📍 ', L.place.label || `${L.place.lat}, ${L.place.lon}`, myPlace ? ` · ${km(myPlace, L.place).toFixed(1)} km from you` : ''), mapView([{ ...L.place, title: L.title, kind: L.category === 'housing' ? 'housing' : 'listing' }], { height: 220, zoom: 14 })) : null,
       L.org ? h('div', { class: 'sub' }, '🛡 Payment held in escrow; disputes heard by ', chainLink(L.org), ` (released after ${L.hold || 14} days unless disputed).`) : null,
       escrowBox(id, L),
@@ -3557,20 +3574,22 @@ function squareChain(m) { const id = E.squareId(m); if (!id) return null; const 
 const prevMonth = (m) => { const [y, mo] = m.split('-').map(Number); const d = new Date(Date.UTC(y, mo - 2, 1)); return monthKey(d.getTime()); };
 function squareComposer(chainId, target, placeholder) {
   const ta = h(target ? 'input' : 'textarea', { placeholder, maxLength: SQUARE.text, style: target ? 'flex:1' : '' }), st = h('span', { class: 'sub' });
+  const att = target ? null : attachBox();
   const btn = h('button', { class: target ? 'small' : 'primary', onclick: async () => {
-    const text = ta.value.trim(); if (!text) return; btn.disabled = true; st.textContent = 'Doing anti-spam work…';
-    try { await append(chainId, { type: target ? 'comment' : 'post', ...(target ? { target } : {}), text, name: settings.name.slice(0, LIMITS.name) }); ta.value = ''; st.textContent = ''; }
+    const text = ta.value.trim(); if (!text && !att?.count()) return; btn.disabled = true; st.textContent = att?.count() ? 'Sharing your media…' : 'Doing anti-spam work…';
+    try { const media = att ? await att.getRefs(false) : []; st.textContent = 'Doing anti-spam work…';
+      await append(chainId, { type: target ? 'comment' : 'post', ...(target ? { target } : {}), text, name: settings.name.slice(0, LIMITS.name), ...(media.length ? { media } : {}) }); ta.value = ''; att?.clear(); st.textContent = ''; }
     catch (e) { st.textContent = 'Failed: ' + e.message; } finally { btn.disabled = false; }
   } }, target ? 'Reply' : 'Post');
   if (target) ta.onkeydown = (e) => { if (e.key === 'Enter') btn.click(); };
-  return h('div', { class: target ? 'row' : 'panel' }, target ? null : fmtBar(ta), ta, target ? btn : h('div', { class: 'row', style: 'margin-top:8px' }, btn, st, h('span', { class: 'sub' }, 'Public: anyone can read it, forever.')), target ? st : null);
+  return h('div', { class: target ? 'row' : 'panel' }, target ? null : fmtBar(ta), ta, att, target ? btn : h('div', { class: 'row', style: 'margin-top:8px' }, btn, st, h('span', { class: 'sub' }, 'Public: anyone can read it and see what you attach, forever.')), target ? st : null);
 }
 function squareItem(m, c, b, d, full) {
   const replies = [...c.blocks.values()].filter(x => x.payload.type === 'comment' && x.payload.target === b.hash && !d.hidden.has(x.hash)).sort((a, z) => a.ts - z.ts);
   const likes = votesOf(d, b.hash).up;
   return h('div', { class: 'item' },
     h('div', {}, h('b', {}, personLink(b.author, personName(E.ledger.resolve(b.author)) || b.payload.name || 'someone')), ' ', h('span', { class: 'fp' }, '·' + fp(b.author)), h('span', { class: 'sub' }, ' · ' + ago(b.ts))),
-    rich(b.payload.text, b.author),
+    rich(b.payload.text, b.author), mediaView(b.payload.media),
     h('div', { class: 'row' },
       h('button', { class: 'small', disabled: isMine(b.author), title: `Like (pays ${fmtCoin(priceNow('like'))} coins to the author)`, onclick: async (e) => {
         e.target.disabled = true; try { const vb = await append(c.id, { type: 'vote', target: b.hash, v: 1 }); await payVote(c.id, vb, b.author); } catch (err) { toast('Like failed: ' + err.message); e.target.disabled = false; } } }, `👍 ${likes}`),
@@ -3700,15 +3719,15 @@ views.friends = { render() {
     const chosen = () => settings.friends.filter(f => (rank[f.level || 'friends'] ?? 1) <= rank[audience.value] && encOf(f.key));
     const recips = settings.friends.map(f => encOf(f.key)).filter(Boolean);
     const ta = h('textarea', { placeholder: recips.length ? `Share with your ${recips.length} friend(s)…` : 'Add a friend first (they need a friends page too)', maxLength: LIMITS.text });
-    const img = h('input', { type: 'file', accept: 'image/*' }), st = h('span', { class: 'sub' });
+    const img = h('input', { type: 'file', accept: 'image/*' }), st = h('span', { class: 'sub' }), att = attachBox();
     const post = h('button', { class: 'primary', disabled: !recips.length, onclick: async () => {
-      if (!ta.value.trim()) return; post.disabled = true; st.textContent = 'Encrypting…';
+      if (!ta.value.trim() && !att.count()) return; post.disabled = true; st.textContent = 'Encrypting…';
       try {
-        const image = img.files[0] ? await imageFileToDataUrl(img.files[0], 640) : undefined;
+        const image = img.files[0] ? await imageFileToDataUrl(img.files[0], 640) : undefined, media = await att.getRefs(true);   // encrypted copies: the keys go inside the sealed post
         const pick = chosen(), to = pick.map(f => f.key);
         if (!pick.length) throw new Error('nobody in that audience has a page yet');
-        await append(mineId, { type: 'sealed', ...(await seal({ text: ta.value.trim(), ...(image ? { image } : {}), to: [me.pub, ...to], name: settings.name }, pick.map(f => encOf(f.key)))) });
-        ta.value = ''; img.value = ''; st.textContent = `Sealed to ${pick.length} friend(s).`;
+        await append(mineId, { type: 'sealed', ...(await seal({ text: ta.value.trim(), ...(image ? { image } : {}), ...(media.length ? { media } : {}), to: [me.pub, ...to], name: settings.name }, pick.map(f => encOf(f.key)))) });
+        ta.value = ''; img.value = ''; att.clear(); st.textContent = `Sealed to ${pick.length} friend(s).`;
       } catch (e) { st.textContent = 'Failed: ' + e.message; } finally { post.disabled = false; }
     } }, 'Post to friends');
     // the feed: my page and my friends' pages, newest first, with sealed replies
@@ -3733,13 +3752,13 @@ views.friends = { render() {
         } catch (e) { toast('Reply failed: ' + e.message); } finally { rbtn.disabled = false; }
       } }, 'Reply');
       feed.append(h('div', { class: 'item' }, h('div', {}, h('b', {}, nameFor(b.author)), h('span', { class: 'sub' }, ' · ' + ago(b.ts) + ` · shared with ${(x.to || []).length - 1} friend(s)`)),
-        rich(x.text, b.author), x.image ? h('img', { src: x.image, style: 'max-width:100%;max-height:420px;border-radius:8px' }) : null,
+        rich(x.text, b.author), x.image ? h('img', { src: x.image, style: 'max-width:100%;max-height:420px;border-radius:8px' }) : null, mediaView(x.media),
         b.author === me.pub ? h('button', { class: 'small', onclick: () => append(id, { type: 'hide', target: b.hash }) }, 'Delete') : null,
         rbox, h('div', { class: 'row', style: 'margin:6px 0 0 18px' }, rin, rbtn)));
     }
     if (!items.length) feed.append(h('div', { class: 'sub' }, 'Nothing yet. Posts from you and your friends show up here.'));
     box.replaceChildren(h('h2', { style: 'margin-top:0' }, 'Friends'),
-      h('div', { class: 'panel' }, fmtBar(ta), ta, h('div', { class: 'row', style: 'margin-top:8px' }, audience, img, post, st)), feed, friendsBox);
+      h('div', { class: 'panel' }, fmtBar(ta), ta, att, h('div', { class: 'row', style: 'margin-top:8px' }, audience, post, st)), feed, friendsBox);
   })().catch(e => box.replaceChildren(h('div', { class: 'empty' }, 'Friends page error: ' + e.message)));
   views.friends.refresh = () => { clearTimeout(views.friends.t); views.friends.t = setTimeout(() => { if (route.name === 'friends' && !document.activeElement?.matches?.('input,textarea')) render(true); }, 800); };
   return box;
@@ -3986,7 +4005,7 @@ settings.following = settings.following || [];   // people whose public posts sh
 settings.friendLevels = settings.friendLevels || ['close', 'friends', 'acquaintances'];
 const LEVEL_NAMES = { close: 'Close friends', friends: 'Friends', acquaintances: 'Acquaintances' };
 function youTabs(active) {
-  const tabs = [['profile', 'Profile', '#/you'], ['channels', 'Channels', '#/you/channels'], ['wallet', 'Wallet', '#/wallet'], ['friends', 'Friends', '#/friends'], ['messages', 'Messages', '#/messages'], ['keys', 'Keys & security', '#/you/keys'], ['settings', 'Settings', '#/you/settings']];
+  const tabs = [['profile', 'Profile', '#/you'], ['media', 'Media', '#/you/media'], ['channels', 'Channels', '#/you/channels'], ['wallet', 'Wallet', '#/wallet'], ['friends', 'Friends', '#/friends'], ['messages', 'Messages', '#/messages'], ['keys', 'Keys & security', '#/you/keys'], ['settings', 'Settings', '#/you/settings']];
   return h('div', {}, h('div', { class: 'row', style: 'gap:10px;margin-bottom:4px' }, avatar(myProfile().avatar, myProfile().name, 'sm'), h('h2', { style: 'margin:0' }, myProfile().name || settings.name), h('span', { class: 'fp' }, '·' + fp(me.pub))),
     h('div', { class: 'tabs', style: 'flex-wrap:wrap;margin-top:6px' }, tabs.map(([k, l, href]) => h('a', { href, class: k === active ? 'active' : '' }, l))));
 }
@@ -4082,6 +4101,7 @@ views.user = { render() { return route.key === me.pub ? (location.hash = '#/you'
 views.you = { render() {
   const tab = route.tab;
   if (tab === 'profile') return h('div', {}, youTabs('profile'), personNamePanel(), profileEditor(), profileBody(me.pub));
+  if (tab === 'media') return h('div', {}, youTabs('media'), mediaTab());
   const all = views.me.render(true), panels = [...all.children].flatMap(el => el.classList.contains('split') ? [...el.children] : [el]);
   const pick = (titles) => titles.map(t => panels.find(el => el.querySelector('h3')?.textContent === t)).filter(Boolean);
   const sets = { channels: ['Your channels & lists', 'Create a channel or list'], keys: ['Keys & backup', 'Your user ID'], settings: ['Not interested', 'Subscriptions'] };
@@ -4209,6 +4229,128 @@ function placedThings() {   // everything with a place: open listings, organizat
   for (const [id, L] of E.ledger.listings) if (L.place && L.state === 'open' && (L.kind === 'fixed' || L.ends > Date.now())) pts.push({ ...L.place, title: L.title, sub: `${fmtCoin(listingPrice(L))} coins${L.deal === 'rent' ? ' / month' : ''}`, href: `#/market/item/${id}`, kind: L.category === 'housing' ? 'housing' : 'listing', id, L });
   for (const c of chains.values()) { if (c === main) continue; const k = c.genesis.payload.kind, pr = derive(c.id)?.profile; if (pr?.place && ['org', 'channel'].includes(k)) pts.push({ ...pr.place, title: pr.name, sub: pr.place.label || (k === 'org' ? 'Organization' : 'Channel'), href: `#/c/${c.id}`, kind: k === 'org' ? 'org' : 'channel' }); }
   return pts;
+}
+// ---------------------------------------------------------------- my media (your private library)
+// Pictures and videos you add are kept by you only: in "My media" inside your video folder when you have one, else in
+// this browser. Nothing is shared until you attach it somewhere. Attached to something public (a public post, a group,
+// a listing) it's shared as an ordinary torrent; attached to a friends post it's encrypted first with a fresh key, and
+// only the encrypted copy is shared: the key travels inside the sealed post, so only that audience can open it. Your
+// browser keeps sharing what you've attached (it re-shares on every visit).
+let mediaLib = (await kv.get('mediaLib')) || [];   // [{ id, name, mime, size, ts, thumb, store, file, place, shared: [{ ih, key?, iv?, at }] }]
+const saveLib = () => kv.set('mediaLib', mediaLib);
+const rid16 = () => [...crypto.getRandomValues(new Uint8Array(8))].map(b => b.toString(16).padStart(2, '0')).join('');
+async function mediaDir() { return folder.state === 'ready' && folder.root ? folder.root.getDirectoryHandle('My media', { create: true }) : null; }
+async function thumbOf(file) {
+  if (file.type.startsWith('image/')) return imageFileToDataUrl(file, 160);
+  if (!file.type.startsWith('video/')) return '';
+  return new Promise((res) => {
+    const v = h('video', { muted: true, playsInline: true, preload: 'auto' }); const url = URL.createObjectURL(file);
+    const done = (t) => { URL.revokeObjectURL(url); res(t); };
+    v.onloadeddata = () => { v.currentTime = Math.min(1, (v.duration || 2) / 2); };
+    v.onseeked = () => done(makeThumb(v, 192, 108)); v.onerror = () => done(''); setTimeout(() => done(''), 8000);
+    v.src = url;
+  });
+}
+async function addMedia(file) {
+  const item = { id: rid16(), name: file.name.slice(0, 200) || 'file', mime: (file.type || 'application/octet-stream').slice(0, 80), size: file.size, ts: Date.now(), thumb: await thumbOf(file), shared: [] };
+  const dir = await mediaDir().catch(() => null);
+  if (dir) { let name = item.name; for (let i = 1; await hasEntry(dir, name); i++) name = item.name.replace(/(\.[^.]*)?$/, ` (${i})$1`); await writeData(dir, name, file); item.store = 'folder'; item.file = name; }
+  else { await kv.set('mediablob:' + item.id, file); item.store = 'browser'; }
+  mediaLib.unshift(item); await saveLib(); return item;
+}
+async function mediaBlob(item) {
+  if (item.store === 'folder') { const dir = await mediaDir(); if (!dir) throw new Error('your video folder isn’t connected'); return (await dir.getFileHandle(item.file)).getFile(); }
+  return kv.get('mediablob:' + item.id);
+}
+async function removeMedia(item) {
+  for (const sh of item.shared || []) getTorrent(sh.ih)?.destroy();
+  if (item.store === 'folder') { try { await (await mediaDir()).removeEntry(item.file); } catch {} } else await kv.set('mediablob:' + item.id, undefined);
+  mediaLib = mediaLib.filter(x => x.id !== item.id); await saveLib();
+}
+const seedBlob = (blob, name) => new Promise((res) => { const ex = null; wt.seed(new File([blob], name), { announce: TRACKERS, name }, (t) => res(t)); });
+async function sealBytes(blob, keyB64, ivB64) {
+  const key = await crypto.subtle.importKey('raw', b64u.dec(keyB64), 'AES-GCM', false, ['encrypt']);
+  return new Blob([await crypto.subtle.encrypt({ name: 'AES-GCM', iv: b64u.dec(ivB64) }, key, await blob.arrayBuffer())]);
+}
+// Share an item: public -> { ih, name, mime, size, thumb }; private -> the same plus { key, iv } for the sealed post.
+async function shareMedia(item, priv) {
+  const blob = await mediaBlob(item);
+  let sh = (item.shared || []).find(x => !!x.key === !!priv && (!priv || x.fresh));
+  if (priv) {   // a fresh key for each private share: each audience gets its own encrypted copy
+    const key = b64u.enc(crypto.getRandomValues(new Uint8Array(32))), iv = b64u.enc(crypto.getRandomValues(new Uint8Array(12)));
+    const t = await seedBlob(await sealBytes(blob, key, iv), item.id + '.sealed');
+    sh = { ih: t.infoHash, key, iv, at: Date.now() }; item.shared.push(sh);
+  } else if (!sh || !getTorrent(sh.ih)) {
+    const t = await seedBlob(blob, item.name);
+    sh = sh || { ih: t.infoHash, at: Date.now() }; if (!item.shared.includes(sh)) item.shared.push(sh);
+  }
+  await saveLib();
+  return { ih: sh.ih, name: item.name, mime: item.mime, size: item.size, ...(item.thumb && item.thumb.length <= 16000 ? { thumb: item.thumb } : {}), ...(priv ? { key: sh.key, iv: sh.iv } : {}) };
+}
+async function reseedMedia() {   // keep sharing what you've attached, from your own copy
+  for (const item of mediaLib) for (const sh of item.shared || []) {
+    if (getTorrent(sh.ih)) continue;
+    try { const blob = await mediaBlob(item); if (!blob) continue; await seedBlob(sh.key ? await sealBytes(blob, sh.key, sh.iv) : blob, sh.key ? item.id + '.sealed' : item.name); } catch (e) { console.warn('media reseed', e.message); }
+  }
+}
+setTimeout(() => reseedMedia().catch(() => {}), 10000);
+// Show attached media: fetched from the swarm (and decrypted when it came with a key).
+const mediaCache = new Map();
+function fetchMedia(ref) {
+  if (!mediaCache.has(ref.ih + (ref.key || ''))) mediaCache.set(ref.ih + (ref.key || ''), (async () => {
+    const own = mediaLib.find(x => x.shared?.some(s => s.ih === ref.ih));
+    let blob;
+    if (own) blob = await mediaBlob(own);
+    else {
+      const t = getTorrent(ref.ih) || wt.add(magnet(ref.ih, ref.name), { announce: TRACKERS });
+      blob = await new Promise((res, rej) => { const go = () => t.files[0].blob().then(res, rej); t.done ? go() : t.once('done', go); setTimeout(() => rej(new Error('nobody online has it right now')), 120000); });
+      if (ref.key) { const key = await crypto.subtle.importKey('raw', b64u.dec(ref.key), 'AES-GCM', false, ['decrypt']); blob = new Blob([await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64u.dec(ref.iv) }, key, await blob.arrayBuffer())], { type: ref.mime }); }
+    }
+    return URL.createObjectURL(new Blob([blob], { type: ref.mime }));
+  })());
+  return mediaCache.get(ref.ih + (ref.key || ''));
+}
+function mediaView(refs) {
+  if (!refs?.length) return null;
+  return h('div', { class: 'media-row' }, refs.map(ref => {
+    const box = h('div', { class: 'media-item', title: ref.name });
+    const isImg_ = ref.mime.startsWith('image/'), isVid = ref.mime.startsWith('video/');
+    const load = () => { box.replaceChildren(h('span', { class: 'sub' }, 'Loading…')); fetchMedia(ref).then(url => box.replaceChildren(isImg_ ? h('img', { src: url, alt: ref.name }) : isVid ? h('video', { src: url, controls: true, playsInline: true }) : h('a', { href: url, download: ref.name }, '⬇ ' + ref.name)), e => box.replaceChildren(h('span', { class: 'sub' }, '⚠ ' + e.message))); };
+    if (isImg_ && ref.size < 8e6) { box.append(ref.thumb ? h('img', { src: ref.thumb, alt: ref.name }) : h('span', { class: 'sub' }, ref.name)); load(); }
+    else box.append(h('button', { class: 'media-play', onclick: load, style: ref.thumb ? `background-image:url("${ref.thumb}")` : '' }, isVid ? '▶' : '⬇', h('span', { class: 'sub' }, ` ${ref.name} · ${fmtBytes(ref.size)}`)));
+    return box;
+  }));
+}
+// "📎 Attach" for a composer: pick from your library or add new files. getRefs(priv) shares them when you post.
+function attachBox() {
+  const picked = [], chips = h('div', { class: 'row', style: 'gap:6px' }), pane = h('div', { class: 'hidden panel', style: 'margin:6px 0' });
+  const add = h('input', { type: 'file', accept: 'image/*,video/*', multiple: true, class: 'hidden' });
+  const drawChips = () => chips.replaceChildren(...picked.map(it => h('span', { class: 'tagbox' }, it.thumb ? h('img', { src: it.thumb, style: 'height:28px;border-radius:4px' }) : '📄', ' ', it.name.slice(0, 24), h('button', { class: 'tagx', type: 'button', onclick: () => { picked.splice(picked.indexOf(it), 1); drawChips(); } }, '✕'))));
+  const drawPane = () => pane.replaceChildren(h('div', { class: 'row', style: 'justify-content:space-between' }, h('b', {}, 'My media'), h('button', { class: 'small', type: 'button', onclick: () => add.click() }, '＋ Add files')),
+    mediaLib.length ? h('div', { class: 'media-grid' }, mediaLib.slice(0, 60).map(it => h('button', { type: 'button', class: 'media-pick' + (picked.includes(it) ? ' on' : ''), title: it.name, onclick: () => { if (picked.includes(it)) picked.splice(picked.indexOf(it), 1); else if (picked.length < 10) picked.push(it); drawChips(); drawPane(); } },
+      it.thumb ? h('img', { src: it.thumb }) : h('span', {}, '📄 ' + it.name.slice(0, 16))))) : h('div', { class: 'sub' }, 'Your library is empty. Add pictures or videos: they stay private until you attach them.'));
+  add.onchange = async () => { for (const f of add.files) { const it = await addMedia(f); if (picked.length < 10) picked.push(it); } add.value = ''; drawChips(); drawPane(); };
+  const btn = h('button', { class: 'small', type: 'button', onclick: () => { pane.classList.toggle('hidden'); drawPane(); } }, '📎 Attach');
+  const el = h('div', {}, h('div', { class: 'row', style: 'gap:6px' }, btn, chips), pane, add);
+  el.getRefs = async (priv) => { const out = []; for (const it of picked) out.push(await shareMedia(it, priv)); return out; };
+  el.clear = () => { picked.length = 0; drawChips(); pane.classList.add('hidden'); };
+  el.count = () => picked.length;
+  return el;
+}
+function mediaTab() {
+  const add = h('input', { type: 'file', accept: 'image/*,video/*', multiple: true, class: 'hidden' }), st = h('span', { class: 'sub' });
+  add.onchange = async () => { st.textContent = 'Adding…'; for (const f of add.files) await addMedia(f); add.value = ''; st.textContent = ''; render(true); };
+  const total = mediaLib.reduce((n, x) => n + x.size, 0);
+  return h('div', {}, h('div', { class: 'panel' }, h('div', { class: 'row', style: 'justify-content:space-between' }, h('h3', { style: 'margin:0' }, 'My media'), h('div', { class: 'row' }, st, h('button', { class: 'primary', onclick: () => add.click() }, '＋ Add pictures or videos'), add)),
+    h('p', { class: 'sub' }, `Private: kept ${folder.state === 'ready' ? 'in “My media” in your video folder' : 'in this browser (choose a video folder under Devices to keep them on your disk)'} and shared only when you attach them to something. To friends they go encrypted, so only that audience can open them. ${mediaLib.length} item(s), ${fmtBytes(total)}.`)),
+    mediaLib.length ? h('div', { class: 'media-grid big' }, mediaLib.map(it => h('div', { class: 'panel', style: 'padding:8px' },
+      it.thumb ? h('img', { src: it.thumb, style: 'width:100%;border-radius:8px' }) : h('div', { class: 'sub' }, '📄'),
+      h('div', { style: 'font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, it.name), h('div', { class: 'sub' }, `${fmtBytes(it.size)} · ${ago(it.ts)}${it.shared?.length ? ` · shared ${it.shared.length}×` : ' · private'}`),
+      it.place ? h('div', { class: 'sub' }, '📍 ' + (it.place.label || `${it.place.lat}, ${it.place.lon}`)) : null,
+      h('div', { class: 'row', style: 'margin-top:6px' },
+        h('button', { class: 'small', onclick: () => mediaBlob(it).then(b => window.open(URL.createObjectURL(b), '_blank')) }, 'Open'),
+        h('button', { class: 'small', onclick: (e) => { const d = e.target.closest('.panel'); if (d.querySelector('.osm')) return; d.append(placePicker(it.place || null, (pl) => { it.place = pl; saveLib(); })); } }, '📍 Place'),
+        h('button', { class: 'small', onclick: async () => { if (!confirm(`Delete “${it.name}” from your library${it.shared?.length ? ' (and stop sharing it)' : ''}?`)) return; await removeMedia(it); render(true); } }, 'Delete'))))) : h('div', { class: 'empty' }, 'No pictures or videos yet.'));
 }
 views.tag = { render() {
   const t = route.tag, found = [];
@@ -4561,7 +4703,7 @@ function groupPost(id, d, b) {
   return h('div', { class: 'item' },
     h('div', { class: 'row', style: 'justify-content:space-between' }, h('div', {}, h('b', {}, who(b)), h('span', { class: 'sub' }, ' · ' + ago(b.ts))),
       (isMine(b.author) || isMine(d.owner)) ? h('button', { class: 'small', onclick: () => append(id, { type: 'hide', target: b.hash }) }, 'Hide') : null),
-    rich(b.payload.text, b.author), b.payload.image ? h('img', { src: b.payload.image, style: 'max-width:100%;max-height:360px;border-radius:8px' }) : null,
+    rich(b.payload.text, b.author), b.payload.image ? h('img', { src: b.payload.image, style: 'max-width:100%;max-height:360px;border-radius:8px' }) : null, mediaView(b.payload.media),
     h('div', { class: 'row' }, h('button', { class: 'small', disabled: isMine(b.author), title: `Like (pays ${fmtCoin(priceNow('like'))} coins to the author)`, onclick: async (e) => {
       e.target.disabled = true; try { const vb = await append(id, { type: 'vote', target: b.hash, v: 1 }); await payVote(id, vb, b.author); } catch (err) { toast('Like failed: ' + err.message); e.target.disabled = false; } } }, `👍 ${likes}`),
       h('span', { class: 'sub' }, `${comments.length} repl${comments.length === 1 ? 'y' : 'ies'}`)),
@@ -4572,16 +4714,16 @@ const chainTab = {
   discussion(id, d) {
     const can = d.canPost(me.pub) || isMine(d.owner);
     const composer = can ? keep('gpost:' + id, () => {
-      const ta = h('textarea', { placeholder: `Write to ${d.profile.name}…`, maxLength: LIMITS.text }), img = h('input', { type: 'file', accept: 'image/*' }), st = h('span', { class: 'sub' });
+      const ta = h('textarea', { placeholder: `Write to ${d.profile.name}…`, maxLength: LIMITS.text }), img = h('input', { type: 'file', accept: 'image/*' }), st = h('span', { class: 'sub' }), att = attachBox();
       const btn = h('button', { class: 'primary', onclick: async () => {
         if (!ta.value.trim()) return; btn.disabled = true; st.textContent = isMine(d.owner) ? '' : 'Doing anti-spam work…';
         try {
-          const image = img.files[0] ? await imageFileToDataUrl(img.files[0], 480) : undefined;
-          await append(id, { type: 'post', text: ta.value.trim(), ...(image ? { image } : {}), ...(isMine(d.owner) ? {} : { name: settings.name.slice(0, LIMITS.name) }) });
-          ta.value = ''; img.value = ''; st.textContent = '';
+          const image = img.files[0] ? await imageFileToDataUrl(img.files[0], 480) : undefined, media = await att.getRefs(false);
+          await append(id, { type: 'post', text: ta.value.trim(), ...(image ? { image } : {}), ...(media.length ? { media } : {}), ...(isMine(d.owner) ? {} : { name: settings.name.slice(0, LIMITS.name) }) });
+          ta.value = ''; img.value = ''; att.clear(); st.textContent = '';
         } catch (e) { st.textContent = 'Failed: ' + e.message; } finally { btn.disabled = false; }
       } }, 'Post');
-      return h('div', { class: 'panel' }, fmtBar(ta), ta, h('div', { class: 'row', style: 'margin-top:8px' }, img, btn, st));
+      return h('div', { class: 'panel' }, fmtBar(ta), ta, att, h('div', { class: 'row', style: 'margin-top:8px' }, btn, st));
     }) : h('div', { class: 'panel sub' }, d.profile.join === 'approved' ? `Only approved members can post here. Send the owner your user ID to be approved: ${me.pub}` : 'You can’t post in this group.');
     return h('div', {}, composer, d.posts.length ? h('div', { class: 'panel' }, d.posts.map(b => groupPost(id, d, b))) : h('div', { class: 'empty' }, 'No posts yet. Say hello!'));
   },
