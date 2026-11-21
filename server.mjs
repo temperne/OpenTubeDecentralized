@@ -463,7 +463,7 @@ function goLiveSink(log, obsCfg) {
       else {
         chain = obsCfg.channel; if (!chain || !engine.chains.get(chain)) throw new Error('no channel linked to this computer');
         stream = crypto.randomBytes(32).toString('hex');
-        await engine.append(chain, { type: 'live', title: (obsCfg.title || 'Live').slice(0, 140), stream, mime, ...(isEntry() ? { hub: signer.pub } : {}) });
+        await engine.append(chain, { type: 'live', title: (obsCfg.title || 'Live').slice(0, 140), stream, mime, ...(isEntry() ? { hub: signer.pub } : {}) }); myLive.add(stream);
         log(`[obs] live on ${engine.derive(chain)?.profile.name || chain.slice(0, 8)}: “${obsCfg.title}”`);
       }
       real = liveSink(chain, stream, mime); real.init(bytes); yt?.write(bytes);
@@ -477,7 +477,7 @@ function goLiveSink(log, obsCfg) {
       if (yt) { yt.end(); yt = youtubeOut(log, obsCfg); yt?.write(bytes); }
     },
     end() {
-      real?.end(); yt?.end(); log('[obs] stream ended');
+      real?.end(); yt?.end(); log('[obs] stream ended'); setTimeout(() => myLive.delete(stream), 120000);
       if (!stream || armed?.()) return;
       (async () => {
         const r = await rec?.finish(stream).catch(e => { log('[obs] recording failed:', e.message); return null; });
@@ -578,6 +578,18 @@ function groupKick(hostCfg, pred) {   // disconnect inputs (OBS connection close
   return n;
 }
 var armed = null, announceSoon = null;
+// Streams this computer started and is still sending. Any other open stream of its own (it crashed, or was stopped
+// mid-stream) is closed on its channel, so it doesn't stay "live" for everyone.
+var myLive = new Set();
+setInterval(() => {
+  for (const id of engine.chains.keys()) {
+    let d; try { d = engine.derive(id); } catch { continue; }
+    for (const lb of d?.liveNow || []) if (lb.author === signer.pub && !myLive.has(lb.payload.stream) && Date.now() - lb.ts > 3 * 60000) {
+      myLive.add(lb.payload.stream);   // once
+      engine.append(id, { type: 'liveend', stream: lb.payload.stream, outcome: 'ended' }).then(() => log(`[obs] closed a stream left open: ${lb.payload.title || lb.payload.stream.slice(0, 8)}`)).catch(e => log('[obs] liveend:', e.message));
+    }
+  }
+}, 2 * 60000);
 if (process.env.RTMP_PORT) {
   try {
     const { startRtmp } = await import('./rtmp.mjs');

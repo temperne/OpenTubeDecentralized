@@ -2441,7 +2441,26 @@ engine = await createEngine({
 });
 const E = engine;
 const { main, chains, mempool, CFG, MAIN_ID, openChain, genesisFor, headsOf, append } = E;
-const derive = (id) => E.derive(id);
+// Streams known to be over (their hub said it doesn't have them, or that they ended) aren't "live now", even when
+// no liveend block was written (the page was closed, the browser or computer crashed). Remembered in this browser.
+const DEAD_KEY = 'ot-dead-streams';
+const deadStreams = (() => { try { return new Map(Object.entries(JSON.parse(localStorage.getItem(DEAD_KEY) || '{}'))); } catch { return new Map(); } })();
+const derive = (id) => { const d = E.derive(id); return d?.liveNow?.some(lb => deadStreams.has(lb.payload.stream)) ? { ...d, liveNow: d.liveNow.filter(lb => !deadStreams.has(lb.payload.stream)) } : d; };
+function markDead(chainId, stream) {
+  if (broadcasts.get(chainId)?.stream === stream && !broadcasts.get(chainId).ended) return;   // ours, still going
+  const lb = E.derive(chainId)?.streams?.find(b => b.payload.stream === stream);
+  if (!lb || Date.now() - lb.ts < 2 * 60000) return;   // just started: its hub may not have it yet
+  deadStreams.set(stream, Date.now());
+  try { localStorage.setItem(DEAD_KEY, JSON.stringify(Object.fromEntries([...deadStreams].sort((a, b) => b[1] - a[1]).slice(0, 300)))); } catch {}
+  endOnChain(chainId, stream); scheduleRender();
+}
+// a stream of ours that's over but was never closed on the channel: close it, so it stops showing as live for everyone
+// (the recording, if any, stays offered to publish)
+async function endOnChain(chainId, stream) {
+  const d = E.derive(chainId); if (!d || d.liveEnds.has(stream) || !d.streams.some(b => b.payload.stream === stream) || !signerFor(d.owner)) return;
+  if (broadcasts.get(chainId)?.stream === stream && !broadcasts.get(chainId).ended) return;
+  try { await append(chainId, { type: 'liveend', stream, outcome: 'ended' }); } catch (e) { console.warn('liveend', e); }
+}
 // Video peers are introduced by the home node's own tracker first; public trackers are a fallback.
 const homeTracker = params.get('net') ? null : homeNodeUrl()?.replace(/\/ot$/, '/tracker');
 // Trackers only introduce peers (any one is enough). Built in: this site's and the network's defaults; added: the current
@@ -2463,7 +2482,8 @@ function addTrackersTo(t, urls) {
 // entry nodes, and computers this page is linked to, are trackers too: add theirs as they appear (and remember the
 // entry nodes for next time)
 const addNodeTrackers = () => {
-  if (params.get('trackers') || typeof liveNet === 'undefined') return;
+  if (params.get('trackers')) return;
+  try { liveNet; } catch { return; }   // the page is still starting (liveNet isn't set up yet)
   for (const x of seedEntries) { const t = x.addrs[0].replace(/^http/, 'ws') + '/tracker'; if (!TRACKERS.includes(t) && TRACKERS.length < 24) TRACKERS.unshift(t); }
   for (const x of [...liveNet.entryHubs(), ...liveNet.linkedHubs()]) { const t = x.url.replace(/\/live$/, '/tracker'); if (!TRACKERS.includes(t) && TRACKERS.length < 24) TRACKERS.unshift(t); }
   for (const t of meetPlaces()) if (!TRACKERS.includes(t) && TRACKERS.length < 24) TRACKERS.unshift(t);
@@ -3256,6 +3276,7 @@ async function stopLive(chainId) {
   for (const pc of sess.kids.values()) pc.close();
   sess.thumb = sess.preview ? makeThumb(sess.preview) : '';
   for (const t of sess.media.getTracks()) t.stop();
+  append(chainId, { type: 'liveend', stream: sess.stream, outcome: 'ended' }).catch(e => console.warn('liveend', e));   // over now, for everyone: Publish/Discard comes after
   scheduleRender();
 }
 // OBS with a stream key (server.mjs home nodes): OBS sends WebM to the node, which signs and relays it. This browser
@@ -3366,7 +3387,7 @@ async function onLiveMsg(sess, m) {
       return;
     case 'nostream':   // not started yet, or already over: try again for a little while
       if ((++sess.tries < 10 || broadcasts.get(sess.chainId)?.stream === sess.stream) && !sess.ended) setTimeout(() => viewing.get(sess.stream) === sess && sendWatch(sess), broadcasts.get(sess.chainId)?.stream === sess.stream ? 10000 : 3000);   // the owner waits for OBS as long as it takes
-      else { sess.ended = true; sess.ui?.ended('This stream isn’t live right now.'); }
+      else { sess.ended = true; sess.ui?.ended('This stream isn’t live right now.'); markDead(sess.chainId, sess.stream); }
       return;
     case 'parent':
       sess.parent = m.peer; sess.mode = m.dc ? 'dc' : 'rtc'; sess.dcAt = 0; sess.ui?.status('Connecting…');
@@ -3438,7 +3459,7 @@ async function onLiveMsg(sess, m) {
       return;
     }
     case 'ended':
-      sess.ended = true; sess.ui?.ended('The stream has ended.');
+      sess.ended = true; sess.ui?.ended('The stream has ended.'); markDead(sess.chainId, sess.stream);
       if (sess.capture) {   // the last chunk and any fills still on their way: wait a little before closing our copy
         await new Promise(r => setTimeout(r, 4000));
         for (const c of sess.chunks?.values() || []) fillFromChunk(sess, c);
@@ -3488,6 +3509,8 @@ function liveForJoined() {
     for (const lb of d.liveNow) if (!viewing.has(lb.payload.stream) && !broadcasts.has(id)) joinLive(id, lb);
     settleCaptures(id);
   }
+  for (const [id, ch] of folder.channels || []) for (const [stream, rec] of Object.entries(ch.meta?.lives || {}))
+    if (rec.own && !rec.obs && broadcasts.get(id)?.stream !== stream && Date.now() - (rec.started || 0) > 60000) endOnChain(id, stream);   // streamed from this browser, page since reloaded
 }
 liveHooks = {
   onBlock(chainId, b) {
