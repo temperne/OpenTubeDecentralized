@@ -219,6 +219,8 @@ if (want.node) {
   run('node', 'server.mjs', [], {
     PORT: String(port), DATA_DIR: path.join(HOME, 'node-data'), PEERS: ws + '/ot', MINE: args.mine ? '1' : 'own', RANKER: '0',
     NODE_GRANT: String(args.grant), NODE_SITE: site.origin, NODE_ROLES: roles.join(','), NODE_LABEL: String(args.name || os.hostname()),
+    // flash computers: --flash-parent/--flash-tag on a flash computer; --flash-provider/--flash-token/… on the computer that starts them
+    ...Object.fromEntries([['flash-parent', 'FLASH_PARENT'], ['flash-tag', 'FLASH_TAG'], ['flash-provider', 'FLASH_PROVIDER'], ['flash-token', 'FLASH_TOKEN'], ['flash-region', 'FLASH_REGION'], ['flash-plan', 'FLASH_PLAN'], ['flash-image', 'FLASH_IMAGE'], ['flash-max-hours', 'FLASH_MAX_HOURS'], ['flash-create-cmd', 'FLASH_CREATE_CMD'], ['flash-delete-cmd', 'FLASH_DELETE_CMD']].filter(([a]) => args[a] && args[a] !== true).map(([a, e]) => [e, String(args[a])])),
     HOST_STATUS_FILE: STATUS, RTMP_PORT: want.obs ? String(Number(args['obs-port']) || 1935) : '',
     ...(args.public ? { PUBLIC: args.public === true ? 'auto' : String(args.public), ...(args.email ? { PUBLIC_EMAIL: String(args.email) } : {}) } : {}),
     ...(tunnelUrl ? { PUBLIC_URL: tunnelUrl } : {}), LAUNCH_FILE, ...(tunnelState ? { TUNNEL_STATE: String(tunnelState).slice(0, 200) } : {}),

@@ -7534,6 +7534,47 @@ function versionBadge(v) {   // a node's version compared with this page's
   return h('span', { class: 'badge' + (same ? ' ok' : pageBuild ? ' warn' : ''), title: `node ${v.name} · build ${v.build}${pageBuild ? ' · this page ' + globalThis.OpenTubeCore.VERSION + ' · build ' + pageBuild : ''}` },
     same ? `v${v.name} · up to date` : pageBuild ? `v${v.name} (${v.build.slice(0, 7)}) · differs from this page: press ⟳ Update` : `v${v.name} (${v.build.slice(0, 7)})`);
 }
+// Flash computers: a computer of yours with a cloud provider set up (--flash-provider=…) starts servers for streams.
+// Devices shows them; your browser links each new one to the channels its parent is linked to and sets it to go live on
+// them, so it's ready for OBS, invitations and the group without any clicks.
+const flashLinked = new Set();
+async function linkFlashComputers() {
+  for (const n of E.nodes.values()) {
+    const f = n.info?.flash; if (!f || n.grant?.user !== me.pub || Date.now() - n.at > 120000) continue;
+    for (const id of myChannels()) {
+      const d = derive(id); if (d?.kind !== 'channel' || !d.relays?.has(f.parent) || flashLinked.has(n.node + id)) continue;
+      flashLinked.add(n.node + id);
+      try {
+        if (!d.relays.has(n.node)) await append(id, { type: 'relay', key: n.node, on: true });
+        await nodeCtl(n, 'obs.set', { channel: id, ...(await chanProof(n, id)) });
+        E.logEvent?.('node', `linked flash computer ${n.info?.name || n.node.slice(0, 8)} to ${channelTitle(id)}`);
+      } catch (e) { flashLinked.delete(n.node + id); console.warn('flash link', e); }
+      break;   // one channel to go live on (the first the parent is linked to)
+    }
+  }
+}
+setInterval(() => linkFlashComputers().catch(() => {}), 15000);
+function flashPanel(n) {
+  const box = h('div', { style: 'margin-top:6px' }), st = h('span', { class: 'sub' });
+  let data = null;
+  const run = async (cmd, args = {}) => { st.textContent = '…'; try { data = (await nodeCtl(n, cmd, args)).data; st.textContent = ''; } catch (e) { st.textContent = '✗ ' + e.message; } draw(); };
+  const draw = () => {
+    if (!data) return box.replaceChildren(h('span', { class: 'sub' }, '⚡ Flash computers: loading…'), ' ', st);
+    const live = data.children.filter(c => c.state !== 'deleted');
+    box.replaceChildren(h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap' },
+        h('b', {}, '⚡ Flash computers'), h('span', { class: 'sub' }, `${data.provider}${data.plan ? ' · ' + data.plan : ''}${data.region ? ' · ' + data.region : ''} · deleted when idle ${data.idleMin} min with every recording copied here, at most ${data.maxHours} h`),
+        data.ready ? h('button', { class: 'small primary', onclick: (e) => { e.target.disabled = true; st.textContent = 'Creating the server (it takes 2–4 minutes to install and come online)…'; run('flash.start'); } }, '⚡ Start a flash computer') : h('span', { class: 'sub', style: 'color:var(--warn)' }, 'No API token set on this computer.'), st),
+      data.children.map(c => h('div', { class: 'row', style: 'gap:8px;margin-top:4px;flex-wrap:wrap' },
+        h('span', {}, c.state === 'deleted' ? '⚪' : c.state === 'running' ? '🟢' : '🟡', ' ', h('b', {}, c.tag)),
+        h('span', { class: 'sub' }, c.state === 'deleted' ? `deleted ${ago(c.deletedAt)}: ${c.why || ''}` : `${c.state === 'starting' ? 'installing…' : c.busy ? 'busy: ' + c.busy : c.idleSince ? 'idle ' + ago(c.idleSince).replace(/ ago$/, '') : 'running'} · up ${ago(c.createdAt).replace(/ ago$/, '')} · recordings copied here ${c.copied || 0}/${c.recordings || 0}${c.error ? ' · ✗ ' + c.error : ''}`),
+        c.state !== 'deleted' ? [h('label', { class: 'sub', style: 'display:inline-flex;gap:4px;align-items:center;font-weight:400;margin:0' }, h('input', { type: 'checkbox', checked: !!c.keep, onchange: (e) => run('flash.keep', { tag: c.tag, keep: e.target.checked }) }), 'keep (don’t delete when idle)'),
+          h('button', { class: 'small', onclick: () => { if (confirm(`Delete ${c.tag} now?` + ((c.copied || 0) < (c.recordings || 0) ? ' Some of its recordings aren’t copied here yet: they would be lost.' : ''))) run('flash.stop', { tag: c.tag }); } }, 'Delete now')] : null)),
+      live.length ? h('div', { class: 'sub', style: 'margin-top:4px' }, 'A flash computer appears in this list of computers when it’s online, linked to your channel: go live into its group, or point OBS at it.') : null);
+  };
+  draw(); run('flash.status');
+  const iv = setInterval(() => { if (!box.isConnected) return clearInterval(iv); run('flash.status'); }, 20000);
+  return box;
+}
 function nodeRow(n) {
   const age = Date.now() - n.at, online = age < 90000, i = n.info || {}, owner = n.grant.user === me.pub, perms = nodePerms(n);
   const toggle = (k, make) => (e) => { const row = e.target.closest('.item'); if (openManagers.has(k)) { openManagers.get(k).remove(); openManagers.delete(k); return; } const p_ = make(); openManagers.set(k, p_); row.append(p_); };
@@ -7565,6 +7606,8 @@ function nodeRow(n) {
     h('div', { class: 'sub' }, [i.os, i.node && 'Node ' + i.node, i.height != null && `main #${i.height}`, i.peers != null && `${i.peers} peer(s)`, i.chains != null && `${i.chains} chains`].filter(Boolean).join(' · '), ' ', versionBadge(i.version)),
     i.host ? h('div', { class: 'sub' }, `Hosting ${i.host.hosting ?? 0} videos (${fmtBytes(i.host.hostedBytes || 0)}) for ${i.host.channels ?? 0} joined channels in ${i.host.videoDir || 'its folder'}` + (i.host.downloading ? ` · downloading ${i.host.downloading}` : '') + (i.host.stale ? ' · host not reporting' : '')) : null,
     i.obs ? h('div', { class: 'sub', style: i.obs.error || i.obs.listening === false ? 'color:var(--warn)' : '' }, i.obs.error ? '⚠ OBS: ' + i.obs.error : i.obs.listening === false ? '⚠ OBS: not listening' : i.obs.live ? `OBS: streaming now (${fmtBytes(i.obs.bytes || 0)})` : i.obs.armed ? 'OBS: ready, waiting for Start Streaming' : `OBS: listening on port ${i.obs.port} (stream key and server under 🎥 OBS & streaming)`) : null,
+    i.flash ? h('div', { class: 'sub' }, '⚡ Flash computer of ', h('b', {}, E.nodes.get(i.flash.parent)?.info?.name || 'one of your computers'), ' — it’s deleted when idle and its recordings are copied there.') : null,
+    owner && online && i.flashes ? keep('flash:' + n.node, () => flashPanel(n)) : null,
     // public (an entry node: browsers use it as a way in, tracker and live hub) or not, and switching it from here
     h('div', { class: 'row', style: 'gap:8px;margin-top:4px;flex-wrap:wrap' },
       i.public ? h('span', {}, '🌐 Public at ', h('a', { href: i.public, target: '_blank', rel: 'noopener' }, i.public), n.roles.includes('entry') ? h('span', { class: 'badge ok', style: 'margin-left:6px' }, 'entry node') : null)

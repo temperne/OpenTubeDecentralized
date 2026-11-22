@@ -180,8 +180,22 @@ export async function startHost({ engine, nodeKey, user, users = () => [], meetP
         ensure(chain, b).catch(e => log('[host]', e.message));
       }
     }
+    for (const r of ov.recs || []) ensure(r.chain, { payload: { infohash: r.ih, file: r.file, title: r.title, size: r.size } }).catch(e => log('[host]', e.message));   // recordings kept for a flash computer
     for (const [ih, x] of torrents) if (!want.has(x.chain) && !ov.pinned.includes(ih)) { x.t.destroy(); torrents.delete(ih); }   // left: stop sharing (files stay)
   }
+  // A recording another of the owner's computers made (a flash computer that will be deleted): keep a copy here,
+  // pinned (never trimmed), shared like any video. Publishing it later reuses this copy (same infohash).
+  function keepRecording(chain, rec) {
+    if (!/^[0-9a-f]{40}$/.test(rec?.infohash || '')) return Promise.resolve();
+    ov.recs ||= [];
+    if (!ov.recs.some(r => r.ih === rec.infohash)) {
+      ov.recs.push({ chain, ih: rec.infohash, file: String(rec.file || 'recording.mp4').slice(0, 200), title: String(rec.title || rec.file || 'Recording').slice(0, 140), size: rec.size || null });
+      if (!ov.pinned.includes(rec.infohash)) ov.pinned.push(rec.infohash);
+      saveOv(); log(`[host] keeping a copy of the flash computer’s recording “${rec.file}”`);
+    }
+    return ensure(chain, { payload: { infohash: rec.infohash, file: rec.file, title: rec.title || rec.file, size: rec.size } });
+  }
+  const hasComplete = (ih) => !!torrents.get(ih)?.t.done;
   setTimeout(follow, 3000); setInterval(follow, 30000);
   log(`[host] hosting for user ${user.slice(0, 8)}… in ${videoDir} (${trackers.length} trackers + DHT)`);
 
@@ -299,7 +313,7 @@ export async function startHost({ engine, nodeKey, user, users = () => [], meetP
     });
   }
   return {
-    recordingPath, seedRecording, seedChunk, storeVideo, progressOf,
+    recordingPath, seedRecording, seedChunk, storeVideo, progressOf, keepRecording, hasComplete,
     follow, piece, complete, command, files,
     noteProof(ih, key, ok) { const m = proven.get(ih) || proven.set(ih, new Map()).get(ih); if (ok) m.set(key, Date.now()); else m.delete(key); },
     status: () => {

@@ -618,3 +618,34 @@ Nothing is deleted from the chains; lists just leave out what doesn't work right
 
 - **Live streams** are listed while they work: their hub has had video from them in the last minute (browsers ask it with a `probe` every 20 s; streams being watched report themselves through their segments). One that stopped (a closed page, a crash, a dead hub) drops out after more than a minute and comes back by itself if it resumes. Its owner can end it for good with **End stream** on the live page.
 - **Videos** nobody serves drop out of feeds and lists after 10 minutes of checks finding no one, and come back as soon as anyone serves them. Served means: this browser has it, a peer sends it, a computer's signed status says it holds it (a 2048-bit Bloom filter of its videos, `info.has`), or a meet place (tracker scrape) knows someone sharing it. The owner still sees their own videos, and a direct link still opens.
+
+## Flash computers: a cloud server only while you stream
+
+A computer of yours can start a cloud server for a stream (a *flash computer*), keep a copy of everything it records, and delete it when it's done. The server does the heavy work: combining cameras, serving viewers. You pay the provider by the hour, only while it runs.
+
+Set the provider on that computer (the key stays there; it is never sent over the network, because control messages are signed but not encrypted):
+
+```bash
+node opentube.mjs --site=… --grant=… --flash-provider=hetzner --flash-token=YOUR_API_TOKEN [--flash-region=… --flash-plan=… --flash-image=… --flash-max-hours=6]
+```
+
+| provider | token | default region / plan / image |
+|---|---|---|
+| `aws` (Amazon EC2) | `ACCESS_KEY_ID:SECRET_ACCESS_KEY` | `us-east-1` / `c7a.large` / Canonical's current Ubuntu 24.04 AMI for the region |
+| `gcp` (Google Compute Engine) | a service account's JSON key (or the path to it) | zone `us-central1-a` / `e2-standard-2` / Ubuntu 24.04 LTS |
+| `hetzner` | API token | `ash` / `cpx21` / `ubuntu-24.04` |
+| `digitalocean` | API token | `nyc3` / `s-2vcpu-4gb` / `ubuntu-24-04-x64` |
+| `vultr` | API key | `ewr` / `vhf-2c-4gb` / os_id `2284` (Ubuntu 24.04) |
+| `linode` (Akamai) | personal access token | `us-ord` / `g6-standard-2` / `linode/ubuntu24.04` |
+| `scaleway` | `PROJECT_ID:SECRET_KEY` | zone `fr-par-1` / `PLAY2-MICRO` / `ubuntu_noble` |
+| `custom` | — | your own commands: anything with a CLI or API (Azure, Oracle, OVH, Cloudzy, …) |
+
+`custom` runs `--flash-create-cmd` with `OT_NAME` and `OT_USERDATA_FILE` (the setup script) and expects `{"id":"…","ip":"…"}` as its last line, and `--flash-delete-cmd` with `OT_ID`. For example, Azure:
+
+```bash
+--flash-provider=custom \
+--flash-create-cmd='az vm create -g opentube -n "$OT_NAME" --image Ubuntu2404 --size Standard_F2s_v2 --custom-data "$OT_USERDATA_FILE" --generate-ssh-keys -o json --query "{id:name, ip:publicIpAddress}" | tr -d "\n"; echo' \
+--flash-delete-cmd='az vm delete -g opentube -n "$OT_ID" --yes'
+```
+
+Then on Devices that computer shows **⚡ Flash computers → Start a flash computer**. The new server installs Node.js, ffmpeg and OpenTube (2–4 minutes), comes online through a Cloudflare Tunnel, and your browser links it to the same channels as its parent: go live into its group, invite people, point OBS at it. Its recordings are copied to the parent (pinned, never trimmed). The parent deletes it once it's idle (15 min by default) with every recording copied, and at the latest after `--flash-max-hours` (6 by default). **Keep** on its row stops the idle deletion; **Delete now** deletes it at once.
