@@ -34,6 +34,7 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { spawn, spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 const args = Object.fromEntries(process.argv.slice(1).filter(a => a.startsWith('--')).map(a => { const i = a.indexOf('='); return i < 0 ? [a.slice(2), true] : [a.slice(2, i), a.slice(i + 1)]; }));
@@ -112,6 +113,7 @@ async function stopEarlier() {
   }
   if (!pids.size) return;
   log(`Stopping the OpenTube that was already running (process ${[...pids].join(', ')}), so this one can use its ports…`);
+  try { fs.writeFileSync(path.join(HOME, 'handoff'), JSON.stringify({ at: Date.now(), pids: [...pids] })); } catch {}   // a restart, not a stop: the old one leaves the tunnel running for us
   for (const pid of pids) try { process.kill(pid, 'SIGTERM'); } catch {}
   for (let i = 0; i < 50 && [...pids].some(alive); i++) await new Promise(r => setTimeout(r, 100));
   for (const pid of pids) if (alive(pid)) try { process.kill(pid, 'SIGKILL'); } catch {}
@@ -121,7 +123,13 @@ await stopEarlier();
 const noteRunning = () => { try { fs.writeFileSync(RUNNING, JSON.stringify({ pids: [process.pid, ...[...children].map(c => c.pid)], at: Date.now() })); } catch {} };
 
 const freePort = (p) => new Promise((res) => { const s = net.createServer().once('error', () => res(freePort(p + 1))).once('listening', () => s.close(() => res(p))).listen(p); });
-const port = await freePort(Number(args.port) || 8090);
+// the same port as before a restart when the tunnel kept running (it forwards to that port): wait for it to be free
+const TUNNEL_FILE = path.join(HOME, 'tunnel.json');
+const prevTunnel = (() => { try { return JSON.parse(fs.readFileSync(TUNNEL_FILE, 'utf8')); } catch { return null; } })();
+const isFree = (p) => new Promise((res) => { const s = net.createServer().once('error', () => res(false)).once('listening', () => s.close(() => res(true))).listen(p); });
+let port = Number(args.port) || prevTunnel?.port || 8090;
+if (prevTunnel?.port === port) { for (let i = 0; i < 20 && !(await isFree(port)); i++) await new Promise(r => setTimeout(r, 500)); }
+port = await freePort(port);
 const ws = site.origin.replace(/^http/, 'ws');
 
 // Run a part as a child process, restart it if it stops, prefix its output. Stopping this program stops the parts.
@@ -139,6 +147,8 @@ function run(label, file, argv, env) {
   start();
 }
 const stopAll = () => { stopping = true; for (const c of children) c.kill(); try { fs.rmSync(RUNNING, { force: true }); } catch {} };
+// A real stop (Ctrl+C, the service stopping) also stops the tunnel; an update or restart keeps it, so the address stays.
+const stopTunnel = () => { try { const t = JSON.parse(fs.readFileSync(TUNNEL_FILE, 'utf8')); process.kill(t.pid); } catch {} try { fs.rmSync(TUNNEL_FILE, { force: true }); } catch {} };
 // "Update" on the site (Devices): the node exits with UPDATE_EXIT; this program stops the other parts and starts itself
 // again the same way it was started, which downloads the site's current code (this launcher included). It stays as a
 // thin parent so the terminal, Ctrl+C and service managers keep working.
@@ -154,7 +164,8 @@ async function relaunch() {
   next.on('exit', (code) => process.exit(code ?? 0));
 }
 process.on('exit', stopAll);
-for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => { if (next) { try { next.kill(sig); } catch {} return; } stopAll(); process.exit(0); });
+const handedOver = () => { try { const h = JSON.parse(fs.readFileSync(path.join(HOME, 'handoff'), 'utf8')); return Date.now() - h.at < 15000 && h.pids.includes(process.pid); } catch { return false; } };
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => { if (next) { try { next.kill(sig); } catch {} return; } stopAll(); if (!handedOver()) stopTunnel(); process.exit(0); });
 
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm', npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
 const installed = (pkg) => fs.existsSync(path.join(HOME, 'node_modules', pkg, 'package.json'));
@@ -197,18 +208,31 @@ async function cloudflaredPath() {
   fs.chmodSync(file, 0o755); return file;
 }
 let tunnelUrl = null, tunnelState = null;
+// The tunnel runs on its own (not as a part of this program): updates and restarts reuse it, so a quick tunnel keeps its
+// https://<name>.trycloudflare.com address. Only a real stop, or turning it off, ends it.
+if (!(want.node && (args.tunnel || args['tunnel-token']))) stopTunnel();   // public access was turned off
 if (want.node && (args.tunnel || args['tunnel-token'])) {
   try {
-    const bin = await cloudflaredPath(), token = args['tunnel-token'] ? String(args['tunnel-token']) : null;
-    const argv = token ? ['tunnel', '--no-autoupdate', 'run', '--token', token] : ['tunnel', '--no-autoupdate', '--url', `http://localhost:${port}`];
-    if (token && !args['public-url']) log('⚠ --tunnel-token needs --public-url=https://your.host (the hostname routed to this tunnel in Cloudflare)');
-    const tunnel = spawn(bin, argv, { stdio: ['ignore', 'pipe', 'pipe'] }); children.add(tunnel);
-    tunnel.on('exit', (code) => { children.delete(tunnel); if (!stopping) { log(`tunnel stopped (${code}); restarting OpenTube for a new one`); relaunch(); } });
-    tunnelUrl = args['public-url'] ? String(args['public-url']).replace(/\/+$/, '') : await new Promise((res) => {
-      const t = setTimeout(() => res(null), 45000);
-      const look = (d) => { const m = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/.exec(String(d)); if (m) { clearTimeout(t); res(m[0]); } };
-      tunnel.stdout.on('data', look); tunnel.stderr.on('data', look);
-    });
+    const token = args['tunnel-token'] ? String(args['tunnel-token']) : null, mode = token ? 'token:' + crypto.createHash('sha256').update(token).digest('hex').slice(0, 12) : 'quick';
+    let t = null; try { t = JSON.parse(fs.readFileSync(TUNNEL_FILE, 'utf8')); } catch {}
+    if (t && (!alive(t.pid) || t.port !== port || t.mode !== mode)) { if (alive(t.pid)) try { process.kill(t.pid); } catch {} t = null; }
+    if (t?.url) { tunnelUrl = t.url; log(`  the tunnel from before is still running: ${t.url} (same address)`); }   // cloudflared reconnects by itself
+    if (!tunnelUrl) {
+      const bin = await cloudflaredPath(), logFile = path.join(HOME, 'tunnel.log');
+      const argv = token ? ['tunnel', '--no-autoupdate', 'run', '--token', token] : ['tunnel', '--no-autoupdate', '--url', `http://localhost:${port}`];
+      if (token && !args['public-url']) log('⚠ --tunnel-token needs --public-url=https://your.host (the hostname routed to this tunnel in Cloudflare)');
+      const out = fs.openSync(logFile, 'w');
+      const tunnel = spawn(bin, argv, { stdio: ['ignore', out, out], detached: true }); tunnel.unref();
+      tunnelUrl = args['public-url'] ? String(args['public-url']).replace(/\/+$/, '') : await new Promise((res) => {
+        const t0 = Date.now(), iv = setInterval(() => {
+          const m = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/.exec(fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : '');
+          if (m || Date.now() - t0 > 45000 || !alive(tunnel.pid)) { clearInterval(iv); res(m?.[0] || null); }
+        }, 300);
+      });
+      if (tunnelUrl) fs.writeFileSync(TUNNEL_FILE, JSON.stringify({ pid: tunnel.pid, url: tunnelUrl, port, mode, at: Date.now() }));
+    }
+    // if the tunnel stops by itself, start again (a new one)
+    setInterval(() => { let x = null; try { x = JSON.parse(fs.readFileSync(TUNNEL_FILE, 'utf8')); } catch {} if (!stopping && tunnelUrl && (!x || !alive(x.pid))) { log('the tunnel stopped; restarting OpenTube for a new one'); try { fs.rmSync(TUNNEL_FILE, { force: true }); } catch {} relaunch(); } }, 15000).unref();
     if (tunnelUrl) { tunnelState = 'on'; log(`  public: ${tunnelUrl} (through Cloudflare Tunnel; browsers use it as a way into the network, tracker and live hub)`); }
     else { tunnelState = 'no address from cloudflared within 45 s'; log('the tunnel didn’t give an address within 45 s; the node runs without a public address'); }
   } catch (e) { tunnelState = e.message; log('tunnel off:', e.message); }
