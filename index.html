@@ -2472,6 +2472,17 @@ const { main, chains, mempool, CFG, MAIN_ID, openChain, genesisFor, headsOf, app
 // Videos nobody serves any more drop out the same way (see videoGone).
 const liveSeen = new Map(), liveNo = new Map(), hubDown = new Map(), deadStreams = new Map();   // stream -> time
 const noteLive = (stream) => { if (stream) { liveSeen.set(stream, Date.now()); liveNo.delete(stream); hubDown.delete(stream); } };
+// why a stream is or isn't listed (Network page, and for debugging)
+function liveWhy(chainId, lb) {
+  const s = lb.payload.stream, now = Date.now(), ago_ = (t) => t ? Math.round((now - t) / 1000) + ' s ago' : 'never';
+  if (deadStreams.has(s)) return 'hidden: its owner ended it here';
+  if (broadcasts.get(chainId)?.stream === s && !broadcasts.get(chainId).ended) return 'listed: you’re streaming it';
+  if (now - lb.ts < 90000) return 'listed: just started';
+  if (now - (liveSeen.get(s) || 0) < 75000) return `listed: working (last sign ${ago_(liveSeen.get(s))})`;
+  if ((liveNo.get(s) || 0) > (liveSeen.get(s) || 0)) return `hidden: its hub said it isn’t running (${ago_(liveNo.get(s))}; last sign of it ${ago_(liveSeen.get(s))})`;
+  if (hubDown.has(s) && now - hubDown.get(s) > 60000) return `hidden: its hub (${lb.payload.hub ? 'computer ' + lb.payload.hub.slice(0, 8) : 'the site'}) unreachable since ${ago_(hubDown.get(s))}`;
+  return `listed: no answer from its hub yet (last sign ${ago_(liveSeen.get(s))})`;
+}
 function liveStale(chainId, lb) {
   const s = lb.payload.stream, now = Date.now();
   if (deadStreams.has(s)) return true;   // its owner ended it from this page
@@ -6547,6 +6558,15 @@ views.network = { render() {
     h('div', { class: 'row', style: 'justify-content:space-between' }, h('h2', { style: 'margin:0' }, 'Network & diagnostics'),
       h('div', { class: 'row' }, pill(worst(checks), { ok: '✅ Everything working', warn: '⚠️ Partly working', error: '❌ Something is broken' }[worst(checks)]),
         h('button', { class: 'small', onclick: () => { runProbes(); probeStun(); toast('Re-running network tests…'); } }, 'Re-test'))),
+    (() => {   // every stream the channels say is live, and whether it's listed (and why not)
+      const rows = [];
+      for (const c of chains.values()) { if (c === main) continue; let d; try { d = E.derive(c.id); } catch { continue; } if (d?.kind !== 'channel') continue;
+        for (const lb of d.liveNow || []) rows.push([c.id, d, lb]); }
+      if (!rows.length) return h('div', { class: 'panel', style: 'margin-top:14px' }, h('b', {}, 'Live streams'), h('div', { class: 'sub' }, 'None of the channels this browser has loaded says it’s live.'));
+      return h('div', { class: 'panel', style: 'margin-top:14px' }, h('b', {}, `Live streams (${rows.length})`),
+        rows.map(([id, d, lb]) => { const why = liveWhy(id, lb); return h('div', { class: 'row', style: 'gap:8px;margin-top:4px;flex-wrap:wrap' }, h('a', { href: `#/live/${id}/${lb.hash}` }, `${d.profile.name}: ${lb.payload.title}`),
+          h('span', { class: 'sub' }, `${ago(lb.ts)} · ${lb.author !== d.owner ? 'from a computer' : 'from a browser'} · hub ${lb.payload.hub ? lb.payload.hub.slice(0, 8) : 'the site'}`), h('span', { style: why.startsWith('hidden') ? 'color:var(--warn)' : '' }, why)); }));
+    })(),
     h('div', { class: 'panel', style: 'margin-top:14px' }, checks.map(c => h('div', { class: 'check' }, h('div', {}, pill(c.level)),
       h('div', {}, h('b', {}, c.name), ' — ', c.text, c.fix ? h('div', { class: 'fix' }, '→ ' + c.fix) : null)))),
 
@@ -7857,7 +7877,7 @@ $('#terms-ok').onclick = () => { try { localStorage.setItem('opentube-terms', '1
 render(true);
 window.addEventListener('beforeunload', (e) => { if (E.miner || hosting.size) { e.preventDefault(); e.returnValue = ''; } });
 // Exposed for debugging in the console.
-window.opentube = { me, engine: E, net, wt, live: { broadcasts, viewing, hub: liveNet, liveStale }, nodeCtl, trackers: TRACKERS, diag, stale: { videoGone, checkVideos, scrape, vidSeen, vidChecked }, update: { check: checkPageUpdate, busy: pageBusy } };
+window.opentube = { me, engine: E, net, wt, live: { broadcasts, viewing, hub: liveNet, liveStale, liveWhy }, nodeCtl, trackers: TRACKERS, diag, stale: { videoGone, checkVideos, scrape, vidSeen, vidChecked }, update: { check: checkPageUpdate, busy: pageBusy } };
 
 // ---------------------------------------------------------------- connect
 if (params.get('net') === 'local') startLocal();
