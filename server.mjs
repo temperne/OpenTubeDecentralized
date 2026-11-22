@@ -510,14 +510,17 @@ function goLiveSink(log, obsCfg) {
   };
 }
 // The group stream: everyone streaming into one person's group (their own OBS keys, guests they invited, and browser
-// streams sent into it) combined by ffmpeg into one 1280×720 picture, laid out by how many are connected (1 full,
-// 2 side by side, 3–4 in 2×2, 5–9 in 3×3), audio mixed. When someone joins or leaves the picture is rebuilt, but it
-// stays the same live stream (a new start segment, timestamps continuing) and the recording is joined into one file.
-const GROUP_MAX = 9;
-function groupOf(hostCfg) { return hostCfg._group ||= { inputs: new Map(), ff: null, timer: null, out: null, t0: 0, restart: false, log: null }; }
+// streams sent into it) combined into one 1280×720 picture, laid out by how many are connected (1 full, 2 side by
+// side, 3–4 in 2×2, 5–9 in 3×3), audio mixed.
+// Nothing restarts when people join or leave: each input has its own decoder (ffmpeg → raw frames at its tile size,
+// and raw audio), this computer lays the picture out 30 times a second from each input's latest frame (a late input
+// just shows its last frame), and one encoder runs for the whole stream, fed at a steady pace. A join only changes
+// the layout; viewers never see the stream stall for it.
+const GROUP_MAX = 9, GW = 1280, GH = 720, GFPS = 30, AFRAME = 48000 / GFPS * 4;   // audio bytes per video frame (s16le stereo)
+function groupOf(hostCfg) { return hostCfg._group ||= { inputs: new Map(), enc: null, out: null, clock: null, timer: null, t0: 0, sent: 0, log: null, layoutKey: '' }; }
 function groupLayout(k) {
-  const cols = k <= 1 ? 1 : k <= 4 ? 2 : 3, rows = Math.ceil(k / cols), W = 1280, H = 720, cw = Math.floor(W / cols / 2) * 2, ch = Math.floor(H / rows / 2) * 2;
-  return { cols, rows, cw, ch, pos: [...Array(k)].map((_, i) => `${(i % cols) * cw}_${Math.floor(i / cols) * ch}`) };
+  const cols = k <= 1 ? 1 : k <= 4 ? 2 : 3, rows = Math.ceil(k / cols), cw = Math.floor(GW / cols / 2) * 2, ch = Math.floor(GH / rows / 2) * 2;
+  return { cols, rows, cw, ch, xy: [...Array(k)].map((_, i) => [(i % cols) * cw, Math.floor(i / cols) * ch]) };
 }
 // The host was already live on their channel from a browser (not into the group) when someone joined: their stream
 // joins the picture too, and once the group stream is on the channel, that stream points its viewers to it (a liveend
@@ -545,62 +548,107 @@ function absorbHostLive(hostCfg) {
   };
   point();
 }
+// a tile's frame into the picture (YUV 4:2:0 planes); resized nearest-neighbour when it isn't the tile's size yet
+const BLACK = (() => { const f = Buffer.alloc(GW * GH * 3 / 2, 128); f.fill(16, 0, GW * GH); return f; })();
+function drawTile(frame, img, iw, ih, x0, y0, cw, ch) {
+  const planes = [[0, GW, 0, iw, 1], [GW * GH, GW / 2, iw * ih, iw / 2, 2], [GW * GH * 5 / 4, GW / 2, iw * ih * 5 / 4, iw / 2, 2]];
+  for (const [fo, fs, io, is, sub] of planes) {
+    const tw = cw / sub, th = ch / sub, sw = iw / sub, sh = ih / sub, ox = x0 / sub, oy = y0 / sub;
+    if (sw === tw && sh === th) { for (let y = 0; y < th; y++) img.copy(frame, fo + (oy + y) * fs + ox, io + y * is, io + y * is + tw); continue; }
+    for (let y = 0; y < th; y++) { const sy = Math.min(sh - 1, Math.floor(y * sh / th)), row = fo + (oy + y) * fs + ox, srow = io + sy * is;
+      for (let x = 0; x < tw; x++) frame[row + x] = img[srow + Math.min(sw - 1, Math.floor(x * sw / tw))]; }
+  }
+}
+// one input's decoder, at its tile size: raw frames out (we keep the latest), raw audio out (we keep at most ½ s)
+function decStart(g, x, cw, ch) {
+  try { x.dec?.kill('SIGKILL'); } catch {}
+  const size = cw * ch * 3 / 2, log = g.log || console.log;
+  const dec = x.dec = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-probesize', '256000', '-analyzeduration', '500000', '-fflags', '+nobuffer+genpts+discardcorrupt',
+    '-f', x.fmt === 'webm' ? 'matroska' : 'mp4', '-i', 'pipe:0',
+    '-map', '0:v:0', '-vf', `scale=${cw}:${ch}:force_original_aspect_ratio=decrease,pad=${cw}:${ch}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p`, '-f', 'rawvideo', 'pipe:1',
+    '-map', '0:a:0?', '-f', 's16le', '-ar', '48000', '-ac', '2', 'pipe:3'], { stdio: ['pipe', 'pipe', 'pipe', 'pipe'] });
+  x.decW = cw; x.decH = ch;
+  let acc = []; let have = 0;
+  dec.stdout.on('data', (d) => { acc.push(d); have += d.length; if (have < size) return; let all = Buffer.concat(acc); const n = Math.floor(all.length / size);
+    x.last = Buffer.from(all.subarray((n - 1) * size, n * size)); x.lastW = cw; x.lastH = ch; all = all.subarray(n * size); acc = all.length ? [all] : []; have = all.length; });
+  dec.stdio[3].on('data', (d) => { x.aq = x.aq.length ? Buffer.concat([x.aq, d]) : d; if (x.aq.length > AFRAME * GFPS / 2) x.aq = x.aq.subarray(x.aq.length - AFRAME * GFPS / 4 & ~3); });   // keep it short: ¼ s when it piles up
+  dec.stderr.on('data', () => {}); dec.stdin.on('error', () => {}); dec.stdio[3].on('error', () => {});
+  dec.on('exit', () => { if (x.dec === dec) x.dec = null; });
+  dec.stdin.write(x.init); for (const c of x.recent) dec.stdin.write(c);   // from its latest video: decodes from the next keyframe
+}
+function relayout(hostCfg, why) {
+  const g = groupOf(hostCfg), list = [...g.inputs.values()].filter(x => !x.ended && x.init).sort((a, b) => a.at - b.at).slice(0, GROUP_MAX);
+  const L = groupLayout(list.length), key = list.map(x => x.id).join() + '|' + L.cw + 'x' + L.ch;
+  if (key === g.layoutKey) return; g.layoutKey = key; g.list = list; g.L = L;
+  for (const x of list) if (x.decW !== L.cw || x.decH !== L.ch || !x.dec) decStart(g, x, L.cw, L.ch);
+  (g.log || console.log)(`[group] ${list.length} in the picture: ${list.map(x => x.label).join(', ')}${why ? ` (${why})` : ''}`);
+}
 function groupStart(hostCfg) {
   const g = groupOf(hostCfg), log = g.log || console.log;
-  if (g.ff) return; clearTimeout(g.timer); g.timer = null;
-  if (!g.enc) absorbHostLive(hostCfg);   // first start: bring in the host's ongoing stream
-  const list = [...g.inputs.values()].filter(x => !x.ended && x.init).sort((a, b) => a.at - b.at).slice(0, GROUP_MAX); if (!list.length) return;
-  const k = list.length, L = groupLayout(k);
-  const vf = list.map((x, i) => `[${i}:v]setpts=PTS-STARTPTS,scale=${L.cw}:${L.ch}:force_original_aspect_ratio=decrease,pad=${L.cw}:${L.ch}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v${i}]`).join(';')
-    + ';' + (k > 1 ? list.map((x, i) => `[v${i}]`).join('') + `xstack=inputs=${k}:layout=${L.pos.join('|')}:fill=black,pad=1280:720:0:0:black[v]` : `[v0]pad=1280:720:(ow-iw)/2:(oh-ih)/2:black[v]`)
-    + ';' + list.map((x, i) => `[${i}:a]asetpts=PTS-STARTPTS,aresample=48000[a${i}]`).join(';') + ';' + list.map((x, i) => `[a${i}]`).join('') + (k > 1 ? `amix=inputs=${k}:normalize=0[a]` : 'anull[a]');
-  // stage 1, the picture: rebuilt whenever someone joins or leaves, output as MPEG-TS (which can be strung together)
-  const args = ['-hide_banner', '-loglevel', 'error', ...list.flatMap((x, i) => ['-thread_queue_size', '1024', '-f', x.fmt === 'webm' ? 'matroska' : 'mp4', '-i', 'pipe:' + (3 + i)]), '-filter_complex', vf, '-map', '[v]', '-map', '[a]',
-    // an intermediate only stage 2 reads: MPEG-2 at high quality costs far less CPU than a second H.264 encode
-    '-c:v', 'mpeg2video', '-q:v', '3', '-g', '15', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '160k', '-ar', '48000', '-f', 'mpegts', 'pipe:1'];
-  const ff = g.ff = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe', ...list.map(() => 'pipe')] });
-  ff.stderr.on('data', d => log('[group]', String(d).trim().slice(0, 200)));
-  // stage 2, the stream: one encoder for the whole session, timestamps from the clock, so viewers, the recording and
-  // YouTube see one continuous stream however often the picture is rebuilt
-  if (!g.enc) {
-    g.out = goLiveSink(log, hostCfg); g.t0 = Date.now();
-    const enc = g.enc = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-use_wallclock_as_timestamps', '1', '-fflags', '+genpts+discardcorrupt', '-f', 'mpegts', '-i', 'pipe:0',
-      '-vf', 'fps=30', '-af', 'aresample=async=1000', '-c:v', 'libx264', '-preset', 'superfast', '-tune', 'zerolatency', '-profile:v', 'high', '-level', '4.0', '-g', '30', '-keyint_min', '30', '-sc_threshold', '0',   // a keyframe (a fragment) every second: smoother delivery '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k', '-ar', '48000',
-      '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', 'pipe:1'], { stdio: ['pipe', 'pipe', 'pipe'] });
-    enc.stdin.on('error', () => {}); enc.stderr.on('data', d => log('[group]', String(d).trim().slice(0, 200)));
-    const out = g.out; let first = true;
-    enc.stdout.on('data', mp4Boxes((init) => out.init(init, 'video/mp4; codecs="avc1.640028,mp4a.40.2"').catch(e => log('[group]', e.message)), (frag) => out.fragment(frag, true)));   // frag_keyframe: every fragment starts with a keyframe, so a viewer can start at any of them
-    enc.on('exit', () => { out.end(); if (g.enc === enc) { g.enc = null; g.out = null; g.t0 = 0; } log('[group] ended'); });
-  }
-  const enc = g.enc;
-  ff.stdout.on('data', (d) => { try { enc.stdin.write(d); } catch {} });
-  ff.on('exit', (code) => {
-    g.ff = null; for (const x of g.inputs.values()) x.pipe = null;
-    const left = [...g.inputs.values()].filter(x => !x.ended);
-    if ((g.restart || code) && left.length) { g.restart = false; for (const x of left) x.chunks = []; setTimeout(() => groupStart(hostCfg), 500); }   // rebuilt picture, same stream
-    else { g.restart = false; for (const [id, x] of g.inputs) if (x.ended) g.inputs.delete(id); if (!left.length) { try { enc.stdin.end(); } catch {} } }
-  });
-  list.forEach((x, i) => { x.pipe = ff.stdio[3 + i]; x.pipe.on('error', () => {}); x.pipe.write(x.init); for (const c of x.chunks) x.pipe.write(c); x.chunks = []; });
-  log(`[group] ${k} in the picture: ${list.map(x => x.label).join(', ')}`);
+  clearTimeout(g.timer); g.timer = null;
+  if (g.enc) return relayout(hostCfg);
+  absorbHostLive(hostCfg);   // bring in the host's ongoing stream
+  relayout(hostCfg); if (!g.list?.length) return;
+  // the stream: one encoder for the whole session, raw frames in at a steady 30 per second, raw mixed audio beside them
+  g.out = goLiveSink(log, hostCfg); g.t0 = Date.now(); g.sent = 0;
+  const enc = g.enc = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error',
+    // big input queues: ffmpeg reads video and audio in step, and a small queue on one deadlocks the other at startup
+    '-thread_queue_size', '512', '-f', 'rawvideo', '-pix_fmt', 'yuv420p', '-s', `${GW}x${GH}`, '-r', String(GFPS), '-i', 'pipe:0',
+    '-thread_queue_size', '512', '-f', 's16le', '-ar', '48000', '-ac', '2', '-i', 'pipe:3',
+    '-map', '0:v', '-map', '1:a', '-c:v', 'libx264', '-preset', 'superfast', '-tune', 'zerolatency', '-profile:v', 'high', '-level', '4.0',
+    '-g', String(GFPS), '-keyint_min', String(GFPS), '-sc_threshold', '0', '-pix_fmt', 'yuv420p',   // a keyframe (a fragment) every second
+    '-c:a', 'aac', '-b:a', '128k', '-ar', '48000', '-max_interleave_delta', '0', '-flush_packets', '1',
+    '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', 'pipe:1'], { stdio: ['pipe', 'pipe', 'pipe', 'pipe'] });
+  enc.stdin.on('error', () => {}); enc.stdio[3].on('error', () => {}); enc.stderr.on('data', d => log('[group]', String(d).trim().slice(0, 200)));
+  const out = g.out;
+  enc.stdout.on('data', (d) => { g.s2 = (g.s2 || 0) + d.length; });
+  enc.stdout.on('data', mp4Boxes((init) => out.init(init, 'video/mp4; codecs="avc1.640028,mp4a.40.2"').catch(e => log('[group]', e.message)), (frag) => out.fragment(frag, true)));   // every fragment starts with a keyframe
+  enc.on('exit', () => { out.end(); clearInterval(g.clock); if (g.enc === enc) { g.enc = null; g.out = null; g.t0 = 0; g.layoutKey = ''; } log('[group] ended'); });
+  const frame = Buffer.alloc(GW * GH * 3 / 2), mix = new Int32Array(AFRAME / 2), abytes = Buffer.alloc(AFRAME);
+  let late = 0;
+  const tick = () => { try { tickInner(); } catch (e) { log('[group] frame:', e.message); } };
+  const tickInner = () => {
+    const due = Math.floor((Date.now() - g.t0) * GFPS / 1000) + 1;
+    if (due - g.sent > GFPS * 2) { late++; g.sent = due - 1; }   // over 2 s behind (an overloaded computer): skip ahead instead of piling up
+    while (g.sent < due) {
+      if (enc.stdin.writableLength > frame.length * GFPS * 2) { g.sent = due; late++; break; }   // the encoder is 2 s behind (overloaded): skip, don't pile up
+      BLACK.copy(frame); mix.fill(0);
+      const L = g.L, list = g.list || [];
+      list.forEach((x, i) => {
+        if (x.last) drawTile(frame, x.last, x.lastW, x.lastH, L.xy[i][0], L.xy[i][1], L.cw, L.ch);
+        const take = Math.min(AFRAME, x.aq.length) & ~3;   // this frame's share of its audio (whole stereo samples)
+        for (let k = 0; k < take; k += 2) mix[k >> 1] += x.aq.readInt16LE(k);
+        x.aq = x.aq.subarray(take);
+      });
+      for (let k = 0; k < mix.length; k++) abytes.writeInt16LE(Math.max(-32768, Math.min(32767, mix[k])), k * 2);
+      enc.stdin.write(Buffer.from(frame)); enc.stdio[3].write(Buffer.from(abytes)); g.sent++; g.s1 = (g.s1 || 0) + 1;
+    }
+  };
+  g.clock = setInterval(tick, 1000 / GFPS / 2);
+  if (process.env.LIVE_DEBUG && !g.dbg) g.dbg = setInterval(() => { log(`[group] per second: frames ${g.s1 || 0}, encoder ${g.s2 || 0} B, queued video ${g.enc?.stdin.writableLength ?? '-'} audio ${g.enc?.stdio[3].writableLength ?? '-'}, inputs ${[...g.inputs.values()].filter(x => !x.ended).map(x => x.label + ' ' + (x.inB || 0)).join(', ')}`); g.s1 = 0; g.s2 = 0; for (const x of g.inputs.values()) x.inB = 0; }, 1000);
 }
-function groupRebuild(hostCfg, why) { const g = groupOf(hostCfg); if (!g.ff) return groupStart(hostCfg); (g.log || console.log)(`[group] ${why}: rebuilding the picture`); g.restart = true; g.ff.kill('SIGTERM'); }
+function groupStop(hostCfg) { const g = groupOf(hostCfg); clearInterval(g.clock); g.clock = null; try { g.enc?.stdin.end(); g.enc?.stdio[3].end(); } catch {} for (const x of g.inputs.values()) try { x.dec?.kill('SIGKILL'); } catch {} }
 // One input (an OBS connection, or a browser stream this node pulls): returns the sink its data goes to.
 function groupInput(hostCfg, { id, label, user, kind, fmt = 'mp4', close = null }, log) {
   const g = groupOf(hostCfg); g.log = log;
-  const old = g.inputs.get(id); if (old && !old.ended) { old.ended = true; try { old.pipe?.end(); } catch {} try { old.close?.(); } catch {} }   // reconnecting replaces itself
+  const old = g.inputs.get(id); if (old && !old.ended) { old.ended = true; try { old.dec?.kill('SIGKILL'); } catch {} try { old.close?.(); } catch {} }   // reconnecting replaces itself
   if (!old && [...g.inputs.values()].filter(x => !x.ended).length >= GROUP_MAX) return `The group picture is full (${GROUP_MAX}).`;
-  const x = { id, label, user, kind, fmt, at: Date.now(), init: null, chunks: [], pipe: null, ended: false, close };
+  const x = { id, label, user, kind, fmt, at: Date.now(), init: null, recent: [], dec: null, last: null, aq: Buffer.alloc(0), ended: false, close };
   g.inputs.set(id, x);
-  const write = (b) => { if (x.pipe) { try { x.pipe.write(b); } catch {} } else { x.chunks.push(b); if (x.chunks.length > 600) x.chunks.splice(0, 300); } };
+  const write = (b) => { x.inB = (x.inB || 0) + b.length; x.recent.push(b); if (x.recent.length > 4) x.recent.shift(); if (x.dec) { try { x.dec.stdin.write(b); } catch {} } };
   return x.sink = {
     input: x,
-    init(bytes) { x.init = bytes; if (g.ff) return groupRebuild(hostCfg, `${label} joined`); if (!g.timer) g.timer = setTimeout(() => groupStart(hostCfg), 2500); },   // a moment for others connecting at the same time
+    init(bytes) {
+      x.init = bytes; x.recent = [];
+      if (g.enc) return relayout(hostCfg, `${label} joined`);
+      if (!g.timer) g.timer = setTimeout(() => groupStart(hostCfg), 1500);   // a moment for others connecting at the same time
+    },
     fragment(bytes) { write(bytes); },
     end() {
-      if (x.ended) return; x.ended = true; try { x.pipe?.end(); } catch {}
-      const left = [...g.inputs.values()].filter(y => !y.ended);
-      if (!left.length) { g.ff?.kill('SIGTERM'); clearTimeout(g.timer); g.timer = null; if (!g.ff) { try { g.enc?.stdin.end(); } catch {} g.inputs.clear(); } }   // the encoder finishes the stream
-      else if (g.ff) groupRebuild(hostCfg, `${label} left`);
+      if (x.ended) return; x.ended = true; try { x.dec?.kill('SIGKILL'); } catch {}
+      g.inputs.delete(id);
+      if (![...g.inputs.values()].some(y => !y.ended)) { clearTimeout(g.timer); g.timer = null; groupStop(hostCfg); return; }   // the encoder finishes the stream
+      relayout(hostCfg, `${label} left`);
     }
   };
 }
