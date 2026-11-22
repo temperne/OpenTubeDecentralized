@@ -621,34 +621,26 @@ Nothing is deleted from the chains; lists just leave out what doesn't work right
 
 ## Flash computers: a cloud server only while you stream
 
-A computer of yours can start a cloud server for a stream (a *flash computer*), keep a copy of everything it records, and delete it when it's done. The server does the heavy work: combining cameras, serving viewers. You pay the provider by the hour, only while it runs.
+A computer of yours runs cloud servers for streams (*flash computers*): it starts them, they do the heavy work (combining cameras, serving viewers), it keeps a copy of everything they record, and it shuts them down when they're done. Because a computer runs them, this works while nobody has the site open.
 
-Set the provider on that computer (the key stays there; it is never sent over the network, because control messages are signed but not encrypted):
+**Anyone the computer is shared with** (and its owner) attaches their own cloud login on **Devices → ⚡ Flash computers** and starts servers on their own account; each one runs as that person's computer, and their browser links it to their channels. The login is **sealed in the browser** to that computer's encryption key (P-256 ECDH, AES-256-GCM; the public half is in its signed status), so the peers and tunnels carrying the message see only ciphertext. The owner can also set theirs with the launcher (`--flash-provider=… --flash-token=…`).
 
-```bash
-node opentube.mjs --site=… --grant=… --flash-provider=hetzner --flash-token=YOUR_API_TOKEN [--flash-region=… --flash-plan=… --flash-image=… --flash-max-hours=6]
-```
+| provider | key | default region / plan / image | billed |
+|---|---|---|---|
+| Amazon Web Services (`aws`) | `ACCESS_KEY_ID:SECRET_ACCESS_KEY` | `us-east-1` / `c7a.large` / Canonical's Ubuntu 24.04 AMI for the region | per second |
+| Google Cloud (`gcp`) | a service account's JSON key | zone `us-central1-a` / `e2-standard-2` / Ubuntu 24.04 LTS | per second |
+| DigitalOcean | API token | `nyc3` / `s-2vcpu-4gb` / `ubuntu-24-04-x64` | per second |
+| Hetzner | API token | `ash` / `cpx21` / `ubuntu-24.04` | hourly |
+| Vultr | API key | `ewr` / `vhf-2c-4gb` / os_id `2284` | hourly |
+| Akamai / Linode | personal access token | `us-ord` / `g6-standard-2` / `linode/ubuntu24.04` | hourly |
+| Scaleway | `PROJECT_ID:SECRET_KEY` | `fr-par-1` / `PLAY2-MICRO` / `ubuntu_noble` | hourly |
+| custom (owner only) | — | your own commands: any CLI (Azure, Oracle, OVH, Cloudzy, …) | hourly |
 
-| provider | token | default region / plan / image |
-|---|---|---|
-| `aws` (Amazon EC2) | `ACCESS_KEY_ID:SECRET_ACCESS_KEY` | `us-east-1` / `c7a.large` / Canonical's current Ubuntu 24.04 AMI for the region |
-| `gcp` (Google Compute Engine) | a service account's JSON key (or the path to it) | zone `us-central1-a` / `e2-standard-2` / Ubuntu 24.04 LTS |
-| `hetzner` | API token | `ash` / `cpx21` / `ubuntu-24.04` |
-| `digitalocean` | API token | `nyc3` / `s-2vcpu-4gb` / `ubuntu-24-04-x64` |
-| `vultr` | API key | `ewr` / `vhf-2c-4gb` / os_id `2284` (Ubuntu 24.04) |
-| `linode` (Akamai) | personal access token | `us-ord` / `g6-standard-2` / `linode/ubuntu24.04` |
-| `scaleway` | `PROJECT_ID:SECRET_KEY` | zone `fr-par-1` / `PLAY2-MICRO` / `ubuntu_noble` |
-| `custom` | — | your own commands: anything with a CLI or API (Azure, Oracle, OVH, Cloudzy, …) |
+`custom` runs a create command with `OT_NAME` and `OT_USERDATA_FILE` (the setup script), expecting `{"id":"…","ip":"…"}` as its last line, and a delete command with `OT_ID`. Azure, for example: create `az vm create -g opentube -n "$OT_NAME" --image Ubuntu2404 --size Standard_F2s_v2 --custom-data "$OT_USERDATA_FILE" --generate-ssh-keys -o json --query "{id:name, ip:publicIpAddress}" | tr -d "\n"; echo`, delete `az vm delete -g opentube -n "$OT_ID" --yes`. Custom commands run on that computer, so only its owner may set them.
 
-`custom` runs `--flash-create-cmd` with `OT_NAME` and `OT_USERDATA_FILE` (the setup script) and expects `{"id":"…","ip":"…"}` as its last line, and `--flash-delete-cmd` with `OT_ID`. For example, Azure:
+**Lifecycle.** A new server installs Node.js, ffmpeg and OpenTube (2–4 minutes), comes online through a Cloudflare Tunnel, and is controlled like any of your computers (OBS, group, studio, update). Its recordings are copied to the parent (pinned, never trimmed). When it's idle with every recording copied, the parent shuts it down: **billed by the hour, at the end of the hour already paid for** (go live again before then and it just carries on); billed by the second, after a few idle minutes. **Shut down** does it at once; **keep** stops the automatic shutdown; a time limit (6 h by default) is the backstop.
 
-```bash
---flash-provider=custom \
---flash-create-cmd='az vm create -g opentube -n "$OT_NAME" --image Ubuntu2404 --size Standard_F2s_v2 --custom-data "$OT_USERDATA_FILE" --generate-ssh-keys -o json --query "{id:name, ip:publicIpAddress}" | tr -d "\n"; echo' \
---flash-delete-cmd='az vm delete -g opentube -n "$OT_ID" --yes'
-```
-
-Then on Devices that computer shows **⚡ Flash computers → Start a flash computer**. The new server installs Node.js, ffmpeg and OpenTube (2–4 minutes), comes online through a Cloudflare Tunnel, and your browser links it to the same channels as its parent: go live into its group, invite people, point OBS at it. Its recordings are copied to the parent (pinned, never trimmed). The parent deletes it once it's idle (15 min by default) with every recording copied, and at the latest after `--flash-max-hours` (6 by default). **Keep** on its row stops the idle deletion; **Delete now** deletes it at once.
+**Stats and scaling.** Viewers report how it's going with their check-ins (download speed, stalls, video in hand); hubs summarise it per stream (shown on the stream page: "100% smooth · 2.1 Mbps typical"), and each computer reports its streams' numbers in its status. With **add flash computers as viewers grow**, the parent starts another one on your account for every N viewers (up to a maximum), and one more when over a fifth of viewers are struggling. A flash computer of yours relays your live streams to viewers, so each one adds capacity; extra ones go idle when the stream ends and are shut down like any other.
 
 ## The studio: producing a group stream
 

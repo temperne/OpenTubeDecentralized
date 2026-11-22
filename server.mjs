@@ -52,6 +52,23 @@ fs.mkdirSync(DATA, { recursive: true });
 const keyFile = path.join(DATA, 'key.json');
 if (!fs.existsSync(keyFile)) fs.writeFileSync(keyFile, JSON.stringify(await core.newIdentity()), { mode: 0o600 });
 const signer = await core.signer(JSON.parse(fs.readFileSync(keyFile, 'utf8')));
+// An encryption key (P-256 ECDH) for secrets the owner sends from the site (a cloud provider's API key): its public half
+// is in this computer's signed status; a browser seals the secret to it (AES-256-GCM), so the peers and tunnels that
+// pass the message on see only ciphertext.
+const encKey = (() => {
+  const f = path.join(DATA, 'enc.json'), e = crypto.createECDH('prime256v1');
+  try { e.setPrivateKey(Buffer.from(JSON.parse(fs.readFileSync(f, 'utf8')).d, 'base64url')); }
+  catch { e.generateKeys(); fs.writeFileSync(f, JSON.stringify({ d: e.getPrivateKey('base64url') }), { mode: 0o600 }); }
+  return e;
+})();
+const encPub = encKey.getPublicKey('base64url');
+function unseal(s) {   // { epk, iv, ct } (all base64url; ct ends with the 16-byte GCM tag) -> the sender's JSON
+  const shared = encKey.computeSecret(Buffer.from(String(s.epk), 'base64url'));
+  const key = crypto.createHash('sha256').update(Buffer.concat([shared, Buffer.from('opentube-seal-v1')])).digest();
+  const ct = Buffer.from(String(s.ct), 'base64url'), d = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(String(s.iv), 'base64url'));
+  d.setAuthTag(ct.subarray(ct.length - 16));
+  return JSON.parse(Buffer.concat([d.update(ct.subarray(0, ct.length - 16)), d.final()]).toString('utf8'));
+}
 const nodePeerId = (pub) => crypto.createHash('sha1').update('opentube-node:' + pub).digest('hex');   // this node's WebTorrent peer ID
 // The owner's grant (from the My node command): this node is theirs.
 const GRANT = (() => { try { return process.env.NODE_GRANT ? JSON.parse(Buffer.from(process.env.NODE_GRANT, 'base64url').toString('utf8')) : null; } catch { return null; } })();
@@ -272,7 +289,7 @@ function liveRelays() {
       else if (m.t === 'unchild') kids.unchild(m.peer);
       else if (m.t === 'signal') kids.signal(m.from, m.data);
       else if (m.t === 'ended' || m.t === 'nostream') { r.close(); relaying.delete(stream); }
-      else if (m.t === 'viewers') liveStats.set(stream, m);
+      else if (m.t === 'viewers') { m.at = Date.now(); liveStats.set(stream, m); }
     }, () => { kids.close(); if (RTCPC) hub.send({ t: 'watch', stream, segOnly: true, media: false, dcSlots: 16, slots: 0, relay: true }); }, hubUrlFor(chain, stream));
     const alive = setInterval(() => hub.send({ t: 'alive', stream }), 15000);
     const r = { close: () => { clearInterval(alive); rec?.finish(); (chunks?.end() || Promise.resolve()).then(() => { hub.send({ t: 'leave', stream }); kids.close(); hub.close(); }); } };
@@ -307,92 +324,95 @@ async function checkForUpdate() {
   } catch (e) { log('[update] check failed:', e.message); }
 }
 setTimeout(checkForUpdate, 2 * 60000); setInterval(checkForUpdate, 10 * 60000);
-// ---- flash computers: this computer starts a cloud server for a stream (it does the heavy work: combining cameras,
-// serving viewers), keeps a copy of everything it records, and deletes it once it's idle and every recording is copied
-// here (or at the time limit). The provider's API key stays on this computer: it's set with the launcher
-// (--flash-provider=… --flash-token=…) and never sent over the network (control messages are signed, not encrypted).
+// ---- flash computers: a cloud server started for a stream (it does the heavy work: combining cameras, serving
+// viewers). Anyone this computer is shared with (and its owner) can attach their own cloud login and start servers on
+// their own account; each runs as that person's computer. This computer keeps a copy of every recording a flash
+// computer makes, and deletes it once it's idle with every recording copied here (or at the time limit).
+// Logins are set from the site, sealed in the person's browser to this computer's encryption key (see unseal), or by the
+// owner with the launcher (--flash-provider=… --flash-token=…). They're never sent anywhere in the clear.
 const flashFile = path.join(DATA, 'flash.json');
-const flash = Object.assign({ provider: null, token: null, region: null, plan: null, image: null, maxHours: 6, idleMin: 15, createCmd: null, deleteCmd: null, children: [] },
-  (() => { try { return JSON.parse(fs.readFileSync(flashFile, 'utf8')); } catch { return {}; } })());
-for (const [k, e] of [['provider', 'FLASH_PROVIDER'], ['token', 'FLASH_TOKEN'], ['region', 'FLASH_REGION'], ['plan', 'FLASH_PLAN'], ['image', 'FLASH_IMAGE'], ['createCmd', 'FLASH_CREATE_CMD'], ['deleteCmd', 'FLASH_DELETE_CMD']]) if (process.env[e]) flash[k] = process.env[e];
-if (process.env.FLASH_MAX_HOURS) flash.maxHours = Number(process.env.FLASH_MAX_HOURS) || 6;
-if (process.env.FLASH_IDLE_MIN) flash.idleMin = Number(process.env.FLASH_IDLE_MIN) || 15;   // (tests use a short one)
+const flash = Object.assign({ users: {}, children: [] }, (() => { try { return JSON.parse(fs.readFileSync(flashFile, 'utf8')); } catch { return {}; } })());
+if (flash.provider !== undefined) { const { provider, token, region, plan, image, maxHours, idleMin, createCmd, deleteCmd } = flash; if (GRANT && provider) flash.users[GRANT.user] = { provider, token, region, plan, image, maxHours, idleMin, createCmd, deleteCmd }; for (const k of ['provider', 'token', 'region', 'plan', 'image', 'maxHours', 'idleMin', 'createCmd', 'deleteCmd']) delete flash[k]; }   // older single-login file
+if (GRANT && process.env.FLASH_PROVIDER) {   // the owner's login from the launcher
+  const u = flash.users[GRANT.user] ||= {};
+  for (const [k, e] of [['provider', 'FLASH_PROVIDER'], ['token', 'FLASH_TOKEN'], ['region', 'FLASH_REGION'], ['plan', 'FLASH_PLAN'], ['image', 'FLASH_IMAGE'], ['createCmd', 'FLASH_CREATE_CMD'], ['deleteCmd', 'FLASH_DELETE_CMD']]) if (process.env[e]) u[k] = process.env[e];
+  if (process.env.FLASH_MAX_HOURS) u.maxHours = Number(process.env.FLASH_MAX_HOURS) || 6;
+  if (process.env.FLASH_IDLE_MIN) u.idleMin = Number(process.env.FLASH_IDLE_MIN) || 15;   // (tests use a short one)
+}
 const saveFlash = () => { try { fs.writeFileSync(flashFile, JSON.stringify(flash, null, 2), { mode: 0o600 }); } catch {} };
-if (flash.provider) saveFlash();
+saveFlash();
+const OWNER_ONLY_PROVIDERS = ['custom', 'local'];   // shell commands / processes on this computer: only its owner
+const mayFlash = (user) => user === GRANT?.user || !!obsStore.users[user]?.can?.length && !obsStore.users[user]?.guestOf;
+const flashCfgOf = (user) => flash.users[user] || null;
+const opt = (cfg, k) => cfg[k] || FLASH_PROVIDERS[cfg.provider]?.defaults?.[k];
+const bearer = (cfg) => ({ Authorization: 'Bearer ' + cfg.token });
 const FLASH_PROVIDERS = {
-  // each: defaults (region, plan, image), create(name, userData) -> { id, ip }, remove(id)
-  hetzner: { defaults: { region: 'ash', plan: 'cpx21', image: 'ubuntu-24.04' }, api: 'https://api.hetzner.cloud/v1',
-    async create(name, ud) { const r = await flashApi('POST', '/servers', { name, server_type: flashOpt('plan'), image: flashOpt('image'), location: flashOpt('region'), user_data: ud }); return { id: String(r.server.id), ip: r.server.public_net?.ipv4?.ip || null }; },
-    async remove(id) { await flashApi('DELETE', `/servers/${id}`); } },
-  digitalocean: { defaults: { region: 'nyc3', plan: 's-2vcpu-4gb', image: 'ubuntu-24-04-x64' }, api: 'https://api.digitalocean.com/v2',
-    async create(name, ud) { const r = await flashApi('POST', '/droplets', { name, region: flashOpt('region'), size: flashOpt('plan'), image: flashOpt('image'), user_data: ud }); return { id: String(r.droplet.id), ip: null }; },
-    async remove(id) { await flashApi('DELETE', `/droplets/${id}`); } },
-  vultr: { defaults: { region: 'ewr', plan: 'vhf-2c-4gb', image: '2284' }, api: 'https://api.vultr.com/v2',   // image: Vultr's os_id (2284 = Ubuntu 24.04)
-    async create(name, ud) { const r = await flashApi('POST', '/instances', { region: flashOpt('region'), plan: flashOpt('plan'), os_id: Number(flashOpt('image')), label: name, hostname: name, user_data: Buffer.from(ud).toString('base64') }); return { id: String(r.instance.id), ip: r.instance.main_ip || null }; },
-    async remove(id) { await flashApi('DELETE', `/instances/${id}`); } },
+  // each: defaults (region, plan, image), create(cfg, name, setupScript, tag) -> { id, ip }, remove(cfg, id)
+  hetzner: { billing: 'hour', defaults: { region: 'ash', plan: 'cpx21', image: 'ubuntu-24.04' },
+    async create(c, name, ud) { const r = await flashFetch('POST', 'https://api.hetzner.cloud/v1/servers', { name, server_type: opt(c, 'plan'), image: opt(c, 'image'), location: opt(c, 'region'), user_data: ud }, bearer(c)); return { id: String(r.server.id), ip: r.server.public_net?.ipv4?.ip || null }; },
+    async remove(c, id) { await flashFetch('DELETE', `https://api.hetzner.cloud/v1/servers/${id}`, null, bearer(c)); } },
+  digitalocean: { billing: 'second', defaults: { region: 'nyc3', plan: 's-2vcpu-4gb', image: 'ubuntu-24-04-x64' },
+    async create(c, name, ud) { const r = await flashFetch('POST', 'https://api.digitalocean.com/v2/droplets', { name, region: opt(c, 'region'), size: opt(c, 'plan'), image: opt(c, 'image'), user_data: ud }, bearer(c)); return { id: String(r.droplet.id), ip: null }; },
+    async remove(c, id) { await flashFetch('DELETE', `https://api.digitalocean.com/v2/droplets/${id}`, null, bearer(c)); } },
+  vultr: { billing: 'hour', defaults: { region: 'ewr', plan: 'vhf-2c-4gb', image: '2284' },   // image: Vultr's os_id (2284 = Ubuntu 24.04)
+    async create(c, name, ud) { const r = await flashFetch('POST', 'https://api.vultr.com/v2/instances', { region: opt(c, 'region'), plan: opt(c, 'plan'), os_id: Number(opt(c, 'image')), label: name, hostname: name, user_data: Buffer.from(ud).toString('base64') }, bearer(c)); return { id: String(r.instance.id), ip: r.instance.main_ip || null }; },
+    async remove(c, id) { await flashFetch('DELETE', `https://api.vultr.com/v2/instances/${id}`, null, bearer(c)); } },
   // Amazon EC2 (token: ACCESS_KEY_ID:SECRET_ACCESS_KEY; region e.g. us-east-1; plan an instance type). The image is
-  // Canonical's current Ubuntu 24.04, looked up in the region (SSM public parameter) unless --flash-image names an AMI.
-  aws: { defaults: { region: 'us-east-1', plan: 'c7a.large', image: '' },
-    async create(name, ud) {
-      const region = flashOpt('region');
-      let ami = flashOpt('image');
-      if (!ami) { const r = await awsCall('ssm', region, 'POST', '/', JSON.stringify({ Name: '/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id' }), { 'content-type': 'application/x-amz-json-1.1', 'x-amz-target': 'AmazonSSM.GetParameter' }); ami = JSON.parse(r).Parameter.Value; }
-      const q = new URLSearchParams({ Action: 'RunInstances', Version: '2016-11-15', ImageId: ami, InstanceType: flashOpt('plan'), MinCount: '1', MaxCount: '1', UserData: Buffer.from(ud).toString('base64'),
-        'InstanceInitiatedShutdownBehavior': 'terminate', 'TagSpecification.1.ResourceType': 'instance', 'TagSpecification.1.Tag.1.Key': 'Name', 'TagSpecification.1.Tag.1.Value': name });
-      const xml = await awsCall('ec2', region, 'POST', '/', q.toString(), { 'content-type': 'application/x-www-form-urlencoded; charset=utf-8' });
+  // Canonical's current Ubuntu 24.04 for the region (an SSM public parameter) unless an AMI id is given.
+  aws: { billing: 'second', defaults: { region: 'us-east-1', plan: 'c7a.large', image: '' },
+    async create(c, name, ud) {
+      const region = opt(c, 'region'); let ami = opt(c, 'image');
+      if (!ami) { const r = await awsCall(c, 'ssm', region, 'POST', '/', JSON.stringify({ Name: '/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id' }), { 'content-type': 'application/x-amz-json-1.1', 'x-amz-target': 'AmazonSSM.GetParameter' }); ami = JSON.parse(r).Parameter.Value; }
+      const q = new URLSearchParams({ Action: 'RunInstances', Version: '2016-11-15', ImageId: ami, InstanceType: opt(c, 'plan'), MinCount: '1', MaxCount: '1', UserData: Buffer.from(ud).toString('base64'),
+        InstanceInitiatedShutdownBehavior: 'terminate', 'TagSpecification.1.ResourceType': 'instance', 'TagSpecification.1.Tag.1.Key': 'Name', 'TagSpecification.1.Tag.1.Value': name });
+      const xml = await awsCall(c, 'ec2', region, 'POST', '/', q.toString(), { 'content-type': 'application/x-www-form-urlencoded; charset=utf-8' });
       const id = /<instanceId>([^<]+)<\/instanceId>/.exec(xml)?.[1]; if (!id) throw new Error('EC2 didn’t return an instance: ' + xml.slice(0, 200));
       return { id, ip: null };
     },
-    async remove(id) { await awsCall('ec2', flashOpt('region'), 'POST', '/', new URLSearchParams({ Action: 'TerminateInstances', Version: '2016-11-15', 'InstanceId.1': id }).toString(), { 'content-type': 'application/x-www-form-urlencoded; charset=utf-8' }); } },
-  // Google Compute Engine (token: a service account's JSON key, or a path to it; region a zone, e.g. us-central1-a)
-  gcp: { defaults: { region: 'us-central1-a', plan: 'e2-standard-2', image: 'projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64' },
-    async create(name, ud) {
-      const { project, bearer } = await gcpAuth(), zone = flashOpt('region');
-      const body = { name, machineType: `zones/${zone}/machineTypes/${flashOpt('plan')}`,
-        disks: [{ boot: true, autoDelete: true, initializeParams: { sourceImage: flashOpt('image'), diskSizeGb: '30' } }],
+    async remove(c, id) { await awsCall(c, 'ec2', opt(c, 'region'), 'POST', '/', new URLSearchParams({ Action: 'TerminateInstances', Version: '2016-11-15', 'InstanceId.1': id }).toString(), { 'content-type': 'application/x-www-form-urlencoded; charset=utf-8' }); } },
+  // Google Compute Engine (token: a service account's JSON key; region a zone, e.g. us-central1-a)
+  gcp: { billing: 'second', defaults: { region: 'us-central1-a', plan: 'e2-standard-2', image: 'projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64' },
+    async create(c, name, ud) {
+      const { project, auth } = await gcpAuth(c), zone = opt(c, 'region');
+      await flashFetch('POST', `https://compute.googleapis.com/compute/v1/projects/${project}/zones/${zone}/instances`, { name, machineType: `zones/${zone}/machineTypes/${opt(c, 'plan')}`,
+        disks: [{ boot: true, autoDelete: true, initializeParams: { sourceImage: opt(c, 'image'), diskSizeGb: '30' } }],
         networkInterfaces: [{ network: 'global/networks/default', accessConfigs: [{ type: 'ONE_TO_ONE_NAT', name: 'External NAT' }] }],
-        metadata: { items: [{ key: 'startup-script', value: ud }] }, labels: { opentube: 'flash' } };
-      await flashFetch('POST', `https://compute.googleapis.com/compute/v1/projects/${project}/zones/${zone}/instances`, body, { Authorization: bearer });
+        metadata: { items: [{ key: 'startup-script', value: ud }] }, labels: { opentube: 'flash' } }, { Authorization: auth });
       return { id: `${zone}/${name}`, ip: null };
     },
-    async remove(id) { const { project, bearer } = await gcpAuth(), [zone, name] = id.split('/'); await flashFetch('DELETE', `https://compute.googleapis.com/compute/v1/projects/${project}/zones/${zone}/instances/${name}`, null, { Authorization: bearer }); } },
-  // Akamai / Linode (token: a personal access token; metadata user data needs a region with Metadata support)
-  linode: { defaults: { region: 'us-ord', plan: 'g6-standard-2', image: 'linode/ubuntu24.04' },
-    async create(name, ud) {
-      const r = await flashFetch('POST', 'https://api.linode.com/v4/linode/instances', { label: name, region: flashOpt('region'), type: flashOpt('plan'), image: flashOpt('image'),
-        root_pass: crypto.randomBytes(24).toString('base64url') + 'A1!', metadata: { user_data: Buffer.from(ud).toString('base64') }, tags: ['opentube-flash'] }, { Authorization: 'Bearer ' + flash.token });
-      return { id: String(r.id), ip: r.ipv4?.[0] || null };
-    },
-    async remove(id) { await flashFetch('DELETE', `https://api.linode.com/v4/linode/instances/${id}`, null, { Authorization: 'Bearer ' + flash.token }); } },
+    async remove(c, id) { const { project, auth } = await gcpAuth(c), [zone, name] = id.split('/'); await flashFetch('DELETE', `https://compute.googleapis.com/compute/v1/projects/${project}/zones/${zone}/instances/${name}`, null, { Authorization: auth }); } },
+  // Akamai / Linode (token: a personal access token; user data needs a region with Metadata support)
+  linode: { billing: 'hour', defaults: { region: 'us-ord', plan: 'g6-standard-2', image: 'linode/ubuntu24.04' },
+    async create(c, name, ud) { const r = await flashFetch('POST', 'https://api.linode.com/v4/linode/instances', { label: name, region: opt(c, 'region'), type: opt(c, 'plan'), image: opt(c, 'image'),
+        root_pass: crypto.randomBytes(24).toString('base64url') + 'A1!', metadata: { user_data: Buffer.from(ud).toString('base64') }, tags: ['opentube-flash'] }, bearer(c)); return { id: String(r.id), ip: r.ipv4?.[0] || null }; },
+    async remove(c, id) { await flashFetch('DELETE', `https://api.linode.com/v4/linode/instances/${id}`, null, bearer(c)); } },
   // Scaleway (token: PROJECT_ID:SECRET_KEY; region a zone, e.g. fr-par-1)
-  scaleway: { defaults: { region: 'fr-par-1', plan: 'PLAY2-MICRO', image: 'ubuntu_noble' },
-    async create(name, ud) {
-      const [project, key] = String(flash.token).split(':'), zone = flashOpt('region'), base = `https://api.scaleway.com/instance/v1/zones/${zone}`, hd = { 'X-Auth-Token': key };
-      const r = await flashFetch('POST', `${base}/servers`, { name, project, commercial_type: flashOpt('plan'), image: flashOpt('image'), dynamic_ip_required: true, tags: ['opentube-flash'] }, hd);
-      const id = r.server.id;
-      await flashFetch('PATCH', `${base}/servers/${id}/user_data/cloud-init`, ud, { ...hd, 'content-type': 'text/plain' });
-      await flashFetch('POST', `${base}/servers/${id}/action`, { action: 'poweron' }, hd);
-      return { id, ip: null };
+  scaleway: { billing: 'hour', defaults: { region: 'fr-par-1', plan: 'PLAY2-MICRO', image: 'ubuntu_noble' },
+    async create(c, name, ud) {
+      const [project, key] = String(c.token).split(':'), base = `https://api.scaleway.com/instance/v1/zones/${opt(c, 'region')}`, hd = { 'X-Auth-Token': key };
+      const r = await flashFetch('POST', `${base}/servers`, { name, project, commercial_type: opt(c, 'plan'), image: opt(c, 'image'), dynamic_ip_required: true, tags: ['opentube-flash'] }, hd);
+      await flashFetch('PATCH', `${base}/servers/${r.server.id}/user_data/cloud-init`, ud, { ...hd, 'content-type': 'text/plain' });
+      await flashFetch('POST', `${base}/servers/${r.server.id}/action`, { action: 'poweron' }, hd);
+      return { id: r.server.id, ip: null };
     },
-    async remove(id) { const [, key] = String(flash.token).split(':'); await flashFetch('POST', `https://api.scaleway.com/instance/v1/zones/${flashOpt('region')}/servers/${id}/action`, { action: 'terminate' }, { 'X-Auth-Token': key }); } },
-  // any other provider (Azure, Oracle, OVH, Cloudzy, …): your own commands, e.g. its CLI. create gets OT_NAME and
-  // OT_USERDATA_FILE (the setup script) and prints
-  // {"id": "...", "ip": "..."}; delete gets OT_ID.
-  custom: { defaults: {},
-    async create(name, ud) { const f = path.join(DATA, `flash-${name}.sh`); fs.writeFileSync(f, ud, { mode: 0o600 }); const out = await flashRun(flash.createCmd, { OT_NAME: name, OT_USERDATA_FILE: f }); const j = JSON.parse(out.trim().split('\n').pop()); return { id: String(j.id), ip: j.ip || null }; },
-    async remove(id) { await flashRun(flash.deleteCmd, { OT_ID: String(id) }); } },
-  // testing on one machine: the flash computer is another OpenTube process here
-  local: { defaults: {},
-    async create(name, ud, tag) {
-      const port = 20000 + Math.floor(Math.random() * 20000), dir = path.join(DATA, 'flash-local', tag);
+    async remove(c, id) { const [, key] = String(c.token).split(':'); await flashFetch('POST', `https://api.scaleway.com/instance/v1/zones/${opt(c, 'region')}/servers/${id}/action`, { action: 'terminate' }, { 'X-Auth-Token': key }); } },
+  // any other provider (Azure, Oracle, OVH, Cloudzy, …), owner only: your own commands, e.g. its CLI. create gets
+  // OT_NAME and OT_USERDATA_FILE (the setup script) and prints {"id": "...", "ip": "..."}; delete gets OT_ID.
+  custom: { billing: 'hour', defaults: {},
+    async create(c, name, ud) { const f = path.join(DATA, `flash-${name}.sh`); fs.writeFileSync(f, ud, { mode: 0o600 }); const out = await flashRun(c.createCmd, { OT_NAME: name, OT_USERDATA_FILE: f }); const j = JSON.parse(out.trim().split('\n').pop()); return { id: String(j.id), ip: j.ip || null }; },
+    async remove(c, id) { await flashRun(c.deleteCmd, { OT_ID: String(id) }); } },
+  // testing on one machine (owner only): the flash computer is another OpenTube process here
+  local: { billing: 'second', defaults: {},
+    async create(c, name, ud, tag, grant) {
+      const port = 20000 + Math.floor(Math.random() * 20000), dir = path.join(DATA, 'flash-local', tag), g = JSON.parse(Buffer.from(grant, 'base64url').toString('utf8'));
       const p = spawn(process.execPath, [path.join(DIR, 'server.mjs')], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PORT: String(port), DATA_DIR: path.join(dir, 'data'), VIDEO_DIR: path.join(dir, 'videos'),
-        PEERS: `ws://127.0.0.1:${PORT}/ot`, MINE: 'own', RANKER: '0', MESH: '0', NODE_GRANT: process.env.NODE_GRANT, NODE_SITE: process.env.NODE_SITE || '', NODE_ROLES: 'node,obs,host', NODE_LABEL: name,
-        RTMP_PORT: String(port + 1), HOST_USER: GRANT.user, ENTRY: '1', FLASH_PARENT: signer.pub, FLASH_TAG: tag, FLASH_PROVIDER: '', FLASH_TOKEN: '', LIVE_DEBUG: process.env.LIVE_DEBUG || '' } });
+        PEERS: `ws://127.0.0.1:${PORT}/ot`, MINE: 'own', RANKER: '0', MESH: '0', NODE_GRANT: grant, NODE_SITE: process.env.NODE_SITE || '', NODE_ROLES: 'node,obs,host', NODE_LABEL: name,
+        RTMP_PORT: String(port + 1), HOST_USER: g.user, ENTRY: '1', FLASH_PARENT: signer.pub, FLASH_TAG: tag, FLASH_PROVIDER: '', FLASH_TOKEN: '', LIVE_DEBUG: process.env.LIVE_DEBUG || '' } });
       p.stdout.on('data', d => { for (const l of String(d).split('\n')) if (l.trim() && process.env.FLASH_DEBUG) log(`[flash ${tag}]`, l.trim().slice(0, 200)); });
       p.stderr.on('data', () => {});
       (flashLocal ||= new Map()).set(tag, p); return { id: tag, ip: '127.0.0.1' };
     },
-    async remove(id) { flashLocal?.get(id)?.kill('SIGTERM'); flashLocal?.delete(id); } }
+    async remove(c, id) { flashLocal?.get(id)?.kill('SIGTERM'); flashLocal?.delete(id); } }
 };
 var flashLocal = null;
 // any provider's JSON (or text) API
@@ -404,52 +424,40 @@ async function flashFetch(method, url, body, headers = {}) {
   try { return text ? JSON.parse(text) : {}; } catch { return text; }
 }
 // AWS Signature Version 4 (token: ACCESS_KEY_ID:SECRET_ACCESS_KEY)
-async function awsCall(service, region, method, p, body, headers) {
-  const [ak, sk] = String(flash.token || '').split(':'); if (!ak || !sk) throw new Error('the AWS token is ACCESS_KEY_ID:SECRET_ACCESS_KEY');
-  const host = `${service}.${region}.amazonaws.com`, now = new Date(), amzDate = now.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, ''), day = amzDate.slice(0, 8);
+async function awsCall(c, service, region, method, p, body, headers) {
+  const [ak, sk] = String(c.token || '').split(':'); if (!ak || !sk) throw new Error('the AWS key is ACCESS_KEY_ID:SECRET_ACCESS_KEY');
+  const host = `${service}.${region}.amazonaws.com`, amzDate = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, ''), day = amzDate.slice(0, 8);
   const sha = (s) => crypto.createHash('sha256').update(s).digest('hex'), hmac = (k, s) => crypto.createHmac('sha256', k).update(s).digest();
   const hd = { host, 'x-amz-date': amzDate, ...Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v])) };
   const names = Object.keys(hd).sort(), signed = names.join(';');
   const canonical = [method, p, '', names.map(k => `${k}:${String(hd[k]).trim()}\n`).join(''), signed, sha(body)].join('\n');
-  const scope = `${day}/${region}/${service}/aws4_request`;
-  const toSign = ['AWS4-HMAC-SHA256', amzDate, scope, sha(canonical)].join('\n');
-  const key = hmac(hmac(hmac(hmac('AWS4' + sk, day), region), service), 'aws4_request');
-  const sig = crypto.createHmac('sha256', key).update(toSign).digest('hex');
+  const scope = `${day}/${region}/${service}/aws4_request`, toSign = ['AWS4-HMAC-SHA256', amzDate, scope, sha(canonical)].join('\n');
+  const sig = crypto.createHmac('sha256', hmac(hmac(hmac(hmac('AWS4' + sk, day), region), service), 'aws4_request')).update(toSign).digest('hex');
   const r = await fetch(`https://${host}${p}`, { method, headers: { ...hd, Authorization: `AWS4-HMAC-SHA256 Credential=${ak}/${scope}, SignedHeaders=${signed}, Signature=${sig}` }, body, signal: AbortSignal.timeout(30000) });
   const text = await r.text(); if (!r.ok) throw new Error(`AWS ${service} answered ${r.status}: ${text.slice(0, 300)}`);
   return text;
 }
-// Google: a service account's JSON key (the token itself, or a path to the file) -> an OAuth access token (1 h)
-let gcpTok = null;
-async function gcpAuth() {
-  if (gcpTok && gcpTok.exp > Date.now() + 60000) return gcpTok;
-  let raw = String(flash.token || ''); if (!raw.trim().startsWith('{')) raw = fs.readFileSync(raw, 'utf8');
-  const sa = JSON.parse(raw), now = Math.floor(Date.now() / 1000);
-  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+// Google: a service account's JSON key -> an OAuth access token (1 h), per login
+const gcpTok = new Map();
+async function gcpAuth(c) {
+  const k = crypto.createHash('sha256').update(String(c.token)).digest('hex'), have = gcpTok.get(k); if (have && have.exp > Date.now() + 60000) return have;
+  let raw = String(c.token || ''); if (!raw.trim().startsWith('{')) raw = fs.readFileSync(raw, 'utf8');
+  const sa = JSON.parse(raw), now = Math.floor(Date.now() / 1000), b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
   const unsigned = b64({ alg: 'RS256', typ: 'JWT' }) + '.' + b64({ iss: sa.client_email, scope: 'https://www.googleapis.com/auth/compute', aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600 });
   const jwt = unsigned + '.' + crypto.sign('RSA-SHA256', Buffer.from(unsigned), sa.private_key).toString('base64url');
   const r = await flashFetch('POST', 'https://oauth2.googleapis.com/token', `grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${jwt}`, { 'content-type': 'application/x-www-form-urlencoded' });
-  gcpTok = { project: sa.project_id, bearer: 'Bearer ' + r.access_token, exp: Date.now() + (r.expires_in || 3600) * 1000 };
-  return gcpTok;
-}
-
-const flashOpt = (k) => flash[k] || FLASH_PROVIDERS[flash.provider]?.defaults?.[k];
-async function flashApi(method, p, body) {
-  const pr = FLASH_PROVIDERS[flash.provider];
-  const r = await fetch(pr.api + p, { method, headers: { Authorization: 'Bearer ' + flash.token, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(30000) });
-  const text = await r.text();
-  if (!r.ok) throw new Error(`${flash.provider} answered ${r.status}: ${text.slice(0, 200)}`);
-  return text ? JSON.parse(text) : {};
+  const t = { project: sa.project_id, auth: 'Bearer ' + r.access_token, exp: Date.now() + (r.expires_in || 3600) * 1000 }; gcpTok.set(k, t); return t;
 }
 function flashRun(cmd, env) {
-  return new Promise((res, rej) => { if (!cmd) return rej(new Error('no command set (FLASH_CREATE_CMD / FLASH_DELETE_CMD)'));
+  return new Promise((res, rej) => { if (!cmd) return rej(new Error('no command set'));
     const p = spawn('sh', ['-c', cmd], { env: { ...process.env, ...env } }); let out = '', err = '';
     p.stdout.on('data', d => out += d); p.stderr.on('data', d => err += d);
     p.on('exit', c => c === 0 ? res(out) : rej(new Error(`command failed (${c}): ${err.slice(0, 200)}`))); });
 }
-// the setup script the new server runs once: Node.js and ffmpeg, then OpenTube as a service, as a flash computer of this one
-function flashUserData(tag) {
-  const site = process.env.NODE_SITE, grant = process.env.NODE_GRANT;
+// the setup script the new server runs once: Node.js and ffmpeg, then OpenTube as a service, as a flash computer of
+// this one, belonging to the person who started it (their grant)
+function flashUserData(tag, grant) {
+  const site = process.env.NODE_SITE;
   const args = [`--site=${site}`, `--grant=${grant}`, '--tunnel', `--name=${tag}`, `--flash-parent=${signer.pub}`, `--flash-tag=${tag}`].join(' ');
   return `#!/bin/bash
 export DEBIAN_FRONTEND=noninteractive HOME=/root
@@ -471,47 +479,89 @@ UNIT
 systemctl daemon-reload && systemctl enable --now opentube
 `;
 }
-async function flashStart() {
-  const pr = FLASH_PROVIDERS[flash.provider]; if (!pr) throw new Error(`no provider set: start this computer with --flash-provider=${Object.keys(FLASH_PROVIDERS).filter(k => k !== 'local').join('|')} and --flash-token=…`);
-  if (!GRANT) throw new Error('this computer has no grant');
-  if (flash.children.filter(c => c.state !== 'deleted').length >= 3) throw new Error('3 flash computers are running already');
+// start one for `user` (their grant, base64url: the flash computer runs as theirs)
+async function flashStart(user, grantB64) {
+  const cfg = flashCfgOf(user), pr = FLASH_PROVIDERS[cfg?.provider];
+  if (!pr) throw new Error('set up your cloud login first');
+  if (OWNER_ONLY_PROVIDERS.includes(cfg.provider) && user !== GRANT?.user) throw new Error('only the owner can use this provider');
+  if (!['custom', 'local'].includes(cfg.provider) && !cfg.token) throw new Error('your cloud login has no API key');
+  let g = null; try { g = JSON.parse(Buffer.from(String(grantB64), 'base64url').toString('utf8')); } catch {}
+  if (!g || g.user !== user || !core.validNodeGrant(g) || !(await core.verify(g.user, core.nodeGrantPreimage(g), g.sig).catch(() => false))) throw new Error('a valid grant of yours is needed (the site sends it)');
+  const cap = Math.max(3, cfg.scale?.max || 0); if (flash.children.filter(c => c.state !== 'deleted' && c.user === user).length >= cap) throw new Error(`you have ${cap} flash computers running already`);
+  if (flash.children.filter(c => c.state !== 'deleted').length >= 20) throw new Error('20 flash computers are running from this computer already');
   const tag = 'flash-' + crypto.randomBytes(3).toString('hex');
-  const r = await pr.create(tag, flashUserData(tag), tag);
-  const ch = { tag, id: r.id, ip: r.ip, provider: flash.provider, plan: flashOpt('plan') || null, region: flashOpt('region') || null, createdAt: Date.now(), state: 'starting', node: null, idleSince: 0 };
-  flash.children.push(ch); saveFlash(); log(`[flash] started ${tag} on ${flash.provider} (${ch.plan || 'default plan'})`);
+  const r = await pr.create(cfg, tag, flashUserData(tag, grantB64), tag, grantB64);
+  const ch = { tag, user, id: r.id, ip: r.ip, provider: cfg.provider, plan: opt(cfg, 'plan') || null, region: opt(cfg, 'region') || null, createdAt: Date.now(), state: 'starting', node: null, idleSince: 0 };
+  cfg.grant = grantB64;   // kept: this computer may start more for you (scaling with viewers)
+  flash.children.push(ch); saveFlash(); log(`[flash] ${obsStore.users[user]?.name || (user === GRANT?.user ? 'the owner' : user.slice(0, 8))} started ${tag} on ${cfg.provider} (${ch.plan || 'default plan'})`);
   return ch;
 }
 async function flashDelete(ch, why) {
   if (ch.state === 'deleted' || ch.deleting) return; ch.deleting = true;
-  try { await FLASH_PROVIDERS[ch.provider].remove(ch.id); ch.state = 'deleted'; ch.deletedAt = Date.now(); ch.why = why; log(`[flash] deleted ${ch.tag}: ${why}`); }
+  const cfg = flashCfgOf(ch.user) || {};
+  try { await FLASH_PROVIDERS[ch.provider].remove({ ...cfg, provider: ch.provider }, ch.id); ch.state = 'deleted'; ch.deletedAt = Date.now(); ch.why = why; log(`[flash] deleted ${ch.tag}: ${why}`); }
   catch (e) { ch.error = e.message; log(`[flash] couldn’t delete ${ch.tag} (${e.message}); trying again in a minute`); }
   finally { ch.deleting = false; saveFlash(); }
 }
-// what a flash computer recorded (recordings its liveend blocks offer), and whether this computer has each one complete
+// what a flash computer recorded (recordings its liveend blocks offer)
 function flashRecordings(nodeKey) {
   const out = [];
   for (const id of engine.chains.keys()) { let d; try { d = engine.derive(id); } catch { continue; } for (const [, r] of d?.nodeRecs || []) if (r.by === nodeKey) out.push([id, r]); }
   return out;
 }
+// viewers of a person's streams right now: per stream, the largest count any of their computers reports (the hub tells
+// every computer carrying a stream the same count; adding them up would count people twice)
+function viewersOf(user) {
+  const per = new Map();   // stream -> the report with the most viewers
+  for (const n of engine.nodes.values()) if ((n.grant?.user === user || n.node === signer.pub) && Date.now() - n.at < 120000)
+    for (const [st, v] of Object.entries(n.info?.watching || {})) { const r = Array.isArray(v) ? v : [Number(v) || 0, 0, 0, null]; if (!per.has(st) || r[0] > per.get(st)[0]) per.set(st, r); }
+  const rs = [...per.values()], sum = (i) => rs.reduce((a, r) => a + (Number(r[i]) || 0), 0), ks = rs.map(r => r[3]).filter(k => k != null);
+  return { total: sum(0), poor: sum(1), reporting: sum(2), kbps: ks.length ? Math.round(ks.reduce((a, b) => a + b, 0) / ks.length) : null, streams: per.size };
+}
+// scaling: one flash computer per `per` viewers (up to `max`), started on that person's account; extra ones go idle
+// when the stream ends and are deleted like any other
+function flashScale() {
+  for (const [user, cfg] of Object.entries(flash.users)) {
+    const sc = cfg.scale; if (!sc?.on || !cfg.grant) continue;
+    const mine = flash.children.filter(c => c.user === user && c.state !== 'deleted');
+    if (mine.some(c => c.state === 'starting')) continue;   // one at a time
+    const v = viewersOf(user), max = sc.max || 3;
+    let need = Math.min(max, Math.ceil(v.total / (sc.per || 25)));
+    // viewers are struggling (over a fifth stalling or nearly out of video): one more, at most every 5 minutes
+    const struggling = v.reporting >= 3 && v.poor / v.reporting > 0.2;
+    if (struggling && Date.now() - (cfg.lastScale || 0) > 5 * 60000) need = Math.min(max, Math.max(need, mine.length + 1));
+    if (v.total > 0 && need > mine.length) { cfg.lastScale = Date.now();
+      flashStart(user, cfg.grant).then(ch => { ch.why = struggling ? `started: ${v.poor} of ${v.reporting} viewers struggling` : `started for ${v.total} viewers`; log(`[flash] scaling up (${ch.why}): ${ch.tag}`); }).catch(e => log('[flash] scaling:', e.message)); }
+  }
+}
 function flashLoop() {
+  flashScale();
   if (!flash.children.length) return;
   const host = globalThis.openTubeHost;
   for (const ch of flash.children) {
     if (ch.state === 'deleted') continue;
-    const n = [...engine.nodes.values()].find(x => x.info?.flash?.tag === ch.tag && x.info?.flash?.parent === signer.pub && x.grant?.user === GRANT?.user);
+    const cfg = flashCfgOf(ch.user) || {}, maxHours = cfg.maxHours || 6, idleMin = cfg.idleMin || 5;
+    const n = [...engine.nodes.values()].find(x => x.info?.flash?.tag === ch.tag && x.info?.flash?.parent === signer.pub && x.grant?.user === ch.user);
     if (n) { ch.node = n.node; ch.seenAt = n.at; if (ch.state === 'starting') { ch.state = 'running'; log(`[flash] ${ch.tag} is online`); } }
     const recs = ch.node ? flashRecordings(ch.node) : [];
     for (const [chain, r] of recs) host?.keepRecording?.(chain, r)?.catch?.(e => log('[flash] keeping a recording:', e.message));
     ch.recordings = recs.length; ch.copied = recs.filter(([, r]) => host?.hasComplete?.(r.infohash)).length;
     const liveOnIt = ch.node && [...engine.chains.keys()].some(id => { try { return engine.derive(id)?.liveNow?.some(b => b.author === ch.node); } catch { return false; } });
     const busy = !!(n?.info?.busy || liveOnIt), now = Date.now(), age = now - ch.createdAt;
+    ch.billing = cfg.billing && cfg.billing !== 'auto' ? cfg.billing : FLASH_PROVIDERS[ch.provider]?.billing || 'hour';
+    ch.paidUntil = ch.billing === 'hour' ? ch.createdAt + Math.max(1, Math.ceil(age / 3600000)) * 3600000 : null;
     ch.busy = busy ? (n?.info?.busy || 'live') : null;
     if (busy || !n) ch.idleSince = 0; else ch.idleSince ||= now;
     let why = null;
-    if (age > (flash.maxHours || 6) * 3600000) why = `its time limit (${flash.maxHours || 6} h)` + (ch.copied < ch.recordings ? ` — ${ch.recordings - ch.copied} recording(s) not copied yet!` : '');
+    if (age > maxHours * 3600000) why = `its time limit (${maxHours} h)` + (ch.copied < ch.recordings ? ` — ${ch.recordings - ch.copied} recording(s) not copied yet!` : '');
     else if (!ch.node && age > 20 * 60000) why = 'it never came online';
     else if (ch.node && n && now - n.at > 10 * 60000 && age > 30 * 60000) why = 'it stopped answering';
-    else if (ch.idleSince && now - ch.idleSince > (flash.idleMin || 15) * 60000 && ch.copied === ch.recordings && !ch.keep) why = `idle ${flash.idleMin || 15} min, every recording copied here`;
+    else if (ch.idleSince && ch.copied === ch.recordings && !ch.keep) {
+      // billed by the hour: an idle computer stays until the end of the hour already paid for (you may go live again),
+      // and goes in its last minutes; billed by the second: after a few idle minutes
+      if (ch.billing === 'hour') { if (ch.paidUntil - now < 6 * 60000 && now - ch.idleSince > 2 * 60000) why = 'idle at the end of its paid hour, every recording copied here'; }
+      else if (now - ch.idleSince > idleMin * 60000) why = `idle ${idleMin} min, every recording copied here`;
+    }
     if (why) flashDelete(ch, why);
   }
   saveFlash();
@@ -560,7 +610,7 @@ function liveSink(chain, stream, mime, hubUrl = defaultHubUrl()) {
       else if (m.t === 'child' && m.dc) kids.child(m.peer);
       else if (m.t === 'unchild') kids.unchild(m.peer);
       else if (m.t === 'signal') kids.signal(m.from, m.data);
-      else if (m.t === 'viewers') { liveStats.set(stream, m); liveStats.current = m; }
+      else if (m.t === 'viewers') { m.at = Date.now(); liveStats.set(stream, m); liveStats.current = m; }
       else if (m.t === 'error') {   // usually: the site hasn't received our live block yet, so it doesn't know we may broadcast. Ask again.
         if (++refused === 1 || refused % 15 === 0) log('[obs] the hub refused the stream:', m.error, refused < 60 ? '(asking again)' : '');
         if (refused < 60 && !ended) setTimeout(() => hub.send(hello()), 2000);
@@ -1279,16 +1329,36 @@ async function control(c) {
       relayAsked.set(a.stream, { chain: a.chain, at: Date.now(), record: a.record === true && !!globalThis.openTubeHost?.seedRecording, title: String(a.title || 'Live').slice(0, 100) }); setTimeout(liveRelays, 500);
       return signed({ v: 1, kind: 'nodectlr', node: signer.pub, re: c.nonce, at: Date.now(), ok: true, data: { relaying: !!RTCPC } });
     }
-    if (c.cmd.startsWith('flash')) {   // flash computers (owner only): status, start one, delete one, keep one
-      if (!owner) return fail('only the owner can start or stop flash computers');
-      const a = c.args || {}, ch = a.tag && flash.children.find(x => x.tag === a.tag);
-      if (c.cmd === 'flash.start') { try { await flashStart(); } catch (e) { return fail(e.message); } }
-      else if (c.cmd === 'flash.stop') { if (!ch) return fail('no such flash computer'); await flashDelete(ch, 'deleted by the owner'); if (ch.error && ch.state !== 'deleted') return fail(ch.error); }
-      else if (c.cmd === 'flash.keep') { if (!ch) return fail('no such flash computer'); ch.keep = !!a.keep; saveFlash(); }
-      else if (c.cmd === 'flash.set') { for (const k of ['region', 'plan', 'image']) if (typeof a[k] === 'string') flash[k] = a[k].trim().slice(0, 60) || null; if (a.maxHours) flash.maxHours = Math.min(48, Math.max(1, Number(a.maxHours) || 6)); if (a.idleMin) flash.idleMin = Math.min(240, Math.max(5, Number(a.idleMin) || 15)); saveFlash(); }
-      const children = flash.children.filter(x => x.state !== 'deleted' || Date.now() - (x.deletedAt || 0) < 24 * 3600000).slice(-10)
-        .map(({ tag, provider, plan, region, createdAt, state, node, busy, recordings, copied, idleSince, keep, why, error, deletedAt }) => ({ tag, provider, plan, region, createdAt, state, node, busy, recordings, copied, idleSince, keep, why, error, deletedAt }));
-      data = { provider: flash.provider || null, ready: !!(flash.provider && (flash.provider === 'local' || flash.provider === 'custom' ? true : flash.token)), region: flashOpt('region') || null, plan: flashOpt('plan') || null, maxHours: flash.maxHours, idleMin: flash.idleMin, children };
+    if (c.cmd.startsWith('flash')) {   // flash computers: each person (the owner, or someone it's shared with) uses their own cloud login
+      if (!mayFlash(c.user)) return fail('this computer isn’t shared with you for that');
+      const a = c.args || {}, mine = (x) => x.user === c.user || owner, ch = a.tag && flash.children.find(x => x.tag === a.tag);
+      if (c.cmd === 'flash.setup') {   // your provider and API key, sealed to this computer in your browser
+        let s_; try { s_ = unseal(a.sealed || {}); } catch { return fail('couldn’t open the settings (sealed for another computer?)'); }
+        if (s_.off) { delete flash.users[c.user]; }
+        else {
+          const u = flash.users[c.user] ||= {};
+          if (s_.provider !== undefined) { if (s_.provider && !FLASH_PROVIDERS[s_.provider]) return fail('unknown provider'); if (OWNER_ONLY_PROVIDERS.includes(s_.provider) && !owner) return fail('only the owner can use that provider (it runs commands on this computer)'); u.provider = s_.provider || null; }
+          if (typeof s_.token === 'string' && s_.token) u.token = s_.token.slice(0, 20000);
+          for (const k of ['region', 'plan', 'image']) if (typeof s_[k] === 'string') u[k] = s_[k].trim().slice(0, 120) || null;
+          if (owner) for (const k of ['createCmd', 'deleteCmd']) if (typeof s_[k] === 'string') u[k] = s_[k].trim().slice(0, 2000) || null;
+          if (s_.maxHours) u.maxHours = Math.min(48, Math.max(1, Number(s_.maxHours) || 6)); if (s_.idleMin) u.idleMin = Math.min(240, Math.max(2, Number(s_.idleMin) || 5));
+          if (['auto', 'hour', 'second'].includes(s_.billing)) u.billing = s_.billing;
+        }
+        saveFlash(); announceSoon?.(); log(`[flash] ${owner ? 'the owner' : obsStore.users[c.user]?.name || c.user.slice(0, 8)} ${s_.off ? 'removed their cloud login' : 'set up ' + (flash.users[c.user]?.provider || 'a cloud login')}`);
+      }
+      else if (c.cmd === 'flash.start') { try { await flashStart(c.user, a.grant); } catch (e) { return fail(e.message); } }
+      else if (c.cmd === 'flash.stop') { if (!ch || !mine(ch)) return fail('no such flash computer of yours'); await flashDelete(ch, owner && ch.user !== c.user ? 'deleted by the computer’s owner' : 'deleted by its owner'); if (ch.error && ch.state !== 'deleted') return fail(ch.error); }
+      else if (c.cmd === 'flash.scale') { const u = flash.users[c.user]; if (!u) return fail('set up your cloud login first'); u.scale = { on: !!a.on, per: Math.min(10000, Math.max(5, Number(a.per) || 25)), max: Math.min(10, Math.max(1, Number(a.max) || 3)) }; saveFlash(); }
+      else if (c.cmd === 'flash.keep') { if (!ch || !mine(ch)) return fail('no such flash computer of yours'); ch.keep = !!a.keep; saveFlash(); }
+      const u = flashCfgOf(c.user);
+      const show = (x) => (({ tag, user, provider, plan, region, createdAt, state, node, busy, recordings, copied, idleSince, keep, why, error, deletedAt, billing, paidUntil }) => ({ tag, user, provider, plan, region, createdAt, state, node, busy, recordings, copied, idleSince, keep, why, error, deletedAt, billing, paidUntil, mine: x.user === c.user }))(x);
+      data = { enc: encPub, owner, providers: Object.keys(FLASH_PROVIDERS).filter(k => owner || !OWNER_ONLY_PROVIDERS.includes(k)).filter(k => k !== 'local' || u?.provider === 'local'),
+        defaults: Object.fromEntries(Object.entries(FLASH_PROVIDERS).map(([k, p]) => [k, { ...p.defaults, billing: p.billing }])),
+        mine: u ? { provider: u.provider || null, tokenSet: !!u.token, region: u.region || null, plan: u.plan || null, image: u.image || null, maxHours: u.maxHours || 6, idleMin: u.idleMin || 5, billing: u.billing || 'auto', ...(owner ? { createCmd: u.createCmd || null, deleteCmd: u.deleteCmd || null } : {}),
+          ready: !!(u.provider && (OWNER_ONLY_PROVIDERS.includes(u.provider) || u.token)) } : null,
+        people: owner ? Object.keys(flash.users).length : undefined, scale: u?.scale || { on: false, per: 25, max: 3 }, viewers: viewersOf(c.user),
+        watchingBy: Object.fromEntries(flash.children.filter(x => x.node && x.user === c.user).map(x => [x.tag, Object.values(engine.nodes.get(x.node)?.info?.watching || {}).reduce((p, v) => Math.max(p, Array.isArray(v) ? v[0] : Number(v) || 0), 0)])),
+        children: flash.children.filter(x => mine(x) && (x.state !== 'deleted' || Date.now() - (x.deletedAt || 0) < 24 * 3600000)).slice(-12).map(show) };
       log(`[control] ${c.cmd}`);
       return signed({ v: 1, kind: 'nodectlr', node: signer.pub, re: c.nonce, at: Date.now(), ok: true, data });
     }
@@ -1443,7 +1513,9 @@ else if (GRANT) {
     const held = globalThis.openTubeHost?.status?.().held || [];
     const info = { ...(held.length ? { has: core.holdBloom(held) } : {}),
       ...(process.env.FLASH_PARENT ? { flash: { parent: process.env.FLASH_PARENT, tag: process.env.FLASH_TAG || null } } : {}), busy: busyWith() || null,
-      ...(flash.provider ? { flashes: flash.provider } : {}), public: process.env.PUBLIC_URL || null, tunnel: process.env.TUNNEL_STATE || null, publicIp: (await publicIp()) || null, users: Object.fromEntries(Object.entries(obsStore.users).filter(([, u]) => !(u.until < Date.now())).slice(0, 20).map(([k, u]) => [k, u.can.map(x => x[0]).join('') + (u.guestOf ? 'g' : '')])),   // who may use it: o(bs) h(ost) m(anage)
+      ...(Object.keys(flash.users).length ? { flashes: Object.keys(flash.users).length } : {}), enc: encPub,
+      // the streams it carries: [viewers, struggling (stalling or nearly out of video), reporting, typical kbps]
+      watching: Object.fromEntries([...liveStats].filter(([, m]) => Date.now() - (m.at || 0) < 60000).slice(0, 10).map(([st, m]) => [st.slice(0, 12), [m.viewers || 0, m.quality?.poor || 0, m.quality?.n || 0, m.quality?.kbps ?? null]])), public: process.env.PUBLIC_URL || null, tunnel: process.env.TUNNEL_STATE || null, publicIp: (await publicIp()) || null, users: Object.fromEntries(Object.entries(obsStore.users).filter(([, u]) => !(u.until < Date.now())).slice(0, 20).map(([k, u]) => [k, u.can.map(x => x[0]).join('') + (u.guestOf ? 'g' : '')])),   // who may use it: o(bs) h(ost) m(anage)
       version: { name: core.VERSION, build: BUILD, files: FILES }, peerId: nodePeerId(signer.pub), name: (process.env.NODE_LABEL || os.hostname()).slice(0, 60), os: `${os.platform()} ${os.arch()}`, node: process.version, height: engine.main.best.height,
       peers: peers.size, chains: engine.chains.size, site: process.env.NODE_SITE || null, host, obs: globalThis.openTubeRtmp?.status?.() || null };
     // a status must stay under 4000 bytes or no one accepts it: drop the least important parts first
