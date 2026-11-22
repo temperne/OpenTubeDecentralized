@@ -90,9 +90,15 @@ public sealed class OpenTubeNode : IAsyncDisposable
             n.Set("sock", Jint.Native.JsValue.FromObject(e, new Action<string, string>((to, text) => Send(text, to))));
             n.Set("peers", Jint.Native.JsValue.FromObject(e, new Func<string>(() => JsonSerializer.Serialize(peers.Values.Where(p => p.Role is "node-in" or "node-out").Select(p => p.Id)))));
             n.Set("persist", Jint.Native.JsValue.FromObject(e, new Action<string>(line => { lock (this) blockLog?.WriteLine(line); })));
+            n.Set("saveMem", Jint.Native.JsValue.FromObject(e, new Action<string>(json => SaveSoon(Path.Combine(Options.DataDir, "memberships.json"), json))));
+            n.Set("saveRanker", Jint.Native.JsValue.FromObject(e, new Action<string>(json => File.WriteAllText(Path.Combine(Options.DataDir, "ranker.json"), json))));
         });
         Core.Post(e => e.Execute(Boot));
-        var r = JsonNode.Parse((await Core.RunAsync($"__boot({JsonSerializer.Serialize(JsonSerializer.Serialize(id))}, {JsonSerializer.Serialize(JsonSerializer.Serialize(new { mine = Options.Mine }))})"))!)!;
+        var rankerFile = Path.Combine(Options.DataDir, "ranker.json");
+        var ranker = File.Exists(rankerFile) ? File.ReadAllText(rankerFile) : JsonSerializer.Serialize(new { key = Identity.New() });
+        if (!File.Exists(rankerFile)) File.WriteAllText(rankerFile, ranker);
+        var bootOpts = new { mine = Options.Mine, ranks = Options.Ranks, rankName = (Options.RankName ?? $"Trending on {Environment.MachineName}")[..Math.Min(60, (Options.RankName ?? $"Trending on {Environment.MachineName}").Length)] };
+        var r = JsonNode.Parse((await Core.RunAsync($"__boot({JsonSerializer.Serialize(JsonSerializer.Serialize(id))}, {JsonSerializer.Serialize(JsonSerializer.Serialize(bootOpts))}, {JsonSerializer.Serialize(ranker)})"))!)!;
         NetworkId = (string?)r["main"];
 
         // this computer's own copy of the chains: nothing is downloaded again
@@ -103,12 +109,57 @@ public sealed class OpenTubeNode : IAsyncDisposable
             var rr = JsonNode.Parse((await Core.RunAsync($"__replay({JsonSerializer.Serialize(File.ReadAllText(file))})"))!)!;
             Log($"loaded {rr["n"]} saved blocks of {rr["chains"]} chains in {(DateTime.UtcNow - t0).TotalSeconds:0.0} s (main at #{rr["height"]}); only newer ones come from peers");
         }
+        var memFile = Path.Combine(Options.DataDir, "memberships.json");
+        if (File.Exists(memFile)) await Core.RunAsync($"__loadMem({JsonSerializer.Serialize(File.ReadAllText(memFile))})");
+        await Core.RunAsync("__rankStart()");
         blockLog = new StreamWriter(new FileStream(file, FileMode.Append, FileAccess.Write, FileShare.Read)) { AutoFlush = true };
         Log($"OpenTube {Core.Version} on .NET {Environment.Version} · build {Build} · network {NetworkId?[..16]}… · node {NodeKey[..8]}… · website from {SiteDir}");
 
         foreach (var p in Options.Peers) _ = DialAsync(p);
+        _ = Task.Run(FindEntryNodes);
         _ = Task.Run(StatusLoop);
         if (Options.Grant != null) _ = Task.Run(AnnounceLoop);
+    }
+
+    /// <summary>
+    /// Ways into the network without naming a peer: the entry nodes in seeds.json and, with --site, the site's
+    /// /entries.json (asked again every 10 minutes). Like the JavaScript node, it keeps a few of them connected.
+    /// </summary>
+    async Task FindEntryNodes()
+    {
+        var dialed = new HashSet<string>(Options.Peers);
+        while (!stop.IsCancellationRequested)
+        {
+            var found = new List<string>();
+            try
+            {
+                var seeds = Path.Combine(SiteDir, "seeds.json");
+                if (File.Exists(seeds)) foreach (var e in JsonNode.Parse(File.ReadAllText(seeds))?["entry"]?.AsArray() ?? []) if (e is JsonValue v && v.TryGetValue<string>(out var u)) found.Add(u);
+            }
+            catch { }
+            if (Options.Site != null)
+                try
+                {
+                    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+                    var j = JsonNode.Parse(await http.GetStringAsync(Options.Site + "/entries.json"));
+                    foreach (var e in j?["entry"]?.AsArray() ?? []) if ((string?)e?["url"] is { } u) found.Add(u);
+                }
+                catch (Exception e) { Log($"couldn't ask {Options.Site} for entry nodes: {e.Message}"); }
+            var own = PublicUrl?.TrimEnd('/');
+            foreach (var u in found.Select(x => x.TrimEnd('/')).Where(x => x.StartsWith("https://", StringComparison.Ordinal) && x != own).Distinct().Take(4))
+            {
+                var url = NodeOptions.NormalizePeer(u);
+                if (dialed.Add(url)) { Log($"connecting to entry node {u}"); _ = DialAsync(url); }
+            }
+            await Task.Delay(TimeSpan.FromMinutes(10), stop.Token).ContinueWith(_ => { });
+        }
+    }
+
+    readonly ConcurrentDictionary<string, string> toSave = new();
+    void SaveSoon(string file, string json)
+    {
+        if (toSave.TryAdd(file, json)) _ = Task.Delay(2000).ContinueWith(_ => { if (toSave.TryRemove(file, out var j)) File.WriteAllText(file, j); });
+        else toSave[file] = json;
     }
 
     // ---- peers
@@ -245,18 +296,39 @@ public sealed class OpenTubeNode : IAsyncDisposable
 
     // The node's side of the rules, in the same script language as the rules themselves (it mirrors server.mjs).
     const string Boot = """
-      globalThis.__boot = async (identJson, optsJson) => {
-        const core = OpenTubeCore, o = JSON.parse(optsJson);
-        const signer = await core.signer(JSON.parse(identJson));
+      globalThis.__boot = async (identJson, optsJson, rankerJson) => {
+        const core = OpenTubeCore, o = JSON.parse(optsJson), ranker = JSON.parse(rankerJson);
+        const signer = await core.signer(JSON.parse(identJson)), rankerSigner = await core.signer(ranker.key);
+        let rankTimer = null; const soonRank = () => { if (!rankTimer) rankTimer = setTimeout(() => { rankTimer = null; publishRanking(); }, 20000); };
         const send = (m, to) => __n.send(JSON.stringify(m), to == null ? '' : String(to));
         const engine = await core.createEngine({
           signer, send, peers: () => JSON.parse(__n.peers()),
+          keyFor: (pub) => pub === rankerSigner.pub ? rankerSigner : null,
+          onMembership: () => __n.saveMem(JSON.stringify([...engine.memberships.values()])),
           mine: o.mine === 'off' ? null : __mine,
           shouldMine: o.mine === 'all' ? () => true : (g) => g.author === signer.pub,
           trackAll: true, relayWatch: true,
           persist: (c, b) => __n.persist(JSON.stringify({ c, b })),
-          onBlock: (chain, b) => { if (chain === engine.main && !globalThis.__replaying) __h.log(`main #${b.height} ${b.hash.slice(0, 12)} (${b.payload.entries.length} registration(s))`); }
+          onBlock: (chain, b) => {
+            if (chain === engine.main && !globalThis.__replaying) __h.log(`main #${b.height} ${b.hash.slice(0, 12)} (${b.payload.entries.length} registration(s))`);
+            else if (['video', 'vote', 'hide'].includes(b.payload.type) && !globalThis.__replaying) soonRank();
+          }
         });
+        // this node's own ranking list ("Trending on …"), like every node: created once, republished every 5 minutes
+        async function publishRanking() {
+          const id = ranker.genesis?.hash; if (!id) return;
+          if (!engine.directory.has(id)) { engine.maybeMine(); return; }   // still being registered
+          try { await engine.publishRanking(id, engine.rank()); } catch (e) { __h.log('ranking failed: ' + e.message); }
+        }
+        globalThis.__rankStart = async () => {
+          if (!o.ranks) return;
+          if (!ranker.genesis) {
+            ranker.genesis = await engine.createGenesis({ type: 'genesis', kind: 'list', name: o.rankName, about: 'Videos ranked by votes and freshness, computed by this home node.', ranking: true }, rankerSigner);
+            __n.saveRanker(JSON.stringify(ranker)); __h.log(`created ranking list "${o.rankName}"`);
+          } else if (!engine.directory.has(ranker.genesis.hash)) { await engine.addToMempool(ranker.genesis); engine.openChain(ranker.genesis.hash); engine.maybeMine(); }
+          setTimeout(publishRanking, 5000); setInterval(publishRanking, 300000);
+        };
+        globalThis.__loadMem = async (text) => { for (const m of JSON.parse(text)) await engine.acceptMembership(m); };
         const tracker = core.createTracker();
         const live = core.createLiveHub({
           ownerOf: (c) => engine.directory.get(c)?.genesis.author || engine.chains.get(c)?.owner || null,
@@ -287,7 +359,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
           return { n, chains: byChain.size, height: engine.main.best.height };
         };
         globalThis.__status = () => ({ version: core.VERSION, network: engine.MAIN_ID, node: signer.pub, height: engine.main.best.height, tip: engine.main.best.hash,
-          registered: engine.directory.size, pending: engine.mempool.size, chains: engine.chains.size, nodes: engine.nodes.size, mining: !!engine.miner,
+          registered: engine.directory.size, pending: engine.mempool.size, ranker: ranker.genesis?.hash || null, memberships: engine.memberships.size, chains: engine.chains.size, nodes: engine.nodes.size, mining: !!engine.miner,
           tracker: tracker.stats?.() || null, live: live.stats?.() || null, now: Date.now() });
         globalThis.__entries = (own) => {
           const fresh = [...engine.nodes.values()].filter(n => n.roles?.includes('entry') && Date.now() - n.at < 5 * 60000)

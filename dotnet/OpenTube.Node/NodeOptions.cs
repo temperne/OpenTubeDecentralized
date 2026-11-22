@@ -19,6 +19,11 @@ public sealed class NodeOptions
     public string? Label { get; set; }
     /// <summary>Start a Cloudflare quick tunnel (cloudflared) so the node is reachable from the internet without setup.</summary>
     public bool Tunnel { get; set; } = true;
+    /// <summary>Publish this node's own ranking list ("Trending on …"), like every node. --no-ranking turns it off.</summary>
+    public bool Ranks { get; set; } = true;
+    /// <summary>The site this node came from (--site=https://…): its /entries.json lists entry nodes to connect to.</summary>
+    public string? Site { get; set; }
+    public string? RankName { get; set; }
 
     public static string DefaultDataDir() =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".opentube", "dotnet");
@@ -38,6 +43,9 @@ public sealed class NodeOptions
         o.Mine = Get("mine", "MINE") ?? o.Mine;
         o.Grant = Get("grant", "NODE_GRANT");
         o.Label = Get("name", "NODE_LABEL");
+        if (args.Contains("--no-ranking") || Environment.GetEnvironmentVariable("RANKER") == "0") o.Ranks = false;
+        o.RankName = Get("ranking-name", "NODE_NAME");
+        o.Site = Get("site", "NODE_SITE")?.TrimEnd('/');
         if (args.Contains("--no-tunnel") || Environment.GetEnvironmentVariable("TUNNEL") == "0") o.Tunnel = false;
         return o;
     }

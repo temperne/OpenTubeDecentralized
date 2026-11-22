@@ -1849,6 +1849,11 @@ function handle(req, res) {
     res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-cache' });
     return res.end(fs.readFileSync(path.join(DIR, 'sw.js')));
   }
+  // the node programs, like the site serves them: a new node can be installed from any node (--site=<this node>)
+  if (['/opentube.mjs', '/server.mjs', '/host.mjs', '/rtmp.mjs', '/tls.mjs', '/headless.mjs'].includes(url.pathname) && fs.existsSync(path.join(DIR, url.pathname.slice(1)))) {
+    res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-cache', 'access-control-allow-origin': '*' });
+    return res.end(fs.readFileSync(path.join(DIR, url.pathname.slice(1))));
+  }
   if (url.pathname.startsWith('/ingest/') && (req.method === 'POST' || req.method === 'PUT')) return ingest(req, res, url.pathname.slice(8));
   if (url.pathname === '/status') {
     res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });

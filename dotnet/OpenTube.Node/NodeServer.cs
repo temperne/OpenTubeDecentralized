@@ -3,7 +3,6 @@ using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Logging;
 
 namespace OpenTube.Node;
@@ -43,14 +42,27 @@ public sealed partial class NodeServer : IAsyncDisposable
         });
         app.MapGet("/status", () => Results.Text(Node.Status.ToJsonString(), "application/json"));
         app.MapGet("/entries.json", async (HttpContext c) => { c.Response.Headers.CacheControl = "max-age=60"; return Results.Text(await Node.EntriesJsonAsync() ?? "{}", "application/json"); });
-        // the website: index.html and its files, straight from the site folder
-        var files = new PhysicalFileProvider(Node.SiteDir);
-        app.UseDefaultFiles(new DefaultFilesOptions { FileProvider = files });
-        app.UseStaticFiles(new StaticFileOptions { FileProvider = files, ServeUnknownFileTypes = false, OnPrepareResponse = r => r.Context.Response.Headers.CacheControl = "no-cache" });
+        // the website, exactly what the site serves: the page (also for /@channel and /~list links), the service worker,
+        // the seed list, and the node programs (so a new node can be installed from any node, not only the site)
+        app.MapGet("/", () => Page());
+        app.MapGet("/index.html", () => Page());
+        app.MapGet("/{who}", (string who) => ChannelLink().IsMatch(who) ? Page() : Results.NotFound());   // /@channel and /~list links
+        foreach (var (file, type) in SiteFiles)
+            app.MapGet("/" + file, () => File.Exists(Path.Combine(Node.SiteDir, file))
+                ? Results.File(Path.Combine(Node.SiteDir, file), type) : Results.NotFound());
         await app.StartAsync();
         Node.Log($"website and node on http://localhost:{Node.Options.Port} (peers: ws://<this computer's address>:{Node.Options.Port}/ot)");
         if (Node.Options.Tunnel) StartTunnel();
     }
+
+    IResult Page() => Results.Text(Node.Html, "text/html; charset=utf-8");
+    /// <summary>The files a node serves besides the page — the same set the Cloudflare site publishes.</summary>
+    public static readonly (string File, string Type)[] SiteFiles =
+    [
+        ("sw.js", "text/javascript"), ("seeds.json", "application/json"),
+        ("opentube.mjs", "text/javascript"), ("server.mjs", "text/javascript"), ("host.mjs", "text/javascript"),
+        ("rtmp.mjs", "text/javascript"), ("tls.mjs", "text/javascript"), ("headless.mjs", "text/javascript"),
+    ];
 
     // ---- Cloudflare quick tunnel: a public https address, no account needed (it changes if cloudflared restarts)
     void StartTunnel()
@@ -71,6 +83,7 @@ public sealed partial class NodeServer : IAsyncDisposable
         catch (Exception e) { Node.Log("couldn't start cloudflared: " + e.Message); }
     }
     [GeneratedRegex(@"https://[a-z0-9-]+\.trycloudflare\.com")] private static partial Regex TunnelUrl();
+    [GeneratedRegex(@"^[@~][A-Za-z0-9._-]{3,30}/?$")] private static partial Regex ChannelLink();
 
     static string? FindOnPath(string exe) =>
         (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator).Select(d => Path.Combine(d, exe)).FirstOrDefault(File.Exists);

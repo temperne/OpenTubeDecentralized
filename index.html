@@ -7318,6 +7318,9 @@ function nodesPanel() {
   const parts = [['host', 'Host my joined channels (keeps their videos in the folder)'], ['obs', 'Receive OBS “Start Streaming” for Go live'], ['tunnel', 'Public through Cloudflare Tunnel: browsers use it as a way into the network, tracker and live hub. No open ports, certificate or account needed (OBS still uses its own port)'], ['public', 'Public with its own HTTPS instead (a free certificate; needs ports 80 and 443 open and unused)'], ['mine', 'Also confirm registrations (uses CPU)']];
   const checks = Object.fromEntries(parts.map(([k]) => [k, h('input', { type: 'checkbox', checked: k !== 'mine' && k !== 'public' && k !== 'tunnel' })]));
   const out = h('div');
+  // which program runs the node: the JavaScript one (every feature), or the .NET one (preview: one program with a
+  // window, a terminal UI and service mode; chains, website, tracker and live hub, not yet videos or OBS)
+  const prog = h('select', { style: 'width:auto' }, h('option', { value: 'js' }, 'Node.js program (all features)'), h('option', { value: 'dotnet' }, '.NET program (preview: window / terminal / service)'));
   const make = h('button', { class: 'primary', onclick: async () => {
     const grant = { v: 1, kind: 'nodegrant', user: me.pub, at: Date.now(), label: label.value.trim().slice(0, 60) };
     grant.sig = await me.sign(globalThis.OpenTubeCore.nodeGrantPreimage(grant));
@@ -7326,10 +7329,17 @@ function nodesPanel() {
     const q = (v) => /[\s"]/.test(v) ? `"${v.replace(/"/g, '')}"` : v;
     const cmd = NODE_LOADER(site) + ` -- --site=${site} --grant=${g}` + (videos.value.trim() ? ' ' + q('--videos=' + videos.value.trim()) : '') + (label.value.trim() ? ' ' + q('--name=' + label.value.trim()) : '')
       + (checks.host.checked ? '' : ' --no-host') + (checks.obs.checked ? '' : ' --no-obs') + (checks.mine.checked ? ' --mine' : '') + (checks.tunnel.checked ? ' --tunnel' : checks.public.checked ? ' --public' : '') + (Number(obsPort.value) > 0 && Number(obsPort.value) !== 1935 ? ' --obs-port=' + Number(obsPort.value) : '');
-    const ta = h('textarea', { readOnly: true, rows: 5, class: 'mono', style: 'width:100%;font-size:12px' }, cmd); ta.value = cmd;
+    const dotnet = prog.value === 'dotnet';
+    // the .NET node: from the source (no downloads to trust but the repository), built and run by the .NET SDK
+    const dcmd = `git clone --depth 1 https://github.com/temperne/OpenTubeDecentralized opentube && cd opentube/dotnet && dotnet run -c Release --project OpenTube.App -- --site=${site} --grant=${g}`
+      + (label.value.trim() ? ' ' + q('--name=' + label.value.trim()) : '') + (checks.tunnel.checked ? '' : ' --no-tunnel') + (checks.mine.checked ? ' --mine=all' : '');
+    const shown = dotnet ? dcmd : cmd;
+    const ta = h('textarea', { readOnly: true, rows: 5, class: 'mono', style: 'width:100%;font-size:12px' }, shown); ta.value = shown;
     out.replaceChildren(h('label', {}, 'Paste this into a terminal on that computer (Windows: Command Prompt or PowerShell; Mac: Terminal):'), ta,
-      h('div', { class: 'row', style: 'margin-top:6px' }, h('button', { onclick: () => copyText(cmd, 'Command') }, 'Copy command'),
-        h('span', { class: 'sub' }, 'Needs Node.js 22 or newer (nodejs.org). The command carries a grant signed by your key: whoever runs it runs a node that is yours, so don’t share it.')));
+      h('div', { class: 'row', style: 'margin-top:6px' }, h('button', { onclick: () => copyText(shown, 'Command') }, 'Copy command'),
+        h('span', { class: 'sub' }, dotnet
+          ? 'Needs git and the .NET 10 SDK (dot.net). It opens a window (or a terminal UI over SSH); its Service menu sets it to run at startup. Preview: it keeps the chains, serves the website and is a tracker and live hub, but doesn’t host videos or take OBS yet — use the Node.js program for those. The command carries a grant signed by your key, so don’t share it.'
+          : 'Needs Node.js 22 or newer (nodejs.org). The command carries a grant signed by your key: whoever runs it runs a node that is yours, so don’t share it.')));
   } }, 'Create my command');
   const list = h('div');
   const draw = () => {
@@ -7342,7 +7352,7 @@ function nodesPanel() {
   box.append(h('h3', { style: 'margin-top:0' }, 'Your computers'),
     h('p', { class: 'sub', style: 'margin-top:0' }, 'Run OpenTube on a computer with one command: it keeps a full copy of the network, hosts your joined channels around the clock, and receives OBS for going live. Each one reports here.'),
     list, h('details', { style: 'margin-top:12px' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Run OpenTube on a computer'),
-      h('div', { style: 'margin-top:8px' }, label, h('div', { style: 'margin-top:6px' }, videos), h('div', { style: 'margin-top:6px' }, obsPort), ...parts.map(([k, t]) => h('label', { style: 'display:flex;gap:8px;align-items:center;font-weight:400' }, checks[k], t)),
+      h('div', { style: 'margin-top:8px' }, h('div', { style: 'margin-bottom:6px' }, prog), label, h('div', { style: 'margin-top:6px' }, videos), h('div', { style: 'margin-top:6px' }, obsPort), ...parts.map(([k, t]) => h('label', { style: 'display:flex;gap:8px;align-items:center;font-weight:400' }, checks[k], t)),
         h('div', { style: 'margin-top:8px' }, make), out)));
   return box;
 }
