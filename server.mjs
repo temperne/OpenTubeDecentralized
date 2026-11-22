@@ -375,8 +375,10 @@ const FLASH_PROVIDERS = {
     async create(c, name, ud) { const r = await flashFetch('POST', 'https://api.digitalocean.com/v2/droplets', { name, region: opt(c, 'region'), size: opt(c, 'plan'), image: opt(c, 'image'), user_data: ud }, bearer(c)); return { id: String(r.droplet.id), ip: null }; },
     async remove(c, id) { await flashFetch('DELETE', `https://api.digitalocean.com/v2/droplets/${id}`, null, bearer(c)); } },
   vultr: { billing: 'hour', defaults: { region: 'ewr', plan: 'vhf-2c-4gb', image: '2284' },   // image: Vultr's os_id (2284 = Ubuntu 24.04)
-    async create(c, name, ud) { const r = await flashFetch('POST', 'https://api.vultr.com/v2/instances', { region: opt(c, 'region'), plan: opt(c, 'plan'), os_id: Number(opt(c, 'image')), label: name, hostname: name, user_data: Buffer.from(ud).toString('base64') }, bearer(c)); return { id: String(r.instance.id), ip: r.instance.main_ip || null }; },
-    async remove(c, id) { await flashFetch('DELETE', `https://api.vultr.com/v2/instances/${id}`, null, bearer(c)); } },
+    async create(c, name, ud) { const r = await flashFetch('POST', 'https://api.vultr.com/v2/instances', { region: opt(c, 'region'), plan: opt(c, 'plan'), os_id: Number(opt(c, 'image')), label: name, hostname: name, tags: ['opentube-flash'], user_data: Buffer.from(ud).toString('base64') }, bearer(c)); return { id: String(r.instance.id), ip: r.instance.main_ip && r.instance.main_ip !== '0.0.0.0' ? r.instance.main_ip : null }; },
+    async remove(c, id) { await flashFetch('DELETE', `https://api.vultr.com/v2/instances/${id}`, null, bearer(c)); },
+    // the servers this login has that OpenTube started (to confirm a delete went through, and to clean up leftovers)
+    async list(c) { const r = await flashFetch('GET', 'https://api.vultr.com/v2/instances?tag=opentube-flash&per_page=500', null, bearer(c)); return (r.instances || []).map(i => ({ id: String(i.id), label: i.label, created: Date.parse(i.date_created) || 0 })); } },
   // Amazon EC2 (token: ACCESS_KEY_ID:SECRET_ACCESS_KEY; region e.g. us-east-1; plan an instance type). The image is
   // Canonical's current Ubuntu 24.04 for the region (an SSM public parameter) unless an AMI id is given.
   aws: { billing: 'second', defaults: { region: 'us-east-1', plan: 'c7a.large', image: '' },
@@ -587,6 +589,24 @@ function flashLoop() {
   saveFlash();
 }
 setInterval(flashLoop, 30000);
+// Every 10 minutes, per cloud login that can list its servers: a server we deleted that is still there is deleted again
+// (deleting is what stops the bill), and a server OpenTube started that this computer doesn't know about (it crashed
+// between asking for the server and saving it) is deleted once it's 20 minutes old.
+async function flashSweep() {
+  for (const [user, cfg] of Object.entries(flash.users)) {
+    const pr = FLASH_PROVIDERS[cfg.provider]; if (!pr?.list || !cfg.token) continue;
+    let have; try { have = await pr.list(cfg); } catch (e) { log(`[flash] couldn’t list ${cfg.provider} servers: ${e.message}`); continue; }
+    for (const i of have) {
+      if (!/^flash-[0-9a-f]{6}$/.test(i.label || '')) continue;
+      const ch = flash.children.find(c => c.provider === cfg.provider && c.id === i.id);
+      if (ch && ch.state !== 'deleted') continue;
+      if (!ch && Date.now() - i.created < 20 * 60000) continue;
+      try { await pr.remove(cfg, i.id); log(`[flash] deleted ${i.label} on ${cfg.provider}: ${ch ? 'it was still there after being deleted' : 'a leftover this computer had lost track of'}`); }
+      catch (e) { log(`[flash] couldn’t delete ${i.label}: ${e.message}`); }
+    }
+  }
+}
+setTimeout(flashSweep, 60000); setInterval(flashSweep, 10 * 60000);
 // Recording a stream we relay (someone without a video folder went live through this computer): every segment is
 // written at its offset, so the file is the streamer's recording byte for byte. When it ends: shared over BitTorrent and
 // offered on the channel (liveend with the recording), like an OBS recording.
