@@ -3,3 +3,5 @@ node_modules/
 cloudflare/dist/
 cloudflare/core.gen.mjs
 .wrangler/
+dotnet/**/bin/
+dotnet/**/obj/

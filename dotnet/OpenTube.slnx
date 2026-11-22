@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="OpenTube.App/OpenTube.App.csproj" />
+  <Project Path="OpenTube.Core/OpenTube.Core.csproj" />
+  <Project Path="OpenTube.Node/OpenTube.Node.csproj" />
+  <Project Path="OpenTube.Tests/OpenTube.Tests.csproj" />
+</Solution>
