@@ -232,11 +232,30 @@ const isEntry = () => !!process.env.PUBLIC_URL || process.env.ENTRY === '1';   /
 const ownHubUrl = () => `ws://127.0.0.1:${PORT}/live`;
 // Meet places: where browsers and nodes find each other for video (BitTorrent trackers). Every node's own tracker, and
 // every entry node's (from signed node statuses and seeds.json), so files never depend on the site being up.
-function meetPlaces() {
-  const out = [`ws://127.0.0.1:${PORT}/tracker`], own = (process.env.PUBLIC_URL || '').replace(/\/+$/, '');
-  const add = (u) => { u = String(u || '').replace(/\/+$/, ''); if (/^https:\/\//.test(u) && u !== own) out.push(u.replace(/^http/, 'ws') + '/tracker'); };
-  for (const n of engine.nodes.values()) if (n.node !== signer.pub && n.roles?.includes('entry') && Date.now() - n.at < 30 * 60000) add((n.addrs || []).find(a => /^https:/.test(a)));
+// Only those online in the last 5 minutes: each is checked every minute (it answers /entries.json, or its signed status
+// is recent); one that stops answering drops out (and out of running torrents, see host.mjs), and comes back when it answers.
+const MEET_FRESH = 5 * 60000, meetSeen = new Map();   // base URL -> last time it was seen online
+function meetCandidates() {
+  const own = (process.env.PUBLIC_URL || '').replace(/\/+$/, ''), out = new Set();
+  const add = (u) => { u = String(u || '').replace(/\/+$/, ''); if (/^https:\/\//.test(u) && u !== own) out.add(u); };
+  for (const n of engine.nodes.values()) if (n.node !== signer.pub && n.roles?.includes('entry') && Date.now() - n.at < 24 * 3600000) {
+    const u = (n.addrs || []).find(a => /^https:/.test(a)); add(u);
+    if (u && Date.now() - n.at < MEET_FRESH) meetSeen.set(u.replace(/\/+$/, ''), Math.max(meetSeen.get(u.replace(/\/+$/, '')) || 0, n.at));
+  }
   try { for (const e of JSON.parse(fs.readFileSync(path.join(DIR, 'seeds.json'), 'utf8')).entry || []) add(typeof e === 'string' ? e : e?.url); } catch {}
+  return [...out];
+}
+async function checkMeetPlaces() {
+  await Promise.all(meetCandidates().slice(0, 40).map(async (u) => {
+    try { const r = await fetch(u + '/entries.json', { signal: AbortSignal.timeout(6000) }); if (r.ok) meetSeen.set(u, Date.now()); } catch {}
+  }));
+  for (const [u, t] of meetSeen) if (Date.now() - t > 24 * 3600000) meetSeen.delete(u);
+}
+setTimeout(checkMeetPlaces, 5000); setInterval(checkMeetPlaces, 60000);
+const meetAlive = (u) => Date.now() - (meetSeen.get(u) || 0) < MEET_FRESH;
+function meetPlaces() {
+  const out = [`ws://127.0.0.1:${PORT}/tracker`];
+  for (const u of meetCandidates()) if (meetAlive(u)) out.push(u.replace(/^http/, 'ws') + '/tracker');
   return [...new Set(out)].slice(0, 16);
 }
 const siteHubUrl = () => process.env.NODE_SITE ? process.env.NODE_SITE.replace(/^http/, 'ws') + '/live' : null;   // the site's: fallback only
@@ -1815,9 +1834,10 @@ function handle(req, res) {
     return res.end(fs.readFileSync(path.join(DIR, url.pathname.slice(1))));
   }
   if (url.pathname === '/entries.json') {   // the entry nodes this node knows right now (from signed node statuses): how browsers and the seed list stay current
-    const fresh = [...engine.nodes.values()].filter(n => n.roles?.includes('entry') && Date.now() - n.at < 15 * 60000)
+    const fresh = [...engine.nodes.values()].filter(n => n.roles?.includes('entry') && Date.now() - n.at < 5 * 60000)
       .map(n => ({ node: n.node, url: (n.addrs || []).find(a => /^https:\/\//.test(a)) || null, at: n.at })).filter(x => x.url);
     if (isEntry() && /^https:/.test(process.env.PUBLIC_URL || '') && !fresh.some(x => x.node === signer.pub)) fresh.unshift({ node: signer.pub, url: process.env.PUBLIC_URL.replace(/\/+$/, ''), at: Date.now() });
+    for (const x of fresh) x.at = Math.max(x.at, meetSeen.get(x.url.replace(/\/+$/, '')) || 0);   // answered our check since its last status
     res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*', 'cache-control': 'max-age=60' });
     return res.end(JSON.stringify({ network: engine.MAIN_ID, at: Date.now(), entry: fresh.slice(0, 50) }));
   }
@@ -1832,7 +1852,7 @@ function handle(req, res) {
   if (url.pathname.startsWith('/ingest/') && (req.method === 'POST' || req.method === 'PUT')) return ingest(req, res, url.pathname.slice(8));
   if (url.pathname === '/status') {
     res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
-    return res.end(JSON.stringify({ version: core.VERSION, build: BUILD, network: engine.MAIN_ID, height: engine.main.best.height, tip: engine.main.best.hash, registered: engine.directory.size, pending: engine.mempool.size, chains: engine.chains.size, peers: peers.size, mining: !!engine.miner, node: signer.pub, now: Date.now(), ranker: RANKER_ID, tracker: tracker.stats(), live: liveHub.stats(), liveStreams: [...liveHub.live().map(x => ({ ...x, hub: isEntry() ? signer.pub : null })), ...padStreams().filter(x => !liveHub.live().some(y => y.stream === x.stream))].slice(0, 100), ingest: true, memberships: engine.memberships.size }));
+    return res.end(JSON.stringify({ version: core.VERSION, build: BUILD, network: engine.MAIN_ID, height: engine.main.best.height, tip: engine.main.best.hash, registered: engine.directory.size, pending: engine.mempool.size, chains: engine.chains.size, peers: peers.size, mining: !!engine.miner, node: signer.pub, now: Date.now(), ranker: RANKER_ID, tracker: tracker.stats(), live: liveHub.stats(), liveStreams: [...liveHub.live().map(x => ({ ...x, hub: isEntry() ? signer.pub : null })), ...padStreams().filter(x => !liveHub.live().some(y => y.stream === x.stream))].slice(0, 100), ingest: true, memberships: engine.memberships.size, meet: meetPlaces(), meetOffline: meetCandidates().filter(u => !meetAlive(u)) }));
   }
   res.writeHead(404); res.end('not found');
 }

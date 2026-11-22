@@ -2564,9 +2564,34 @@ const TRACKER_LIST = 'https://raw.githubusercontent.com/ngosang/trackerslist/mas
 // Every entry node is a meet place for browsers (its tracker): use the ones known (seeds.json, remembered) first, and
 // the site's own tracker only when none is known, so files keep working while the site's server is down.
 await Promise.race([seedsReady, new Promise(r => setTimeout(r, 2500))]);
-const meetPlaces = () => [...new Set(savedEntries().flatMap(x => (x.addrs || []).filter(a => /^https:\/\//.test(a) || (x.mine && /^http:\/\/(localhost|127\.)/.test(a))).slice(0, 1))
-  .map(a => a.replace(/\/+$/, '').replace(/^http/, 'ws') + '/tracker'))].slice(0, 12);
+// Only meet places online in the last 5 minutes: each is checked every minute (it answers /entries.json, or its signed
+// status is recent). One not seen for 5 minutes is dropped, from running torrents too, and comes back once it answers.
+// (Remembered between visits; one never checked yet is tried until its first check.)
+const MEET_FRESH = 5 * 60000, MEET_SEEN_KEY = 'ot-meet-seen';
+const meetSeen = (() => { try { return new Map(Object.entries(JSON.parse(localStorage.getItem(MEET_SEEN_KEY) || '{}'))); } catch { return new Map(); } })();   // base -> { ok, tried }
+const meetBase = (u) => String(u).replace(/\/(tracker|live|ot)$/, '').replace(/\/+$/, '').replace(/^ws/, 'http');
+const meetAlive = (u) => { const r = meetSeen.get(meetBase(u)); return !r || !r.tried ? true : Date.now() - (r.ok || 0) < MEET_FRESH; };
+const meetCandidates = () => [...new Set(savedEntries().flatMap(x => (x.addrs || []).filter(a => /^https:\/\//.test(a) || (x.mine && /^http:\/\/(localhost|127\.)/.test(a))).slice(0, 1))
+  .map(a => a.replace(/\/+$/, '')))];
+const meetPlaces = () => meetCandidates().filter(meetAlive).map(a => a.replace(/^http/, 'ws') + '/tracker').slice(0, 12);
+async function checkMeetPlaces() {
+  const now = Date.now();
+  for (const n of (typeof engine !== 'undefined' && engine?.nodes?.values?.()) || []) if (Date.now() - n.at < MEET_FRESH) for (const a of n.addrs || []) { const b = meetBase(a), r = meetSeen.get(b); if (r) r.ok = Math.max(r.ok || 0, n.at); }
+  const bases = [...new Set([...meetCandidates(), ...TRACKERS.filter(u => /\/tracker$/.test(u)).map(meetBase)])].filter(b => /^https:\/\//.test(b) || location.protocol === 'http:').slice(0, 30);
+  await Promise.all(bases.map(async (b) => {
+    const r = meetSeen.get(b) || { ok: 0, tried: 0 };
+    if (!(Date.now() - (r.ok || 0) < 60000)) { try { const res = await fetch(b + '/entries.json', { signal: AbortSignal.timeout(6000) }); if (res.ok) r.ok = Date.now(); } catch {} }
+    r.tried = now; meetSeen.set(b, r);
+  }));
+  for (const [b, r] of meetSeen) if (now - (r.ok || r.tried || 0) > 7 * 86400000) meetSeen.delete(b);
+  try { localStorage.setItem(MEET_SEEN_KEY, JSON.stringify(Object.fromEntries(meetSeen))); } catch {}
+  addNodeTrackers();
+}
 const TRACKERS = params.get('trackers') ? params.get('trackers').split(',') : (() => { const m = meetPlaces(); return [...m, ...CFG.trackers, m.length ? null : homeTracker].filter(Boolean); })();
+function removeTrackersFrom(t, urls) {   // stop announcing to meet places that went away
+  const c = t?.discovery?.tracker; if (!c?._trackers || t.destroyed) return;
+  const gone = new Set(urls); for (const tr of [...c._trackers]) if (gone.has(tr.announceUrl)) { try { tr.destroy(); } catch {} c._trackers.splice(c._trackers.indexOf(tr), 1); }
+}
 // trackers found after a torrent started: add them to it (WebTorrent fixes the list when a torrent is added)
 function addTrackersTo(t, urls) {
   const c = t?.discovery?.tracker; if (!c?._trackers || t.destroyed) return;
@@ -2578,14 +2603,23 @@ function addTrackersTo(t, urls) {
 const addNodeTrackers = () => {
   if (params.get('trackers')) return;
   try { liveNet; } catch { return; }   // the page is still starting (liveNet isn't set up yet)
-  for (const x of seedEntries) { const t = x.addrs[0].replace(/^http/, 'ws') + '/tracker'; if (!TRACKERS.includes(t) && TRACKERS.length < 24) TRACKERS.unshift(t); }
-  for (const x of [...liveNet.entryHubs(), ...liveNet.linkedHubs()]) { const t = x.url.replace(/\/live$/, '/tracker'); if (!TRACKERS.includes(t) && TRACKERS.length < 24) TRACKERS.unshift(t); }
-  for (const t of meetPlaces()) if (!TRACKERS.includes(t) && TRACKERS.length < 24) TRACKERS.unshift(t);
+  const add = (t) => { if (meetAlive(t) && !TRACKERS.includes(t) && TRACKERS.length < 24) TRACKERS.unshift(t); };
+  for (const x of seedEntries) add(x.addrs[0].replace(/^http/, 'ws') + '/tracker');
+  for (const x of [...liveNet.entryHubs(), ...liveNet.linkedHubs()]) add(x.url.replace(/\/live$/, '/tracker'));
+  for (const t of meetPlaces()) add(t);
+  // meet places not seen online for 5 minutes: out of the list and out of running torrents (never the last one left)
+  const gone = TRACKERS.filter(u => /\/tracker$/.test(u) && u !== homeTracker && !meetAlive(u));
+  if (gone.length && TRACKERS.length - gone.length >= 1) {
+    for (const u of gone) TRACKERS.splice(TRACKERS.indexOf(u), 1);
+    if (typeof wt !== 'undefined') for (const t of wt.torrents) removeTrackersFrom(t, gone);
+    if (homeTracker && !TRACKERS.some(u => /\/tracker$/.test(u)) && !TRACKERS.includes(homeTracker)) TRACKERS.push(homeTracker);   // no meet place left: the site's, as the fallback
+  }
   if (homeTracker && TRACKERS.includes(homeTracker) && meetPlaces().some(t => t !== homeTracker)) TRACKERS.splice(TRACKERS.indexOf(homeTracker), 1);   // the site's tracker only as a fallback
   if (typeof wt !== 'undefined') for (const t of wt.torrents) addTrackersTo(t, TRACKERS);
   saveEntries();
 };
 setInterval(addNodeTrackers, 15000); setTimeout(addNodeTrackers, 3000); seedsReady.then(addNodeTrackers);
+setTimeout(checkMeetPlaces, 4000); setInterval(checkMeetPlaces, 60000);
 // ask entry nodes (and the seeds) which entry nodes they know, and remember them all: the list stays current by itself
 async function refreshEntries() {
   const urls = [...new Set([...savedEntries().flatMap(x => x.addrs || []), ...[...(E?.nodes?.values() || [])].filter(n => n.roles.includes('entry')).flatMap(n => n.addrs || [])]
@@ -7890,7 +7924,7 @@ $('#terms-ok').onclick = () => { try { localStorage.setItem('opentube-terms', '1
 render(true);
 window.addEventListener('beforeunload', (e) => { if (E.miner || hosting.size) { e.preventDefault(); e.returnValue = ''; } });
 // Exposed for debugging in the console.
-window.opentube = { me, engine: E, net, wt, live: { broadcasts, viewing, hub: liveNet, liveStale, liveWhy }, nodeCtl, trackers: TRACKERS, diag, stale: { videoGone, checkVideos, scrape, vidSeen, vidChecked }, update: { check: checkPageUpdate, busy: pageBusy } };
+window.opentube = { me, engine: E, net, wt, meet: { seen: meetSeen, check: checkMeetPlaces, places: meetPlaces }, live: { broadcasts, viewing, hub: liveNet, liveStale, liveWhy }, nodeCtl, trackers: TRACKERS, diag, stale: { videoGone, checkVideos, scrape, vidSeen, vidChecked }, update: { check: checkPageUpdate, busy: pageBusy } };
 
 // ---------------------------------------------------------------- connect
 if (params.get('net') === 'local') startLocal();

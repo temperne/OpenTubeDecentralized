@@ -32,6 +32,13 @@ export function addTrackersTo(t, urls) {
   for (const u of urls) if (/^wss?:\/\//.test(u) && !have.has(u)) { try { const tr = new WS(c, u); c._trackers.push(tr); tr.announce(c._defaultAnnounceOpts({ event: 'started' })); n++; } catch {} }
   return n;
 }
+// and take out ones that went away (a meet place offline for 5 minutes): no more announcing to a dead address
+export function removeTrackersFrom(t, urls) {
+  const c = t?.discovery?.tracker; if (!c?._trackers || t.destroyed) return 0;
+  const gone = new Set(urls); let n = 0;
+  for (const tr of [...c._trackers]) if (gone.has(tr.announceUrl)) { try { tr.destroy(); } catch {} c._trackers.splice(c._trackers.indexOf(tr), 1); n++; }
+  return n;
+}
 const MIN_COPIES = 2;   // other proven copies a video needs before trimming may remove ours
 
 export async function startHost({ engine, nodeKey, user, users = () => [], meetPlaces = () => [], videoDir, site, capGB = 5, tabs = null, log = console.log }) {
@@ -67,7 +74,14 @@ export async function startHost({ engine, nodeKey, user, users = () => [], meetP
   // Meet places first: this node's own tracker (browsers reach it through its public address too) and every entry node's,
   // where browsers look first. Then the network's and public trackers; the site's last, only as a fallback.
   const trackers = [...new Set([...meetPlaces(), ...(engine.CFG.trackers || []), ...listed, site ? site.replace(/^http/, 'ws') + '/tracker' : null].filter(Boolean))];
-  setInterval(() => { const m = meetPlaces(); for (const u of m) if (!trackers.includes(u)) trackers.unshift(u); for (const t of client.torrents) addTrackersTo(t, m); }, 60000);
+  let meetNow = meetPlaces();
+  setInterval(() => {
+    const m = meetPlaces(), gone = meetNow.filter(u => !m.includes(u)); meetNow = m;
+    for (const u of gone) { const i = trackers.indexOf(u); if (i >= 0) trackers.splice(i, 1); }
+    for (const u of m) if (!trackers.includes(u)) trackers.unshift(u);
+    let dropped = 0; for (const t of client.torrents) { addTrackersTo(t, m); if (gone.length) dropped += removeTrackersFrom(t, gone); }
+    if (gone.length) log(`[host] meet place${gone.length > 1 ? 's' : ''} offline for 5 minutes, no longer used: ${gone.map(u => u.replace(/^wss?:\/\//, '').replace(/\/tracker$/, '')).join(', ')}`);
+  }, 60000);
   await fsp.mkdir(videoDir, { recursive: true });
   const folders = new Map();   // chain -> { dir, name, meta }
   const torrents = new Map();  // infohash -> { chain, t }
