@@ -297,7 +297,11 @@ function liveRelays() {
     if (relaying.has(stream) || relaying.size >= 6) continue;
     const kids = liveKids(stream, (m) => hub.send(m));
     const chunks = fromBrowser(stream, chain) ? chunker(stream, (c) => hub.send({ t: 'lchunk', stream, chunk: c })) : null;
-    const ask = relayAsked.get(stream), rec = ask?.record ? relayRecorder(chain, stream, ask.title) : null;   // their browser has no folder: we keep the recording
+    // keep a recording here: when their browser has no folder (they asked), and always for streams on channels this
+    // computer's owner (or someone it hosts for) owns: the recording is then on this computer too, not only in a browser
+    const ask = relayAsked.get(stream), lbx = engine.derive(chain)?.streams?.find(b => b.payload.stream === stream);
+    const ownChan = [GRANT.user, ...Object.entries(obsStore.users).filter(([, u]) => u.can?.includes('host')).map(([k]) => k)].some(u => engine.memberships.get(u)?.own?.includes(chain) || ownsChannel(u, chain));
+    const rec = (ask?.record || (ownChan && fromBrowser(stream, chain) && !lbx?.payload?.group)) && globalThis.openTubeHost ? relayRecorder(chain, stream, ask?.title || lbx?.payload?.title || 'Live') : null;
     let got = 0;
     const hub = hubSocket((m) => {
       if (m.t === 'seg' && m.seg?.stream === stream) { kids.seg(m.seg); chunks?.seg(m.seg); rec?.seg(m.seg); if (!got++) log(`[live] relaying “${engine.derive(chain)?.streams.find(b => b.payload.stream === stream)?.payload.title || 'a stream'}” on ${engine.derive(chain)?.profile.name || chain.slice(0, 8)} to viewers over WebRTC`); }
