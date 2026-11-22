@@ -5774,8 +5774,13 @@ views.livewatch = {
       const perms = n ? nodePerms(n) : '';
       const into = !n || isMine(d.owner) ? null : perms.includes('g') ? n.node : perms.includes('o') ? n.node + '|' + hostKey : null;   // invited, or it's shared with you
       const onCam = n && [...broadcasts.entries()].find(([, b]) => b.group === n.node && !b.ended);
+      if (onCam && !banner.poll) banner.poll = setInterval(async () => {   // waiting room or on air? (the host decides)
+        if (!banner.isConnected) { clearInterval(banner.poll); banner.poll = null; return; }
+        try { const r = (await nodeCtl(n, 'group', perms.includes('g') ? {} : { host: hostKey })).data, was = banner.waitingNow;
+          banner.waitingNow = !!(r.me?.length && !r.me.some(x => x.onAir)); if (was !== banner.waitingNow) drawBanner(); } catch {}
+      }, 3000);
       if (onCam) return banner.replaceChildren(h('div', { class: 'panel', style: 'border-color:var(--live, #e11d48);margin:10px 0 0' }, h('div', { class: 'row', style: 'justify-content:space-between' },
-        h('span', {}, '🔴 ', h('b', {}, 'You’re on camera in this stream.')),
+        banner.waitingNow ? h('span', {}, '⏳ ', h('b', {}, 'You’re in the waiting room.'), h('span', { class: 'sub' }, ' The host can see you and will put you on air.')) : h('span', {}, '🔴 ', h('b', {}, 'You’re on camera in this stream.')),
         h('button', { onclick: async (e) => { e.target.disabled = true; await stopLive(onCam[0]); drawBanner(); } }, 'Leave'))));
       if (!into) return banner.replaceChildren();
       banner.replaceChildren(h('div', { class: 'panel', style: 'border-color:var(--live, #e11d48);margin:10px 0 0' }, h('div', { class: 'row', style: 'justify-content:space-between' },
@@ -7317,6 +7322,21 @@ function groupPanel(n, { title = false } = {}) {
   const run = async (cmd, args = {}) => { st.textContent = '…'; try { g = (await nodeCtl(n, cmd, args)).data; st.textContent = ''; } catch (e) { st.textContent = '✗ ' + e.message; } draw(); };
   const who = h('input', { type: 'text', placeholder: 'Their @@name or user ID', style: 'flex:1;min-width:180px' });
   const hours = h('select', { style: 'width:auto' }, [[2, '2 hours'], [6, '6 hours'], [24, '1 day'], [72, '3 days'], [168, '1 week']].map(([v, l]) => h('option', { value: v, selected: v === 6 }, l)));
+  // the studio: ticker text, its switches, the logo (made once, kept across refreshes so typing isn't lost)
+  const tickText = h('input', { type: 'text', placeholder: 'Ticker text along the bottom, e.g. “Live from the studio · Subscribe!”', maxLength: 500, style: 'flex:1;min-width:200px' });
+  const tickOn = h('input', { type: 'checkbox' }), tickSpeed = h('select', { style: 'width:auto' }, [[2, 'slow'], [4, 'normal'], [7, 'fast']].map(([v, l]) => h('option', { value: v }, l)));
+  const logoFile = h('input', { type: 'file', accept: 'image/*', style: 'max-width:220px' }), logoOn = h('input', { type: 'checkbox' });
+  const logoPos = h('select', { style: 'width:auto' }, [['tl', 'top left'], ['tr', 'top right'], ['bl', 'bottom left'], ['br', 'bottom right']].map(([v, l]) => h('option', { value: v }, l)));
+  let studioSet = false;
+  const applyTicker = () => run('group.studio', { ticker: { on: tickOn.checked && !!tickText.value.trim(), text: tickText.value.trim(), speed: Number(tickSpeed.value) } });
+  tickOn.onchange = applyTicker; tickSpeed.onchange = applyTicker; tickText.onkeydown = (e) => { if (e.key === 'Enter') applyTicker(); };
+  logoOn.onchange = () => run('group.studio', { logo: { on: logoOn.checked } }); logoPos.onchange = () => run('group.studio', { logo: { pos: logoPos.value } });
+  logoFile.onchange = async () => {   // shrunk here first (it only needs 160×90 on the picture)
+    const f = logoFile.files[0]; if (!f) return;
+    const img = await createImageBitmap(f), sc = Math.min(1, 320 / img.width, 180 / img.height), cv = document.createElement('canvas');
+    cv.width = Math.max(2, Math.round(img.width * sc)); cv.height = Math.max(2, Math.round(img.height * sc)); cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+    run('group.logo', { data: cv.toDataURL('image/png') }); logoFile.value = '';
+  };
   const resolveWho = (v) => { v = v.trim(); if (/^[A-Za-z0-9_-]{43}$/.test(v)) return E.ledger.resolve ? E.ledger.resolve(v) : v; const id = resolveName(v.startsWith('@@') ? v : '@@' + v.replace(/^@+/, '')); return id ? E.ledger.resolve(genesisFor(id).author) : null; };
   const draw = () => {
     if (!g) return box.replaceChildren(h('span', { class: 'sub' }, 'Loading the group stream…'), ' ', st);
@@ -7327,10 +7347,32 @@ function groupPanel(n, { title = false } = {}) {
       h('label', { style: 'display:flex;gap:8px;align-items:center;font-weight:400;margin:0' }, sw, g.on ? 'On: everyone connected is combined into one picture, arranged by how many are in it (up to 9)' : 'Off: one stream'), st,
       g.ffmpeg ? null : h('div', { class: 'sub' }, 'Needs ffmpeg on that computer.'),
       g.on ? [
-        h('div', { class: 'sub', style: 'margin-top:6px' }, g.live ? '🔴 Live now · ' : '', g.inputs.length ? 'In the picture:' : 'Nobody is connected yet. Start Streaming in OBS (your key; key-2 … key-9 for more cameras), or go live from a browser and choose this group.'),
-        ...g.inputs.map(x => h('div', { class: 'row', style: 'gap:8px;margin-top:4px' }, h('span', { style: 'flex:1' }, (x.kind === 'web' ? '🌐 ' : '🎥 ') + x.label, h('span', { class: 'sub' }, ' · ' + ago(x.since))),
-          h('button', { class: 'small', onclick: () => run('group.kick', { id: x.id }) }, 'Disconnect'),
-          x.guest ? h('button', { class: 'small', onclick: () => { if (confirm('Hang up: disconnect them and cancel their invitation?')) run('group.uninvite', { key: x.user }); } }, 'Cancel invite') : null)),
+        g.studio ? (() => {   // the studio: layout, waiting room, who's on air (with previews), ticker, logo
+          const S = g.studio;
+          if (!studioSet) { studioSet = true; tickText.value = S.ticker.text || ''; tickOn.checked = S.ticker.on; tickSpeed.value = String(S.ticker.speed || 4); logoOn.checked = S.logo.on; logoPos.value = S.logo.pos; }
+          if (document.activeElement !== tickText && !tickText.value && S.ticker.text) tickText.value = S.ticker.text;
+          logoOn.checked = S.logo.on && S.logo.has; logoOn.disabled = !S.logo.has;
+          const chip = (v, l) => h('button', { class: 'small' + (S.layout === v ? ' primary' : ''), onclick: () => run('group.studio', { layout: v }) }, l);
+          const person = (x) => h('div', { class: 'row', style: 'gap:8px;margin-top:6px;align-items:center;flex-wrap:wrap' },
+            x.thumb ? h('img', { src: x.thumb, style: 'width:112px;height:63px;object-fit:cover;border-radius:6px;background:#000' }) : h('div', { style: 'width:112px;height:63px;border-radius:6px;background:#000' }),
+            h('div', { style: 'flex:1;min-width:120px' }, h('div', {}, (x.kind === 'web' ? '🌐 ' : '🎥 ') + x.label, x.muted ? ' 🔇' : ''), h('div', { class: 'sub' }, (x.onAir ? (x.shown ? 'on air' : 'on air (not in this layout)') : 'waiting') + ' · ' + ago(x.since))),
+            h('button', { class: 'small' + (x.onAir ? '' : ' primary'), onclick: () => run('group.air', { id: x.id, on: !x.onAir }) }, x.onAir ? 'Take off air' : '▶ Put on air'),
+            S.layout !== 'grid' ? h('button', { class: 'small' + (S.spot === x.id ? ' primary' : ''), title: 'The big picture', onclick: () => run('group.studio', { spot: x.id }) }, '★') : null,
+            h('button', { class: 'small', onclick: () => run('group.mute', { id: x.id, mute: !x.muted }) }, x.muted ? 'Unmute' : 'Mute'),
+            h('button', { class: 'small', onclick: () => run('group.kick', { id: x.id }) }, 'Disconnect'),
+            x.guest ? h('button', { class: 'small', onclick: () => { if (confirm('Hang up: disconnect them and cancel their invitation?')) run('group.uninvite', { key: x.user }); } }, 'Cancel invite') : null);
+          const air = g.inputs.filter(x => x.onAir), wait = g.inputs.filter(x => !x.onAir);
+          return h('div', { style: 'margin-top:8px' },
+            h('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap;align-items:center' }, h('b', {}, 'Layout'), chip('grid', '▦ Grid'), chip('spotlight', '◧ Spotlight'), chip('solo', '■ Solo'),
+              h('label', { class: 'sub', style: 'display:inline-flex;gap:4px;align-items:center;font-weight:400;margin:0 0 0 10px' }, h('input', { type: 'checkbox', checked: S.waiting, onchange: (e) => run('group.studio', { waiting: e.target.checked }) }), 'Waiting room (people who join wait until you put them on air)')),
+            h('div', { class: 'sub', style: 'margin-top:8px' }, g.live ? '🔴 Live now · ' : '', `On air (${air.length})`), air.length ? air.map(person) : h('div', { class: 'sub' }, 'Nobody on air.'),
+            wait.length ? [h('div', { class: 'sub', style: 'margin-top:10px' }, `⏳ Waiting room (${wait.length})`), wait.map(person)] : null,
+            !g.inputs.length ? h('div', { class: 'sub', style: 'margin-top:4px' }, 'Nobody is connected yet. Start Streaming in OBS (your key; key-2 … key-9 for more cameras), go live from a browser into this group, or invite people from the chat.') : null,
+            h('div', { class: 'row', style: 'gap:6px;margin-top:10px;flex-wrap:wrap;align-items:center' }, h('b', {}, 'Ticker'), tickText, tickSpeed, h('label', { class: 'sub', style: 'display:inline-flex;gap:4px;align-items:center;font-weight:400;margin:0' }, tickOn, 'show'), h('button', { class: 'small', onclick: applyTicker }, 'Update')),
+            h('div', { class: 'row', style: 'gap:6px;margin-top:6px;flex-wrap:wrap;align-items:center' }, h('b', {}, 'Logo'), logoFile, logoPos, h('label', { class: 'sub', style: 'display:inline-flex;gap:4px;align-items:center;font-weight:400;margin:0' }, logoOn, 'show'),
+              h('span', { class: 'sub' }, S.logo.own ? 'your image' : S.logo.has ? 'your channel’s avatar' : 'no image yet (set a channel avatar, or choose one)'),
+              S.logo.own ? h('button', { class: 'small', onclick: () => run('group.logo', { data: '' }) }, 'Use the avatar') : null));
+        })() : null,
         h('div', { style: 'margin-top:8px;font-weight:600' }, 'Guests'),
         g.guests.length ? g.guests.map(u => h('div', { class: 'row', style: 'gap:8px;margin-top:4px' }, h('a', { href: '#/u/' + u.key, style: 'flex:1' }, u.name || personName(u.key) || u.key.slice(0, 10) + '…'),
           h('span', { class: 'sub' }, 'until ' + new Date(u.until).toLocaleString()), h('button', { class: 'small', onclick: () => run('group.uninvite', { key: u.key }) }, 'Cancel invite'))) : h('div', { class: 'sub' }, 'None invited.'),
@@ -7341,9 +7383,10 @@ function groupPanel(n, { title = false } = {}) {
         h('div', { class: 'sub', style: 'margin-top:4px' }, 'Invited people get their own stream key on this computer for that time (it shows on their Devices page), or go live from their browser into your group.')
       ] : null);
   };
-  draw(); run('group');
-  box.refresh = () => run('group');
-  const tick = setInterval(() => { if (!box.isConnected) { if (box.wasShown) clearInterval(tick); return; } box.wasShown = true; if (!document.hidden && document.activeElement !== who) run('group'); }, 10000);
+  draw(); run('group', { thumbs: true });
+  box.refresh = () => run('group', { thumbs: true });
+  // previews refresh every few seconds while the panel is open (not while you're typing in it)
+  const tick = setInterval(() => { if (!box.isConnected) { if (box.wasShown) clearInterval(tick); return; } box.wasShown = true; if (!document.hidden && ![who, tickText].includes(document.activeElement)) run('group', { thumbs: true }); }, 4000);
   return box;
 }
 // The reachability test: other OpenTube nodes elsewhere connect to this computer's OBS and web ports. Its own test of

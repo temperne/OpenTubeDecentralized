@@ -649,3 +649,15 @@ node opentube.mjs --site=… --grant=… --flash-provider=hetzner --flash-token=
 ```
 
 Then on Devices that computer shows **⚡ Flash computers → Start a flash computer**. The new server installs Node.js, ffmpeg and OpenTube (2–4 minutes), comes online through a Cloudflare Tunnel, and your browser links it to the same channels as its parent: go live into its group, invite people, point OBS at it. Its recordings are copied to the parent (pinned, never trimmed). The parent deletes it once it's idle (15 min by default) with every recording copied, and at the latest after `--flash-max-hours` (6 by default). **Keep** on its row stops the idle deletion; **Delete now** deletes it at once.
+
+## The studio: producing a group stream
+
+The computer that combines a group stream builds the picture itself, 30 times a second, so the host controls it live (group panel on the stream page, or Devices), with no restart and nothing the viewers notice except the change:
+
+- **Waiting room** (on by default): people who join wait off air; the host sees a live preview of each and puts them on air (or takes them off). Their page says whether they're waiting or on air. The host's own cameras are always on air.
+- **Layouts**: Grid (arranged by how many are on air), Spotlight (one large, up to four beside it; ★ picks who), Solo (just one).
+- **Mute** anyone; only people on air are heard.
+- **Ticker**: text scrolling along the bottom (rendered once by ffmpeg in any language, scrolled by the compositor), three speeds.
+- **Logo**: the channel's avatar by default, or any image; in a corner of your choice.
+
+Settings are kept with the host's profile on that computer, for their next stream.

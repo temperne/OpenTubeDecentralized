@@ -786,19 +786,106 @@ function decStart(g, x, cw, ch) {
   dec.on('exit', () => { if (x.dec === dec) x.dec = null; });
   dec.stdin.write(x.init); for (const c of x.recent) dec.stdin.write(c);   // from its latest video: decodes from the next keyframe
 }
+// The host's studio: who's on air (a waiting room for the rest, with previews), the layout, a ticker, a logo. Kept with
+// the host's OBS profile, so it stays for their next stream.
+const THUMB_W = 320, THUMB_H = 180, TICKER_H = 48;
+function studioOf(hostCfg) {
+  const s = hostCfg.studio ||= {};
+  s.layout = ['grid', 'spotlight', 'solo'].includes(s.layout) ? s.layout : 'grid'; s.spot ??= null; s.waiting ??= true;
+  s.ticker = Object.assign({ on: false, text: '', speed: 4 }, s.ticker); s.logo = Object.assign({ on: true, pos: 'tr', file: null }, s.logo);   // shown by default: the channel's avatar unless another image is set
+  return s;
+}
+const hostUserOf = (hostCfg) => Object.entries(obsStore.profiles).find(([, p]) => p === hostCfg)?.[0] || null;
+function studioTiles(mode, k) {   // where each on-air input goes: [{ x, y, w, h }]
+  if (!k) return [];
+  if (mode === 'solo' || k === 1) return [{ x: 0, y: 0, w: GW, h: GH }];
+  if (mode === 'spotlight') { const n = Math.min(k - 1, 4), y0 = Math.floor((GH - n * THUMB_H) / 4) * 2;
+    return [{ x: 0, y: 90, w: 960, h: 540 }, ...[...Array(n)].map((_, i) => ({ x: 960, y: y0 + i * THUMB_H, w: THUMB_W, h: THUMB_H }))]; }
+  const L = groupLayout(k); return L.xy.map(([x, y]) => ({ x, y, w: L.cw, h: L.ch }));
+}
 function relayout(hostCfg, why) {
-  const g = groupOf(hostCfg), list = [...g.inputs.values()].filter(x => !x.ended && x.init).sort((a, b) => a.at - b.at).slice(0, GROUP_MAX);
-  const L = groupLayout(list.length), key = list.map(x => x.id).join() + '|' + L.cw + 'x' + L.ch;
-  if (key === g.layoutKey) return; g.layoutKey = key; g.list = list; g.L = L;
-  for (const x of list) if (x.decW !== L.cw || x.decH !== L.ch || !x.dec) decStart(g, x, L.cw, L.ch);
-  (g.log || console.log)(`[group] ${list.length} in the picture: ${list.map(x => x.label).join(', ')}${why ? ` (${why})` : ''}`);
+  const g = groupOf(hostCfg), st = studioOf(hostCfg);
+  const all = [...g.inputs.values()].filter(x => !x.ended && x.init).sort((a, b) => a.at - b.at);
+  let air = all.filter(x => x.onAir);
+  const spot = air.find(x => x.id === st.spot) || air[0];
+  if (st.layout === 'solo') air = spot ? [spot] : [];
+  else if (st.layout === 'spotlight') air = spot ? [spot, ...air.filter(x => x !== spot)].slice(0, 5) : [];
+  else air = air.slice(0, GROUP_MAX);
+  const tiles = studioTiles(st.layout, air.length);
+  const key = air.map((x, i) => `${x.id}@${tiles[i].x},${tiles[i].y},${tiles[i].w}x${tiles[i].h}`).join() + '|' + all.map(x => x.id).join();
+  if (key === g.layoutKey) return; g.layoutKey = key; g.list = air; g.tiles = tiles; g.all = all;
+  air.forEach((x, i) => { if (x.decW !== tiles[i].w || x.decH !== tiles[i].h || !x.dec) decStart(g, x, tiles[i].w, tiles[i].h); });
+  for (const x of all) if (!air.includes(x) && (x.decW !== THUMB_W || x.decH !== THUMB_H || !x.dec)) decStart(g, x, THUMB_W, THUMB_H);   // off air: a preview for the host
+  const waiting = all.filter(x => !x.onAir);
+  (g.log || console.log)(`[group] on air (${st.layout}): ${air.map(x => x.label).join(', ') || 'nobody'}${waiting.length ? ` · waiting: ${waiting.map(x => x.label).join(', ')}` : ''}${why ? ` (${why})` : ''}`);
+}
+// a ticker: ffmpeg renders the text once (any font, any language), the compositor scrolls it along the bottom
+function buildTicker(g, text) {
+  if (!text) { g.ticker = null; return Promise.resolve(); }
+  const est = Math.min(8000, Math.ceil((text.length * 22 + 48) / 2) * 2), f = path.join(DATA, `ticker-${process.pid}.txt`);
+  fs.writeFileSync(f, text);
+  return new Promise((res) => {
+    const p = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', `color=c=0x1a1a1a:s=${est}x${TICKER_H}:d=1`, '-vf', `drawtext=textfile=${f}:fontcolor=white:fontsize=28:x=16:y=(h-text_h)/2`, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'yuv420p', 'pipe:1']);
+    const parts = []; p.stdout.on('data', d => parts.push(d)); p.stderr.on('data', () => {});
+    p.on('exit', () => {
+      const buf = Buffer.concat(parts); if (buf.length < est * TICKER_H * 1.5) { g.ticker = null; return res(); }
+      let right = 0; for (let y = 0; y < TICKER_H; y++) for (let x = est - 1; x > right; x--) if (buf[y * est + x] > 60) { right = x; break; }
+      const w = Math.min(est, Math.ceil((right + 40) / 2) * 2), out = Buffer.alloc(w * TICKER_H * 3 / 2);
+      for (const [so, ss, dO, ds, rows] of [[0, est, 0, w, TICKER_H], [est * TICKER_H, est / 2, w * TICKER_H, w / 2, TICKER_H / 2], [est * TICKER_H * 5 / 4, est / 2, w * TICKER_H * 5 / 4, w / 2, TICKER_H / 2]])
+        for (let y = 0; y < rows; y++) buf.copy(out, dO + y * ds, so + y * ss, so + y * ss + ds);
+      g.ticker = { buf: out, w }; res();
+    });
+  });
+}
+function drawTicker(frame, T, n, speed) {
+  const y0 = GH - TICKER_H;
+  frame.fill(26, y0 * GW, GH * GW); frame.fill(128, GW * GH + y0 / 2 * GW / 2, GW * GH + GH / 2 * GW / 2); frame.fill(128, GW * GH * 5 / 4 + y0 / 2 * GW / 2, GW * GH * 3 / 2);
+  const period = T.w + GW, off = ((n * speed) % period) & ~1, sx = GW - off, x0 = Math.max(0, sx), x1 = Math.min(GW, sx + T.w);
+  if (x1 <= x0) return;
+  for (const [fo, fs, to, ts, rows, sub] of [[0, GW, 0, T.w, TICKER_H, 1], [GW * GH, GW / 2, T.w * TICKER_H, T.w / 2, TICKER_H / 2, 2], [GW * GH * 5 / 4, GW / 2, T.w * TICKER_H * 5 / 4, T.w / 2, TICKER_H / 2, 2]])
+    for (let y = 0; y < rows; y++) T.buf.copy(frame, fo + (y0 / sub + y) * fs + x0 / sub, to + y * ts + (x0 - sx) / sub, to + y * ts + (x1 - sx) / sub);
+}
+// a logo: ffmpeg turns the image into a 160×90 overlay with transparency once; the compositor blends it into each frame
+const LOGO_W = 160, LOGO_H = 90;
+function buildLogo(g, file) {
+  if (!file || !fs.existsSync(file)) { g.logo = null; return Promise.resolve(); }
+  return new Promise((res) => {
+    const p = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-i', file, '-vf', `scale=${LOGO_W}:${LOGO_H}:force_original_aspect_ratio=decrease,pad=${LOGO_W}:${LOGO_H}:(ow-iw)/2:(oh-ih)/2:color=black@0,format=yuva420p`, '-frames:v', '1', '-f', 'rawvideo', 'pipe:1']);
+    const parts = []; p.stdout.on('data', d => parts.push(d)); p.stderr.on('data', () => {});
+    p.on('exit', () => { const b = Buffer.concat(parts); g.logo = b.length >= LOGO_W * LOGO_H * 2.5 ? b : null; res(); });
+  });
+}
+// the logo image: the one the host set, else the channel's avatar
+function logoFileOf(hostCfg) {
+  const st = studioOf(hostCfg); if (st.logo.file && fs.existsSync(st.logo.file)) return st.logo.file;
+  let av = null; try { av = hostCfg.channel && engine.chains.has(hostCfg.channel) && engine.derive(hostCfg.channel)?.profile?.avatar; } catch {}
+  const m = /^data:image\/(png|jpeg|webp|gif);base64,(.+)$/.exec(av || ''); if (!m) return null;
+  const f = path.join(DATA, `avatar-${hostCfg.channel.slice(0, 16)}.${m[1]}`); try { fs.writeFileSync(f, Buffer.from(m[2], 'base64')); } catch { return null; }
+  return f;
+}
+function drawLogo(frame, L, pos, tickerOn) {
+  const A = LOGO_W * LOGO_H * 3 / 2, m = 16, lx = pos.includes('r') ? GW - LOGO_W - m : m, ly = pos.includes('b') ? GH - LOGO_H - m - (tickerOn ? TICKER_H : 0) : m;
+  for (let y = 0; y < LOGO_H; y++) for (let x = 0; x < LOGO_W; x++) { const a = L[A + y * LOGO_W + x]; if (!a) continue; const d = (ly + y) * GW + lx + x; frame[d] = (L[y * LOGO_W + x] * a + frame[d] * (255 - a)) / 255 | 0; }
+  for (let y = 0; y < LOGO_H / 2; y++) for (let x = 0; x < LOGO_W / 2; x++) { const a = L[A + 2 * y * LOGO_W + 2 * x]; if (!a) continue;
+    for (const [fo, lo] of [[GW * GH, LOGO_W * LOGO_H], [GW * GH * 5 / 4, LOGO_W * LOGO_H * 5 / 4]]) { const d = fo + (ly / 2 + y) * (GW / 2) + lx / 2 + x; frame[d] = (L[lo + y * (LOGO_W / 2) + x] * a + frame[d] * (255 - a)) / 255 | 0; } }
+}
+// a small JPEG of an input's latest frame (the host's preview)
+function inputThumb(x) {
+  if (!x.last) return Promise.resolve(null);
+  return new Promise((res) => {
+    const p = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'rawvideo', '-pix_fmt', 'yuv420p', '-s', `${x.lastW}x${x.lastH}`, '-i', 'pipe:0', '-vf', 'scale=192:-2', '-frames:v', '1', '-q:v', '6', '-f', 'mjpeg', 'pipe:1']);
+    const parts = []; p.stdout.on('data', d => parts.push(d)); p.stderr.on('data', () => {}); p.stdin.on('error', () => {});
+    p.on('exit', () => res(parts.length ? 'data:image/jpeg;base64,' + Buffer.concat(parts).toString('base64') : null));
+    p.stdin.end(x.last);
+  });
 }
 function groupStart(hostCfg) {
   const g = groupOf(hostCfg), log = g.log || console.log;
   clearTimeout(g.timer); g.timer = null;
   if (g.enc) return relayout(hostCfg);
   absorbHostLive(hostCfg);   // bring in the host's ongoing stream
-  relayout(hostCfg); if (!g.list?.length) return;
+  relayout(hostCfg); if (!g.all?.length) return;
+  { const st = studioOf(hostCfg); buildTicker(g, st.ticker.text); buildLogo(g, logoFileOf(hostCfg)); }
   // the stream: one encoder for the whole session, raw frames in at a steady 30 per second, raw mixed audio beside them
   g.out = goLiveSink(log, hostCfg); g.t0 = Date.now(); g.sent = 0;
   const enc = g.enc = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error',
@@ -823,13 +910,16 @@ function groupStart(hostCfg) {
     while (g.sent < due) {
       if (enc.stdin.writableLength > frame.length * GFPS * 2) { g.sent = due; late++; break; }   // the encoder is 2 s behind (overloaded): skip, don't pile up
       BLACK.copy(frame); mix.fill(0);
-      const L = g.L, list = g.list || [];
+      const tiles = g.tiles || [], list = g.list || [], st = studioOf(hostCfg);
       list.forEach((x, i) => {
-        if (x.last) drawTile(frame, x.last, x.lastW, x.lastH, L.xy[i][0], L.xy[i][1], L.cw, L.ch);
+        const T = tiles[i]; if (x.last && T) drawTile(frame, x.last, x.lastW, x.lastH, T.x, T.y, T.w, T.h);
         const take = Math.min(AFRAME, x.aq.length) & ~3;   // this frame's share of its audio (whole stereo samples)
-        for (let k = 0; k < take; k += 2) mix[k >> 1] += x.aq.readInt16LE(k);
+        if (!x.muted) for (let k = 0; k < take; k += 2) mix[k >> 1] += x.aq.readInt16LE(k);
         x.aq = x.aq.subarray(take);
       });
+      for (const x of g.all || []) if (!list.includes(x)) x.aq = x.aq.subarray(Math.min(AFRAME, x.aq.length) & ~3);   // off air: not heard
+      if (st.ticker.on && g.ticker) drawTicker(frame, g.ticker, g.sent, st.ticker.speed);
+      if (st.logo.on && g.logo) drawLogo(frame, g.logo, st.logo.pos, st.ticker.on && !!g.ticker);
       for (let k = 0; k < mix.length; k++) abytes.writeInt16LE(Math.max(-32768, Math.min(32767, mix[k])), k * 2);
       enc.stdin.write(Buffer.from(frame)); enc.stdio[3].write(Buffer.from(abytes)); g.sent++; g.s1 = (g.s1 || 0) + 1;
     }
@@ -843,7 +933,8 @@ function groupInput(hostCfg, { id, label, user, kind, fmt = 'mp4', close = null 
   const g = groupOf(hostCfg); g.log = log;
   const old = g.inputs.get(id); if (old && !old.ended) { old.ended = true; try { old.dec?.kill('SIGKILL'); } catch {} try { old.close?.(); } catch {} }   // reconnecting replaces itself
   if (!old && [...g.inputs.values()].filter(x => !x.ended).length >= GROUP_MAX) return `The group picture is full (${GROUP_MAX}).`;
-  const x = { id, label, user, kind, fmt, at: Date.now(), init: null, recent: [], dec: null, last: null, aq: Buffer.alloc(0), ended: false, close };
+  const x = { id, label, user, kind, fmt, at: Date.now(), init: null, recent: [], dec: null, last: null, aq: Buffer.alloc(0), ended: false, close,
+    onAir: user === hostUserOf(hostCfg) || !studioOf(hostCfg).waiting, muted: false };   // the host is on air; others wait to be put on air (unless the waiting room is off)
   g.inputs.set(id, x);
   const write = (b) => { x.inB = (x.inB || 0) + b.length; x.recent.push(b); if (x.recent.length > 4) x.recent.shift(); if (x.dec) { try { x.dec.stdin.write(b); } catch {} } };
   return x.sink = {
@@ -1111,6 +1202,32 @@ async function control(c) {
         groupKick(hostCfg, x => x.user === a.key); delete obsStore.users[a.key]; delete obsStore.profiles[a.key]; saveObs(); announceSoon?.();
         log(`[group] invitation of ${u.name || a.key.slice(0, 8)} cancelled`);
       }
+      else if (c.cmd === 'group.studio' || c.cmd === 'group.air' || c.cmd === 'group.mute' || c.cmd === 'group.logo') {   // the host's studio controls
+        if (!isHost) return fail('only the host controls the picture');
+        const st = studioOf(hostCfg), x = a.id && g.inputs.get(a.id);
+        if (c.cmd === 'group.air') { if (!x) return fail('not connected'); x.onAir = !!a.on; if (!a.on && st.spot === x.id) st.spot = null; log(`[group] ${x.label} ${a.on ? 'on air' : 'off air (waiting)'}`); }
+        else if (c.cmd === 'group.mute') { if (!x) return fail('not connected'); x.muted = !!a.mute; }
+        else if (c.cmd === 'group.logo') {   // an image from the host's browser (a data URL, kept on this computer)
+          const m = /^data:image\/(png|jpeg|webp|gif);base64,([A-Za-z0-9+/=]+)$/.exec(String(a.data || ''));
+          if (!m) st.logo.file = null;   // removed: back to the channel's avatar
+          else {
+            const buf = Buffer.from(m[2], 'base64'); if (buf.length > 400000) return fail('the logo is too big (400 KB at most)');
+            const f = path.join(DATA, `logo-${hostUser.slice(0, 16)}.${m[1]}`); fs.writeFileSync(f, buf); st.logo.file = f; st.logo.on = true;
+          }
+          await buildLogo(g, logoFileOf(hostCfg));
+        } else {
+          if (['grid', 'spotlight', 'solo'].includes(a.layout)) st.layout = a.layout;
+          if (a.spot !== undefined) { st.spot = a.spot || null; const sx = st.spot && g.inputs.get(st.spot); if (sx) sx.onAir = true; }
+          if (typeof a.waiting === 'boolean') st.waiting = a.waiting;
+          if (a.ticker && typeof a.ticker === 'object') {
+            const t = a.ticker, newText = typeof t.text === 'string' ? t.text.replace(/[\r\n]+/g, '   ').slice(0, 500) : st.ticker.text;
+            if (typeof t.on === 'boolean') st.ticker.on = t.on; if (Number.isFinite(t.speed)) st.ticker.speed = Math.min(12, Math.max(1, Math.round(t.speed)));
+            if (newText !== st.ticker.text || (st.ticker.on && !g.ticker)) { st.ticker.text = newText; await buildTicker(g, newText); }
+          }
+          if (a.logo && typeof a.logo === 'object') { if (typeof a.logo.on === 'boolean') st.logo.on = a.logo.on; if (['tl', 'tr', 'bl', 'br'].includes(a.logo.pos)) st.logo.pos = a.logo.pos; if (st.logo.on && !g.logo) await buildLogo(g, logoFileOf(hostCfg)); }
+        }
+        saveObs(); if (g.enc) relayout(hostCfg, 'the host changed the picture');
+      }
       else if (c.cmd === 'group.kick.all') {   // the host ended the stream from the site: everyone out
         if (!isHost) return fail('only the host can end the group stream');
         groupKick(hostCfg, () => true);
@@ -1131,7 +1248,10 @@ async function control(c) {
       }
       const now = Date.now();
       data = { on: !!hostCfg.tile.on, host: isHost, live: !!g.out, ffmpeg: ffmpegOk,
-        inputs: [...g.inputs.values()].filter(x => !x.ended).map(x => ({ id: x.id, label: x.label, user: x.user, kind: x.kind, since: x.at, guest: !!obsStore.users[x.user]?.guestOf })),
+        inputs: await Promise.all([...g.inputs.values()].filter(x => !x.ended).map(async x => ({ id: x.id, label: x.label, user: x.user, kind: x.kind, since: x.at, guest: !!obsStore.users[x.user]?.guestOf,
+          onAir: !!x.onAir, muted: !!x.muted, shown: !!g.list?.includes(x), ...(isHost && a.thumbs ? { thumb: await inputThumb(x) } : {}) }))),
+        ...(isHost ? { studio: (({ layout, spot, waiting, ticker, logo }) => ({ layout, spot, waiting, ticker, logo: { on: logo.on, pos: logo.pos, has: !!logoFileOf(hostCfg), own: !!logo.file } }))(studioOf(hostCfg)) } : {}),
+        me: [...g.inputs.values()].filter(x => !x.ended && x.user === c.user).map(x => ({ id: x.id, onAir: !!x.onAir, shown: !!g.list?.includes(x) })),
         guests: Object.entries(obsStore.users).filter(([, u]) => u.guestOf === hostUser && !(u.until < now)).map(([k, u]) => ({ key: k, name: u.name, until: u.until })),
         ...(isHost ? {} : { invitedBy: label(hostUser), until: guestOf ? me_.until : null, joined: !!joinHost, key: profileOf(c.user).key, port: Number(process.env.RTMP_PORT) || null }) };
       return signed({ v: 1, kind: 'nodectlr', node: signer.pub, re: c.nonce, at: Date.now(), ok: true, data });
