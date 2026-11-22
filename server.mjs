@@ -829,6 +829,18 @@ function goLiveSink(log, obsCfg) {
 // just shows its last frame), and one encoder runs for the whole stream, fed at a steady pace. A join only changes
 // the layout; viewers never see the stream stall for it.
 const GROUP_MAX = 9, GW = 1280, GH = 720, GFPS = 30, AFRAME = 48000 / GFPS * 4;   // audio bytes per video frame (s16le stereo)
+// Each camera's playout buffer: its video arrives in bursts (one fragment, up to 2 s, at a time), so frames and sound are
+// queued and played out at a steady 30 per second. It starts at ½ s; each time it runs dry it grows by ½ s (up to 3 s).
+const PLAY_MAX = GFPS * 4;
+function playout(x) {   // one output frame's worth from input x: advances its picture, returns its audio for this frame (or null)
+  const target = x.target ||= GFPS / 2;
+  const buffered = Math.max(x.vq.length, Math.floor(x.aq.length / AFRAME));
+  if (!x.playing) { if (buffered < target) return null; x.playing = true; }
+  if (!buffered) { x.playing = false; x.target = Math.min(GFPS * 3, target + GFPS / 2); return null; }   // ran dry: wait for more
+  const f = x.vq.shift(); if (f) { x.last = f.b; x.lastW = f.w; x.lastH = f.h; }
+  const take = Math.min(AFRAME, x.aq.length) & ~3; const a = x.aq.subarray(0, take); x.aq = x.aq.subarray(take);
+  return a;
+}
 function groupOf(hostCfg) { return hostCfg._group ||= { inputs: new Map(), enc: null, out: null, clock: null, timer: null, t0: 0, sent: 0, log: null, layoutKey: '' }; }
 function groupLayout(k) {
   const cols = k <= 1 ? 1 : k <= 4 ? 2 : 3, rows = Math.ceil(k / cols), cw = Math.floor(GW / cols / 2) * 2, ch = Math.floor(GH / rows / 2) * 2;
@@ -881,9 +893,18 @@ function decStart(g, x, cw, ch) {
     '-map', '0:a:0?', '-f', 's16le', '-ar', '48000', '-ac', '2', 'pipe:3'], { stdio: ['pipe', 'pipe', 'pipe', 'pipe'] });
   x.decW = cw; x.decH = ch;
   let acc = []; let have = 0;
-  dec.stdout.on('data', (d) => { acc.push(d); have += d.length; if (have < size) return; let all = Buffer.concat(acc); const n = Math.floor(all.length / size);
-    x.last = Buffer.from(all.subarray((n - 1) * size, n * size)); x.lastW = cw; x.lastH = ch; all = all.subarray(n * size); acc = all.length ? [all] : []; have = all.length; });
-  dec.stdio[3].on('data', (d) => { x.aq = x.aq.length ? Buffer.concat([x.aq, d]) : d; if (x.aq.length > AFRAME * GFPS / 2) x.aq = x.aq.subarray(x.aq.length - AFRAME * GFPS / 4 & ~3); });   // keep it short: ¼ s when it piles up
+  // A restarted decoder first replays the latest few seconds (to reach a keyframe): that burst is skipped, the picture
+  // holds its last frame meanwhile. It's over once the decoder goes quiet for a moment.
+  let replay = x.recent.length > 0, quiet = null; const replayed = () => { clearTimeout(quiet); quiet = setTimeout(() => { replay = false; }, 250); };
+  if (replay) { x.vq = []; x.aq = Buffer.alloc(0); x.playing = false; replayed(); }
+  dec.stdout.on('data', (d) => { if (replay) return replayed(); acc.push(d); have += d.length; if (have < size) return; let all = Buffer.concat(acc); const n = Math.floor(all.length / size);
+    for (let i = 0; i < n; i++) x.vq.push({ b: Buffer.from(all.subarray(i * size, (i + 1) * size)), w: cw, h: ch });
+    all = all.subarray(n * size); acc = all.length ? [all] : []; have = all.length;
+    if (!x.last) { const f = x.vq[0]; x.last = f.b; x.lastW = f.w; x.lastH = f.h; }   // a picture for the preview right away
+    // never more than the cap: drop the oldest frames, and the same length of audio, so sound stays with the picture
+    const over = x.vq.length - PLAY_MAX; if (over > 0) { x.vq.splice(0, over); x.aq = x.aq.subarray(Math.min(x.aq.length, over * AFRAME)); } });
+  dec.stdio[3].on('data', (d) => { if (replay) return replayed(); x.aq = x.aq.length ? Buffer.concat([x.aq, d]) : d;
+    if (x.aq.length > AFRAME * (PLAY_MAX + GFPS)) x.aq = x.aq.subarray(x.aq.length - AFRAME * PLAY_MAX); });   // audio-only input: same cap
   let err = ''; dec.stderr.on('data', (d) => { err = (err + d).slice(-400); }); dec.stdin.on('error', () => {}); dec.stdio[3].on('error', () => {});
   dec.on('exit', (code, sig) => {
     if (x.dec !== dec) return; x.dec = null;   // replaced or stopped on purpose
@@ -1037,13 +1058,11 @@ function encStart(hostCfg, g, log, first) {
       if (enc.stdin.writableLength > frame.length * GFPS * (frags ? 0.5 : 4)) { g.sent = due; break; }   // the encoder is ½ s behind (overloaded): skip, don't pile up memory (more room while it starts)
       BLACK.copy(frame); mix.fill(0);
       const tiles = g.tiles || [], list = g.list || [], st = studioOf(hostCfg);
-      list.forEach((x, i) => {
+      for (const x of g.all || []) {   // everyone advances (off air too: their preview moves, and isn't heard)
+        const a = playout(x), i = list.indexOf(x); if (i < 0) continue;
         const T = tiles[i]; if (x.last && T) drawTile(frame, x.last, x.lastW, x.lastH, T.x, T.y, T.w, T.h);
-        const take = Math.min(AFRAME, x.aq.length) & ~3;   // this frame's share of its audio (whole stereo samples)
-        if (!x.muted) for (let k = 0; k < take; k += 2) mix[k >> 1] += x.aq.readInt16LE(k);
-        x.aq = x.aq.subarray(take);
-      });
-      for (const x of g.all || []) if (!list.includes(x)) x.aq = x.aq.subarray(Math.min(AFRAME, x.aq.length) & ~3);   // off air: not heard
+        if (a && !x.muted) for (let k = 0; k < a.length; k += 2) mix[k >> 1] += a.readInt16LE(k);
+      }
       if (st.ticker.on && g.ticker) drawTicker(frame, g.ticker, g.sent, st.ticker.speed);
       if (st.logo.on && g.logo) drawLogo(frame, g.logo, st.logo.pos, st.ticker.on && !!g.ticker);
       for (let k = 0; k < mix.length; k++) abytes.writeInt16LE(Math.max(-32768, Math.min(32767, mix[k])), k * 2);
@@ -1059,12 +1078,12 @@ function groupInput(hostCfg, { id, label, user, kind, fmt = 'mp4', close = null 
   const g = groupOf(hostCfg); g.log = log;
   const old = g.inputs.get(id); if (old && !old.ended) { old.ended = true; try { old.dec?.kill('SIGKILL'); } catch {} try { old.close?.(); } catch {} }   // reconnecting replaces itself
   if (!old && [...g.inputs.values()].filter(x => !x.ended).length >= GROUP_MAX) return `The group picture is full (${GROUP_MAX}).`;
-  const x = { id, label, user, kind, fmt, at: Date.now(), init: null, recent: [], dec: null, last: null, aq: Buffer.alloc(0), ended: false, close,
+  const x = { id, label, user, kind, fmt, at: Date.now(), init: null, recent: [], dec: null, last: null, vq: [], playing: false, target: 0, aq: Buffer.alloc(0), ended: false, close,
     onAir: user === hostUserOf(hostCfg) || !studioOf(hostCfg).waiting, muted: false };   // the host is on air; others wait to be put on air (unless the waiting room is off)
   g.inputs.set(id, x);
   const write = (b) => { x.inB = (x.inB || 0) + b.length; x.recent.push(b); if (x.recent.length > 4) x.recent.shift(); if (x.dec) { try { x.dec.stdin.write(b); } catch {} if (x.dec.stdin.writableLength > 24e6) { log(`[group] ${label}: this computer can’t decode their video fast enough; skipping ahead`); decStart(g, x, x.decW, x.decH); } } };
   return x.sink = {
-    input: x,
+    input: x, fragMs: 250,   // OBS: send its video on in ¼ s pieces, not 2 s bursts, so the playout buffer stays short
     init(bytes) {
       x.init = bytes; x.recent = [];
       if (g.enc) return relayout(hostCfg, `${label} joined`);

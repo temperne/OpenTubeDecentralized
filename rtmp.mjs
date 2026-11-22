@@ -227,7 +227,7 @@ export function startRtmp({ port = 1935, host = '::', onPublish, log = () => {} 
         if (!audio?.asc) return;
         aq.push({ dts: Math.round(ts * audio.sampleRate / 1000), data: Buffer.from(body.subarray(2)) });
       }
-      if (fragStart !== null && ts - fragStart >= 2000) flush();   // long keyframe intervals: cut anyway
+      if (fragStart !== null && ts - fragStart >= (sink?.fragMs || 2000)) flush();   // long keyframe intervals: cut anyway (a group stream's input wants small, steady pieces)
     }
     async function onCommand(sid, vals) {
       const [name, txn] = vals;
