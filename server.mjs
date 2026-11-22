@@ -33,7 +33,9 @@ const MAIN_ONLY = process.env.MAIN_ONLY === '1';
 const MINE = process.env.MINE !== '0' && process.env.MINE !== 'own';
 const MINE_OWN = process.env.MINE === 'own';   // personal nodes: confirm only their own transactions (receipts, etc.)
 const PEERS = (process.env.PEERS || '').split(',').map(s => s.trim()).filter(Boolean);
-const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
+// the log, and its last 400 lines in memory (the owner can read them from the site: Devices → 📜 Log)
+const logRing = [];
+const log = (...a) => { const line = [new Date().toISOString().slice(11, 19), ...a].map(x => typeof x === 'string' ? x : x instanceof Error ? x.message : JSON.stringify(x)).join(' '); console.log(line); logRing.push(line); if (logRing.length > 400) logRing.splice(0, 100); };
 
 // ---- load the exact same blockchain rules the browser runs, straight out of index.html
 const html = fs.readFileSync(path.join(DIR, 'index.html'), 'utf8');
@@ -1328,6 +1330,10 @@ async function control(c) {
       if (a.record === true && relaying.has(a.stream)) { relaying.get(a.stream).close(); relaying.delete(a.stream); }   // already relaying it: restart, recording this time
       relayAsked.set(a.stream, { chain: a.chain, at: Date.now(), record: a.record === true && !!globalThis.openTubeHost?.seedRecording, title: String(a.title || 'Live').slice(0, 100) }); setTimeout(liveRelays, 500);
       return signed({ v: 1, kind: 'nodectlr', node: signer.pub, re: c.nonce, at: Date.now(), ok: true, data: { relaying: !!RTCPC } });
+    }
+    if (c.cmd === 'logs') {   // the last lines of this computer's log (owner only: it can name addresses and people)
+      if (!owner) return fail('only the owner can read this computer’s log');
+      return signed({ v: 1, kind: 'nodectlr', node: signer.pub, re: c.nonce, at: Date.now(), ok: true, data: { lines: logRing.slice(-Math.min(400, Number(c.args?.n) || 200)) } });
     }
     if (c.cmd.startsWith('flash')) {   // flash computers: each person (the owner, or someone it's shared with) uses their own cloud login
       if (!mayFlash(c.user)) return fail('this computer isn’t shared with you for that');

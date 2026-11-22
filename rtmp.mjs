@@ -245,7 +245,7 @@ export function startRtmp({ port = 1935, host = '::', onPublish, log = () => {} 
         sink = r; published = true; state.live++; r.kick = () => { try { sock.destroy(); } catch {} };   // the host can disconnect this stream
         status(sid, 'status', 'NetStream.Publish.Start', 'Publishing to OpenTube'); state.lastConn.stage = 'streaming';
         log('OBS is streaming');
-      } else if (name === 'FCUnpublish' || name === 'deleteStream') end();
+      } else if (name === 'FCUnpublish' || name === 'deleteStream') { if (published) log(`${who}: OBS stopped streaming (${name})`); end(); }
     }
     function end() {
       if (!published) return;
@@ -296,8 +296,8 @@ export function startRtmp({ port = 1935, host = '::', onPublish, log = () => {} 
         if (st.got >= st.len) { const body = Buffer.concat(st.body); st.body = []; st.got = 0; onMessage(st.type, st.sid, st.ts, body); }
       }
     });
-    const bye = () => { clearTimeout(shake); end(); };
-    sock.on('close', bye); sock.on('error', bye);
+    const bye = (why) => () => { clearTimeout(shake); if (published) { log(`${who}: OBS connection ${why} while streaming (${Math.round(state.bytes / 1024)} KB received so far)`); state.lastConn.stage = 'disconnected: ' + why; } end(); };
+    sock.on('close', bye('closed')); sock.on('error', (e) => bye('error: ' + e.message)());
   });
   server.on('error', (e) => log(`OBS receiver couldn’t listen on ${host}:${port}: ${e.message}`));
   // Listen on IPv6 and IPv4 together ('::'): on Windows and macOS "localhost" means ::1 first, and OBS only tries the

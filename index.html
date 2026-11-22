@@ -7753,7 +7753,15 @@ function nodeRow(n) {
     i.host ? h('div', { class: 'sub' }, `Hosting ${i.host.hosting ?? 0} videos (${fmtBytes(i.host.hostedBytes || 0)}) for ${i.host.channels ?? 0} joined channels in ${i.host.videoDir || 'its folder'}` + (i.host.downloading ? ` · downloading ${i.host.downloading}` : '') + (i.host.stale ? ' · host not reporting' : '')) : null,
     i.obs ? h('div', { class: 'sub', style: i.obs.error || i.obs.listening === false ? 'color:var(--warn)' : '' }, i.obs.error ? '⚠ OBS: ' + i.obs.error : i.obs.listening === false ? '⚠ OBS: not listening' : i.obs.live ? `OBS: streaming now (${fmtBytes(i.obs.bytes || 0)})` : i.obs.armed ? 'OBS: ready, waiting for Start Streaming' : `OBS: listening on port ${i.obs.port} (stream key and server under 🎥 OBS & streaming)`) : null,
     i.flash ? h('div', { class: 'sub' }, '⚡ Flash computer of ', h('b', {}, E.nodes.get(i.flash.parent)?.info?.name || 'one of your computers'), ' — it’s deleted when idle and its recordings are copied there.') : null,
-    online && i.enc && perms && !perms.includes('g') ? keep('flash:' + n.node, () => flashPanel(n)) : null,   // owner, or shared with you: your own cloud login
+    online && i.enc && perms && !perms.includes('g') ? keep('flash:' + n.node, () => flashPanel(n)) : null,
+    owner && online ? keep('logs:' + n.node, () => {   // the computer's recent log
+      const box = h('div', { style: 'margin-top:6px' }), pre = h('pre', { class: 'mono', style: 'max-height:320px;overflow:auto;font-size:11px;background:var(--panel-2);padding:8px;border-radius:6px;white-space:pre-wrap;display:none' });
+      let open = false, iv = null;
+      const load = async () => { try { const r = (await nodeCtl(n, 'logs', { n: 300 })).data; const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20; pre.textContent = r.lines.join('\n'); if (atEnd) pre.scrollTop = pre.scrollHeight; } catch (e) { pre.textContent = /unknown command|bad command/.test(e.message) ? 'This computer runs an older OpenTube: press ⟳ Update first.' : '✗ ' + e.message; } };
+      const btn = h('button', { class: 'small', onclick: () => { open = !open; pre.style.display = open ? 'block' : 'none'; btn.textContent = open ? '📜 Hide log' : '📜 Log'; clearInterval(iv); if (open) { load(); iv = setInterval(() => { if (!pre.isConnected) return clearInterval(iv); load(); }, 5000); } } }, '📜 Log');
+      const copy = h('button', { class: 'small', onclick: () => copyText(pre.textContent, 'Log') }, 'Copy');
+      box.append(h('div', { class: 'row', style: 'gap:6px' }, btn, copy), pre); return box;
+    }) : null,   // owner, or shared with you: your own cloud login
     // public (an entry node: browsers use it as a way in, tracker and live hub) or not, and switching it from here
     h('div', { class: 'row', style: 'gap:8px;margin-top:4px;flex-wrap:wrap' },
       i.public ? h('span', {}, '🌐 Public at ', h('a', { href: i.public, target: '_blank', rel: 'noopener' }, i.public), n.roles.includes('entry') ? h('span', { class: 'badge ok', style: 'margin-left:6px' }, 'entry node') : null)
