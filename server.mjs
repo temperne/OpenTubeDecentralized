@@ -132,20 +132,24 @@ const engine = await core.createEngine({
   relayWatch: true,                // pass ad watch-group messages between browsers
   persist: (c, b) => blockLog.write(JSON.stringify({ c, b }) + '\n'),
   onBlock: (chain, b) => {
-    if (chain === engine.main) log(`main #${b.height} ${b.hash.slice(0, 12)} (${b.payload.entries.length} registration(s))`);
+    if (chain === engine.main && !replaying) log(`main #${b.height} ${b.hash.slice(0, 12)} (${b.payload.entries.length} registration(s))`);   // (not while reloading our own saved blocks)
     else if (b.payload.type === 'video' || b.payload.type === 'vote' || b.payload.type === 'hide') soonRank();
   }
 });
 
-// ---- replay stored blocks
+// ---- replay stored blocks: this computer's own copy, from disk (nothing is downloaded again)
+var replaying = false;
 if (fs.existsSync(blocksFile)) {
+  replaying = true; const t0 = Date.now(); let n = 0;
   const byChain = new Map();
   for (const line of fs.readFileSync(blocksFile, 'utf8').split('\n')) {
     if (!line) continue;
-    try { const { c, b } = JSON.parse(line); (byChain.get(c) || byChain.set(c, []).get(c)).push(b); } catch {}
+    try { const { c, b } = JSON.parse(line); (byChain.get(c) || byChain.set(c, []).get(c)).push(b); n++; } catch {}
   }
   await engine.insert(engine.MAIN_ID, byChain.get(engine.MAIN_ID) || [], null, false);
   for (const [c, blocks] of byChain) if (c !== engine.MAIN_ID && engine.openChain(c)) await engine.insert(c, blocks, null, false);
+  replaying = false;
+  log(`loaded ${n} saved blocks of ${byChain.size} chains from disk in ${((Date.now() - t0) / 1000).toFixed(1)} s (main at #${engine.main.best.height}); only newer ones come from peers`);
 }
 if (fs.existsSync(memFile)) for (const m of JSON.parse(fs.readFileSync(memFile, 'utf8'))) await engine.acceptMembership(m);
 log(`program files: ${Object.entries(FILES).map(([f, h]) => f + ' ' + h).join(', ')} (in ${DIR})`);
