@@ -75,7 +75,7 @@ const nodePeerId = (pub) => crypto.createHash('sha1').update('opentube-node:' + 
 // The owner's grant (from the My node command): this node is theirs.
 const GRANT = (() => { try { return process.env.NODE_GRANT ? JSON.parse(Buffer.from(process.env.NODE_GRANT, 'base64url').toString('utf8')) : null; } catch { return null; } })();
 const blocksFile = path.join(DATA, 'blocks.jsonl');
-const blockLog = fs.createWriteStream(blocksFile, { flags: 'a' });
+let blockLog = fs.createWriteStream(blocksFile, { flags: 'a' });
 
 // ---- proof of work with Node's native SHA-256 (much faster than a browser)
 const lz = (d) => { let z = 0; for (const b of d) { if (b === 0) { z += 8; continue; } return z + Math.clz32(b) - 24; } return z; };
@@ -146,9 +146,19 @@ if (fs.existsSync(blocksFile)) {
     if (!line) continue;
     try { const { c, b } = JSON.parse(line); (byChain.get(c) || byChain.set(c, []).get(c)).push(b); n++; } catch {}
   }
-  await engine.insert(engine.MAIN_ID, byChain.get(engine.MAIN_ID) || [], null, false);
-  for (const [c, blocks] of byChain) if (c !== engine.MAIN_ID && engine.openChain(c)) await engine.insert(c, blocks, null, false);
+  await engine.insert(engine.MAIN_ID, byChain.get(engine.MAIN_ID) || [], null, false, true);   // trusted: verified when they first arrived
+  for (const [c, blocks] of byChain) if (c !== engine.MAIN_ID && engine.openChain(c)) await engine.insert(c, blocks, null, false, true);
   replaying = false;
+  // the file only grows (every block as it arrived, side branches and repeats included): rewrite it with just the blocks
+  // kept, once it holds much more than that
+  const kept = [...engine.chains.values()].reduce((s_, ch) => s_ + Math.max(0, ch.blocks.size - 1), 0);
+  const rejected = Object.values(engine.stats?.rejected || {}).reduce((x, y) => x + y, 0), orphans = [...engine.chains.values()].reduce((x, ch) => x + (ch.orphans?.size || 0), 0);
+  if (n > 500 && n > kept * 1.5 && !rejected && !orphans) {   // only after a complete reload: never drop blocks that just failed to load
+    const tmp = blocksFile + '.tmp', w = fs.openSync(tmp, 'w');
+    for (const ch of engine.chains.values()) for (const b of [...ch.blocks.values()].sort((a, z) => a.height - z.height)) if (b.height > 0) fs.writeSync(w, JSON.stringify({ c: ch.id, b }) + '\n');
+    fs.closeSync(w); blockLog.end(); fs.renameSync(tmp, blocksFile); blockLog = fs.createWriteStream(blocksFile, { flags: 'a' });
+    log(`compacted the saved blocks: ${n} → ${kept}`);
+  }
   log(`loaded ${n} saved blocks of ${byChain.size} chains from disk in ${((Date.now() - t0) / 1000).toFixed(1)} s (main at #${engine.main.best.height}); only newer ones come from peers`);
 }
 if (fs.existsSync(memFile)) for (const m of JSON.parse(fs.readFileSync(memFile, 'utf8'))) await engine.acceptMembership(m);
