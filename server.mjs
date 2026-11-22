@@ -662,6 +662,15 @@ function profileOf(user) {
 const nodeUsers = () => obsStore.users;
 // a channel someone may go live on from here: theirs (its key is theirs, or bound to their identity)
 const ownsChannel = (user, ch) => { const d = ch && engine.derive(ch); return !!d && (d.owner === user || engine.ledger.resolve(d.owner) === engine.ledger.resolve(user)); };
+// the channel a stream goes live on: the one picked on Devices, else (none picked, or it isn't here) a channel the person owns
+function channelFor(user, cfg) {
+  if (cfg.channel) { if (!engine.chains.has(cfg.channel)) { const c = engine.openChain(cfg.channel); if (c) engine.requestChain(c); } return cfg.channel; }   // the picked one, loaded if it isn't yet
+  const mine = (engine.memberships.get(user)?.own || []).filter(c => engine.chains.get(c) && ownsChannel(user, c));
+  const linked = [...engine.chains.keys()].filter(c => c !== engine.main?.id && engine.derive(c)?.relays?.has?.(signer.pub) && ownsChannel(user, c));   // linked to this computer on the chain
+  const ch = linked[0] || mine[0] || [...engine.chains.keys()].find(c => c !== engine.main?.id && ownsChannel(user, c)) || null;
+  if (ch && !cfg.channel) { cfg.channel = ch; try { saveObs(); } catch {} log(`[obs] no channel was picked for this stream key: going live on ${engine.derive(ch)?.profile?.name || ch.slice(0, 8)} (change it on Devices)`); }
+  return ch;
+}
 const may = (user, what) => user === GRANT?.user || (!!obsStore.users[user]?.can?.includes(what) && !(obsStore.users[user].until < Date.now()));   // guests' access ends at `until`
 setInterval(() => { let gone = false; for (const [k, u] of Object.entries(obsStore.users)) if (u.until && u.until < Date.now()) { delete obsStore.users[k]; delete obsStore.profiles[k]; gone = true; } if (gone) { saveObs(); announceSoon?.(); } }, 60000);
 if (GRANT) profileOf(GRANT.user);
@@ -758,7 +767,10 @@ function goLiveSink(log, obsCfg) {
       const armedOld = obsCfg.owner ? armed?.() : null;   // the older "Go live → pick this computer" flow (owner only)
       if (armedOld) { chain = armedOld.chain; stream = armedOld.b.payload.stream; mime = armedOld.b.payload.mime; }
       else {
-        chain = obsCfg.channel; if (!chain || !engine.chains.get(chain)) throw new Error('no channel linked to this computer');
+        chain = channelFor(hostUserOf(obsCfg) || GRANT?.user, obsCfg); if (!chain) throw new Error('no channel linked to this stream key: pick one on Devices → OBS');
+        // the channel's chain may still be loading (just started, or not kept here): wait for it rather than give up
+        for (let i = 0; i < 60 && !engine.derive(chain)?.profile; i++) { if (i === 0) log(`[obs] loading the channel before going live…`); if (i % 10 === 0) { const c = engine.openChain(chain); if (c) engine.requestChain(c); } await new Promise(r => setTimeout(r, 500)); }
+        if (!engine.derive(chain)) throw new Error('couldn’t load the linked channel from the network (is this computer connected to peers?)');
         stream = crypto.randomBytes(32).toString('hex');
         hubPick = pickNodeHub();   // viewers find the stream on the hub its live block names
         const title = obsCfg._absorbedTitle || obsCfg.title || 'Live'; delete obsCfg._absorbedTitle;   // the host's ongoing stream joined: keep its title
@@ -843,17 +855,24 @@ function drawTile(frame, img, iw, ih, x0, y0, cw, ch) {
 function decStart(g, x, cw, ch) {
   try { x.dec?.kill('SIGKILL'); } catch {}
   const size = cw * ch * 3 / 2, log = g.log || console.log;
-  const dec = x.dec = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-probesize', '256000', '-analyzeduration', '500000', '-fflags', '+nobuffer+genpts+discardcorrupt',
+  const dec = x.dec = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-probesize', '2000000', '-analyzeduration', '2000000', '-fflags', '+nobuffer+genpts+discardcorrupt',
     '-f', x.fmt === 'webm' ? 'matroska' : 'mp4', '-i', 'pipe:0',
-    '-map', '0:v:0', '-vf', `scale=${cw}:${ch}:force_original_aspect_ratio=decrease,pad=${cw}:${ch}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p`, '-f', 'rawvideo', 'pipe:1',
+    '-map', '0:v:0', '-vf', `fps=${GFPS},scale=${cw}:${ch}:force_original_aspect_ratio=decrease,pad=${cw}:${ch}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p`, '-f', 'rawvideo', 'pipe:1',
     '-map', '0:a:0?', '-f', 's16le', '-ar', '48000', '-ac', '2', 'pipe:3'], { stdio: ['pipe', 'pipe', 'pipe', 'pipe'] });
   x.decW = cw; x.decH = ch;
   let acc = []; let have = 0;
   dec.stdout.on('data', (d) => { acc.push(d); have += d.length; if (have < size) return; let all = Buffer.concat(acc); const n = Math.floor(all.length / size);
     x.last = Buffer.from(all.subarray((n - 1) * size, n * size)); x.lastW = cw; x.lastH = ch; all = all.subarray(n * size); acc = all.length ? [all] : []; have = all.length; });
   dec.stdio[3].on('data', (d) => { x.aq = x.aq.length ? Buffer.concat([x.aq, d]) : d; if (x.aq.length > AFRAME * GFPS / 2) x.aq = x.aq.subarray(x.aq.length - AFRAME * GFPS / 4 & ~3); });   // keep it short: ¼ s when it piles up
-  dec.stderr.on('data', () => {}); dec.stdin.on('error', () => {}); dec.stdio[3].on('error', () => {});
-  dec.on('exit', () => { if (x.dec === dec) x.dec = null; });
+  let err = ''; dec.stderr.on('data', (d) => { err = (err + d).slice(-400); }); dec.stdin.on('error', () => {}); dec.stdio[3].on('error', () => {});
+  dec.on('exit', (code, sig) => {
+    if (x.dec !== dec) return; x.dec = null;   // replaced or stopped on purpose
+    if (x.ended) return;
+    // it died on its own (bad input, out of memory): say why, and start it again from the latest video, so the picture comes back
+    x.decFails = (x.decFails || 0) + 1;
+    log(`[group] ${x.label}: the video decoder stopped (${sig || 'exit ' + code})${err.trim() ? ': ' + err.trim().split('\n').pop().slice(0, 200) : ''}; restarting it`);
+    setTimeout(() => { if (!x.ended && !x.dec && x.init) decStart(g, x, cw, ch); }, Math.min(10000, 500 * x.decFails));
+  });
   dec.stdin.write(x.init); for (const c of x.recent) dec.stdin.write(c);   // from its latest video: decodes from the next keyframe
 }
 // The host's studio: who's on air (a waiting room for the rest, with previews), the layout, a ticker, a logo. Kept with
@@ -957,28 +976,45 @@ function groupStart(hostCfg) {
   relayout(hostCfg); if (!g.all?.length) return;
   { const st = studioOf(hostCfg); buildTicker(g, st.ticker.text); buildLogo(g, logoFileOf(hostCfg)); }
   // the stream: one encoder for the whole session, raw frames in at a steady 30 per second, raw mixed audio beside them
-  g.out = goLiveSink(log, hostCfg); g.t0 = Date.now(); g.sent = 0;
+  g.out = goLiveSink(log, hostCfg); g.encFails = 0; g.stopping = false;
+  encStart(hostCfg, g, log, true);
+}
+function encStart(hostCfg, g, log, first) {
+  const out = g.out; g.t0 = Date.now(); g.sent = 0;
   const enc = g.enc = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error',
     // big input queues: ffmpeg reads video and audio in step, and a small queue on one deadlocks the other at startup
     '-thread_queue_size', '512', '-f', 'rawvideo', '-pix_fmt', 'yuv420p', '-s', `${GW}x${GH}`, '-r', String(GFPS), '-i', 'pipe:0',
-    '-thread_queue_size', '512', '-f', 's16le', '-ar', '48000', '-ac', '2', '-i', 'pipe:3',
+    '-thread_queue_size', '512', '-probesize', '32', '-analyzeduration', '0', '-f', 's16le', '-ar', '48000', '-ac', '2', '-i', 'pipe:3',
     '-map', '0:v', '-map', '1:a', '-c:v', 'libx264', '-preset', 'superfast', '-tune', 'zerolatency', '-profile:v', 'high', '-level', '4.0',
     '-g', String(GFPS), '-keyint_min', String(GFPS), '-sc_threshold', '0', '-pix_fmt', 'yuv420p',   // a keyframe (a fragment) every second
     '-c:a', 'aac', '-b:a', '128k', '-ar', '48000', '-max_interleave_delta', '0', '-flush_packets', '1',
     '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', 'pipe:1'], { stdio: ['pipe', 'pipe', 'pipe', 'pipe'] });
   enc.stdin.on('error', () => {}); enc.stdio[3].on('error', () => {}); enc.stderr.on('data', d => log('[group]', String(d).trim().slice(0, 200)));
-  const out = g.out;
   enc.stdout.on('data', (d) => { g.s2 = (g.s2 || 0) + d.length; });
-  enc.stdout.on('data', mp4Boxes((init) => out.init(init, 'video/mp4; codecs="avc1.640028,mp4a.40.2"').catch(e => log('[group]', e.message)), (frag) => out.fragment(frag, true)));   // every fragment starts with a keyframe
-  enc.on('exit', () => { out.end(); clearInterval(g.clock); if (g.enc === enc) { g.enc = null; g.out = null; g.t0 = 0; g.layoutKey = ''; } log('[group] ended'); });
+  let frags = 0;
+  enc.stdout.on('data', mp4Boxes((init) => (first ? out.init(init, 'video/mp4; codecs="avc1.640028,mp4a.40.2"').catch(e => log('[group]', e.message)) : out.reinit(init)),
+    (frag) => { frags++; out.fragment(frag, true); }));   // every fragment starts with a keyframe
+  enc.on('error', (e) => log('[group] can’t start ffmpeg:', e.message));
+  enc.on('exit', (code, sig) => {
+    clearInterval(clock); if (g.enc !== enc) return;
+    g.enc = null; g.t0 = 0; g.layoutKey = '';
+    const alive = [...g.inputs.values()].some(y => !y.ended);
+    // it stopped on its own while people are still sending (out of memory, a crash): start it again, same live stream
+    if (!g.stopping && alive && g.encFails < 5) {
+      g.encFails = frags > 60 ? 1 : g.encFails + 1;
+      log(`[group] the encoder stopped (${sig || 'exit ' + code}); restarting it, the stream stays live`);
+      return setTimeout(() => { if (g.enc || g.stopping) return; relayout(hostCfg); encStart(hostCfg, g, log, false); }, 1000);
+    }
+    if (!g.stopping && alive) log(`[group] the encoder keeps stopping (${sig || 'exit ' + code}); ending the stream. Is this computer out of memory or CPU?`);
+    g.out = null; out.end(); log('[group] ended');
+  });
   const frame = Buffer.alloc(GW * GH * 3 / 2), mix = new Int32Array(AFRAME / 2), abytes = Buffer.alloc(AFRAME);
-  let late = 0;
   const tick = () => { try { tickInner(); } catch (e) { log('[group] frame:', e.message); } };
   const tickInner = () => {
     const due = Math.floor((Date.now() - g.t0) * GFPS / 1000) + 1;
-    if (due - g.sent > GFPS * 2) { late++; g.sent = due - 1; }   // over 2 s behind (an overloaded computer): skip ahead instead of piling up
+    if (due - g.sent > GFPS * 2) g.sent = due - 1;   // over 2 s behind (an overloaded computer): skip ahead instead of piling up
     while (g.sent < due) {
-      if (enc.stdin.writableLength > frame.length * GFPS * 2) { g.sent = due; late++; break; }   // the encoder is 2 s behind (overloaded): skip, don't pile up
+      if (enc.stdin.writableLength > frame.length * GFPS * (frags ? 0.5 : 4)) { g.sent = due; break; }   // the encoder is ½ s behind (overloaded): skip, don't pile up memory (more room while it starts)
       BLACK.copy(frame); mix.fill(0);
       const tiles = g.tiles || [], list = g.list || [], st = studioOf(hostCfg);
       list.forEach((x, i) => {
@@ -994,10 +1030,10 @@ function groupStart(hostCfg) {
       enc.stdin.write(Buffer.from(frame)); enc.stdio[3].write(Buffer.from(abytes)); g.sent++; g.s1 = (g.s1 || 0) + 1;
     }
   };
-  g.clock = setInterval(tick, 1000 / GFPS / 2);
+  const clock = g.clock = setInterval(tick, 1000 / GFPS / 2);
   if (process.env.LIVE_DEBUG && !g.dbg) g.dbg = setInterval(() => { log(`[group] per second: frames ${g.s1 || 0}, encoder ${g.s2 || 0} B, queued video ${g.enc?.stdin.writableLength ?? '-'} audio ${g.enc?.stdio[3].writableLength ?? '-'}, inputs ${[...g.inputs.values()].filter(x => !x.ended).map(x => x.label + ' ' + (x.inB || 0)).join(', ')}`); g.s1 = 0; g.s2 = 0; for (const x of g.inputs.values()) x.inB = 0; }, 1000);
 }
-function groupStop(hostCfg) { const g = groupOf(hostCfg); clearInterval(g.clock); g.clock = null; try { g.enc?.stdin.end(); g.enc?.stdio[3].end(); } catch {} for (const x of g.inputs.values()) try { x.dec?.kill('SIGKILL'); } catch {} }
+function groupStop(hostCfg) { const g = groupOf(hostCfg); g.stopping = true; clearInterval(g.clock); g.clock = null; try { g.enc?.stdin.end(); g.enc?.stdio[3].end(); } catch {} for (const x of g.inputs.values()) try { x.dec?.kill('SIGKILL'); } catch {} }
 // One input (an OBS connection, or a browser stream this node pulls): returns the sink its data goes to.
 function groupInput(hostCfg, { id, label, user, kind, fmt = 'mp4', close = null }, log) {
   const g = groupOf(hostCfg); g.log = log;
@@ -1006,7 +1042,7 @@ function groupInput(hostCfg, { id, label, user, kind, fmt = 'mp4', close = null 
   const x = { id, label, user, kind, fmt, at: Date.now(), init: null, recent: [], dec: null, last: null, aq: Buffer.alloc(0), ended: false, close,
     onAir: user === hostUserOf(hostCfg) || !studioOf(hostCfg).waiting, muted: false };   // the host is on air; others wait to be put on air (unless the waiting room is off)
   g.inputs.set(id, x);
-  const write = (b) => { x.inB = (x.inB || 0) + b.length; x.recent.push(b); if (x.recent.length > 4) x.recent.shift(); if (x.dec) { try { x.dec.stdin.write(b); } catch {} } };
+  const write = (b) => { x.inB = (x.inB || 0) + b.length; x.recent.push(b); if (x.recent.length > 4) x.recent.shift(); if (x.dec) { try { x.dec.stdin.write(b); } catch {} if (x.dec.stdin.writableLength > 24e6) { log(`[group] ${label}: this computer can’t decode their video fast enough; skipping ahead`); decStart(g, x, x.decW, x.decH); } } };
   return x.sink = {
     input: x,
     init(bytes) {
@@ -1093,7 +1129,7 @@ if (process.env.RTMP_PORT) {
           return groupInput(host, { id: 'obs:' + user + (slot > 1 ? '-' + slot : ''), label: who + (slot > 1 ? ' ' + slot : ''), user, kind: 'obs' }, log);
         }
         const obsCfg = Object.assign(profileOf(user), { owner: user === GRANT?.user });
-        if (obsCfg.tile.on) { if (!ffmpegOk) return 'Group streams need ffmpeg on this computer.'; return groupInput(obsCfg, { id: 'obs:' + user + (slot > 1 ? '-' + slot : ''), label: 'host' + (slot > 1 ? ' (camera ' + slot + ')' : ''), user, kind: 'obs' }, log); }
+        if (obsCfg.tile.on) { if (!ffmpegOk) return 'Group streams need ffmpeg on this computer.'; if (!(obsCfg.owner && armed()) && !channelFor(user, obsCfg)) { log('[obs] refused: no channel picked for this stream key (Devices → OBS → Channel)'); return 'No channel picked for this stream key: on the site, Devices → OBS → Channel.'; } return groupInput(obsCfg, { id: 'obs:' + user + (slot > 1 ? '-' + slot : ''), label: 'host' + (slot > 1 ? ' (camera ' + slot + ')' : ''), user, kind: 'obs' }, log); }
         if (slot > 1) return 'The group stream is off on this computer: use the main stream key.';
         if (obsCfg.channel && !obsCfg.owner && obsCfg.channelBy !== user && !ownsChannel(user, obsCfg.channel)) return 'That channel isn’t yours.';
         if (!(obsCfg.owner && armed()) && !(obsCfg.channel && engine.derive(obsCfg.channel)?.relays.has(signer.pub))) return 'Not linked to a channel yet. On the site: Go live → OBS → pick this computer and link it to your channel.';
@@ -1317,7 +1353,7 @@ async function control(c) {
         const r = pullIntoGroup(hostCfg, a.stream, c.user, label(c.user) + ' (browser)', a.chain, hubNode); if (typeof r === 'string') return fail(r);
       }
       const now = Date.now();
-      data = { on: !!hostCfg.tile.on, host: isHost, live: !!g.out, ffmpeg: ffmpegOk,
+      data = { on: !!hostCfg.tile.on, host: isHost, live: !!g.out?.block, starting: !!g.out && !g.out.block, ffmpeg: ffmpegOk,
         inputs: await Promise.all([...g.inputs.values()].filter(x => !x.ended).map(async x => ({ id: x.id, label: x.label, user: x.user, kind: x.kind, since: x.at, guest: !!obsStore.users[x.user]?.guestOf,
           onAir: !!x.onAir, muted: !!x.muted, shown: !!g.list?.includes(x), ...(isHost && a.thumbs ? { thumb: await inputThumb(x) } : {}) }))),
         ...(isHost ? { studio: (({ layout, spot, waiting, ticker, logo }) => ({ layout, spot, waiting, ticker, logo: { on: logo.on, pos: logo.pos, has: !!logoFileOf(hostCfg), own: !!logo.file } }))(studioOf(hostCfg)) } : {}),
