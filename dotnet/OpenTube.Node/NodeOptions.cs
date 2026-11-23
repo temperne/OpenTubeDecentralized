@@ -37,6 +37,11 @@ public sealed class NodeOptions
     public bool Ranks { get; set; } = true;
     /// <summary>Join the network's WebRTC room (the peer mesh) like every browser. --no-mesh (or MESH=0) turns it off.</summary>
     public bool Mesh { get; set; } = true;
+    /// <summary>A flash computer: the computer that started it (its node key) and its tag (set by the setup script).</summary>
+    public string? FlashParent { get; set; }
+    public string? FlashTag { get; set; }
+    /// <summary>Announce as an entry node even without a public address (local tests; flash computers on one machine).</summary>
+    public bool Entry { get; set; }
     /// <summary>Video hosting (with --grant): keep and share the videos of your joined and own channels. --no-host turns it off.</summary>
     public bool Host { get; set; } = true;
     /// <summary>Where the videos are kept (--videos=DIR, VIDEO_DIR). Default: "OpenTube Videos" in your home folder.</summary>
@@ -71,6 +76,8 @@ public sealed class NodeOptions
         o.Label = Get("name", "NODE_LABEL");
         if (args.Contains("--no-ranking") || Environment.GetEnvironmentVariable("RANKER") == "0") o.Ranks = false;
         if (args.Contains("--no-host")) o.Host = false;
+        o.FlashParent = Get("flash-parent", "FLASH_PARENT"); o.FlashTag = Get("flash-tag", "FLASH_TAG");
+        if (args.Contains("--entry") || Environment.GetEnvironmentVariable("ENTRY") == "1") o.Entry = true;
         o.VideoDir = Get("videos", "VIDEO_DIR") ?? o.VideoDir;
         if (double.TryParse(Get("cap-gb", "CAP_GB"), System.Globalization.CultureInfo.InvariantCulture, out var cap) && cap > 0) o.CapGB = cap;
         if (args.Contains("--no-mesh") || Environment.GetEnvironmentVariable("MESH") == "0") o.Mesh = false;

@@ -383,6 +383,17 @@ public sealed class Host : IAsyncDisposable
         _ = Task.Delay(TimeSpan.FromHours(6)).ContinueWith(_ => { Bt.Remove(t.InfoHashHex); Web.Forget(t.InfoHashHex); Try(() => { File.Delete(file); return 0; }); });
         return t.InfoHashHex;
     }
+    /// <summary>A recording another of the owner's computers made (a flash computer that will be deleted): a copy is kept here, pinned, shared like any video.</summary>
+    public void KeepRecording(string chain, JsonObject rec)
+    {
+        if (!Js.IsHex(rec["infohash"], 40)) return; var ih = (string)rec["infohash"]!;
+        if (!L("recs").Any(r => (string?)r!["ih"] == ih))
+        {
+            L("recs").Add(new JsonObject { ["chain"] = chain, ["ih"] = ih, ["file"] = (Js.Str(rec["file"]) ?? "recording.mp4")[..Math.Min(200, (Js.Str(rec["file"]) ?? "recording.mp4").Length)], ["title"] = Js.Str(rec["title"]) ?? Js.Str(rec["file"]) ?? "Recording", ["size"] = rec["size"]?.DeepClone() });
+            Toggle(L("pinned"), ih, true); SaveOv(); log($"[host] keeping a copy of the flash computer’s recording “{rec["file"]}”");
+        }
+        Ensure(chain, new JsonObject { ["infohash"] = ih, ["file"] = rec["file"]?.DeepClone(), ["title"] = rec["title"]?.DeepClone() ?? rec["file"]?.DeepClone(), ["size"] = rec["size"]?.DeepClone() });
+    }
     public int? PieceLengthOf(string ih) { lock (gate) return torrents.TryGetValue(ih, out var x) ? x.T.Meta?.PieceLength : null; }
     public bool HasComplete(string ih) { lock (gate) return torrents.TryGetValue(ih, out var x) && x.T.Complete; }
     /// <summary>Storage proofs: one piece of a video this node has completely.</summary>

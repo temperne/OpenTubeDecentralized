@@ -177,6 +177,7 @@ public sealed class LiveRelays(OpenTubeNode node)
                 case "unchild" when (string?)m["peer"] is { } p: kids.Unchild(p); break;
                 case "signal" when (string?)m["from"] is { } p: kids.Signal(p, m["data"]); break;
                 case "ended" or "nostream": Done = true; Close(); break;
+                case "viewers": node.NoteViewers(stream, m); break;
             }
         }
         /// <summary>Signed by the channel, as every viewer checks: only real segments are passed on and recorded.</summary>

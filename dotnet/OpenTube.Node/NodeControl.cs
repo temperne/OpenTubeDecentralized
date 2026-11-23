@@ -180,12 +180,14 @@ public sealed class NodeControl(OpenTubeNode node)
                     catch (Exception e) { return Fail(e.Message); }
                     break;
                 }
+                case "flash" or "flash.setup" or "flash.start" or "flash.stop" or "flash.scale" or "flash.keep":
+                    if (node.Flashes == null) return Fail("flash computers are unavailable on this computer");
+                    try { return Reply(c, true, await node.Flashes.Control(cmd, a, user, owner)); } catch (Exception e) { return Fail(e.Message); }
                 case var fm when Host.Commands.Contains(fm):   // the file manager (Manage files on the site)
                     if (!owner && !May(user, "manage")) return Fail("you may not manage this computer’s files");
                     if (node.Hosting == null) return Fail("video hosting is off on this computer (started with --no-host, or without --grant)");
                     data = node.Hosting.Command(cmd, a); break;
                 default:
-                    if (cmd.StartsWith("flash", StringComparison.Ordinal)) return Fail("flash computers aren’t in the .NET version of OpenTube yet");
                     return Fail("this computer doesn’t know that command (it runs the .NET version of OpenTube)");
             }
             node.Log($"[control] {cmd} from {who}’s console");

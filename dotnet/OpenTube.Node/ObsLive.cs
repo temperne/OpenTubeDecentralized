@@ -247,6 +247,7 @@ public sealed class ObsLive
                             outbox.Writer.TryWrite(Hello());
                         }
                         else if (t == "broadcasting") { lock (pending) { on = true; refused = 0; foreach (var p in pending) outbox.Writer.TryWrite(p); pending.Clear(); } node.Log("[obs] streaming through " + url.Replace("wss://", "").Replace("ws://", "").Replace("/live", "")); }
+                        else if (t == "viewers" && m is JsonObject vm) node.NoteViewers(stream, vm);
                         else if (t == "child" && Core.Js.IsTrue(m["dc"]) && (string?)m["peer"] is { } kp) kids.Child(kp);
                         else if (t == "unchild" && (string?)m["peer"] is { } up) kids.Unchild(up);
                         else if (t == "signal" && (string?)m["from"] is { } sp) kids.Signal(sp, m["data"]);

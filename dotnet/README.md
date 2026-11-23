@@ -106,6 +106,11 @@ a second, one encoder for the whole stream), with the studio from the site: wait
 grid/spotlight/solo, mute, a scrolling ticker, a logo (`test-group.cjs`). **YouTube forwarding** of OBS streams
 (`test-youtube.cjs`).
 
+**Flash computers:** a cloud server started for a stream on your own cloud login (Hetzner, DigitalOcean, Vultr, AWS,
+Google Cloud, Linode, Scaleway, your own commands; logins sealed in the browser to this computer's key). It runs the
+.NET node as your computer, scales with viewers, its recordings are copied here, and it's deleted when idle
+(`test-flash.cjs`, with the local provider). **Updates itself** from GitHub when idle (the launchers restart it).
+
 **Getting paid:** receipts submitted in `serve` transactions, pay per piece (`ot_pay`: signed tabs both ways, cashed in
 every minute; peers that don't pay stop getting pieces), storage proofs with other hosts (`test-proof.cjs`), earnings
 passed to the owner. The C# engine makes its own transactions (proof of work, signed).
@@ -113,4 +118,3 @@ passed to the owner. The C# engine makes its own transactions (proof of work, si
 **Not in the .NET node yet** (the JavaScript node has them):
 - the DHT (finding ordinary BitTorrent apps without a tracker);
 
-- flash computers.

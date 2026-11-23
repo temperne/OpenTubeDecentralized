@@ -177,6 +177,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
         if (Options.Host && OwnerUser != null)
             try { Hosting = new Host(this, Options.VideoDir, Options.CapGB); _ = Task.Run(Hosting.Run); }
             catch (Exception e) { Log("video hosting unavailable: " + e.Message); }
+        try { Flashes = new Flash(this); _ = Task.Run(() => Flashes.Run(stop.Token)); } catch (Exception e) { Log("flash computers unavailable: " + e.Message); }
         Coord = new Coordination(this); _ = Task.Run(() => Coord.Run(stop.Token));
         Update = new Updater(this); _ = Task.Run(() => Update.Run(stop.Token));
         Earn = new Earnings(this) { PendingTabs = Hosting != null ? Hosting.Tabs.Pending : null }; _ = Task.Run(() => Earn.Run(stop.Token));
@@ -406,7 +407,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
         await Task.Delay(4000);
         while (!stop.IsCancellationRequested)
         {
-            var roles = new List<string> { "node" }; if (Rtmp != null) roles.Add("obs"); if (Hosting != null) roles.Add("host"); if (PublicUrl != null) roles.Add("entry");
+            var roles = new List<string> { "node" }; if (Rtmp != null) roles.Add("obs"); if (Hosting != null) roles.Add("host"); if (PublicUrl != null || Options.Entry) roles.Add("entry");
             var addrs = new List<string>(); if (PublicUrl != null) addrs.Add(PublicUrl);
             addrs.AddRange(System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
                 .Where(i => i.OperationalStatus == System.Net.NetworkInformation.OperationalStatus.Up)
@@ -425,8 +426,13 @@ public sealed class OpenTubeNode : IAsyncDisposable
                 ["users"] = new JsonObject(((Obs?.Store["users"] as JsonObject) ?? []).Where(kv => !(Js.Num(kv.Value?["until"]) < DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())).Take(20)
                     .Select(kv => new KeyValuePair<string, JsonNode?>(kv.Key, string.Concat((kv.Value?["can"] as JsonArray ?? []).Select(x => ((string?)x ?? " ")[0])) + (kv.Value?["guestOf"] != null ? "g" : "")))),
                 ["obs"] = Rtmp == null ? null : new JsonObject { ["port"] = Rtmp.Port, ["listening"] = Rtmp.Error == null, ["live"] = Rtmp.Live > 0, ["error"] = Rtmp.Error },
+                ["busy"] = Update?.Busy(), ["enc"] = Flashes?.EncPub, ["publicIp"] = await PublicIpCached(),
+                ["watching"] = new JsonObject(LiveStats.Where(kv => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - (Js.Num(kv.Value["at"]) ?? 0) < 60000).Take(10)
+                    .Select(kv => new KeyValuePair<string, JsonNode?>(kv.Key[..12], new JsonArray(Js.Num(kv.Value["viewers"]) ?? 0, Js.Num(kv.Value["quality"]?["poor"]) ?? 0, Js.Num(kv.Value["quality"]?["n"]) ?? 0, Js.Num(kv.Value["quality"]?["kbps"]))))),
                 ["host"] = Hosting?.Status() is { } hs ? new JsonObject { ["hosting"] = hs["hosting"]?.DeepClone(), ["hostedBytes"] = hs["hostedBytes"]?.DeepClone(), ["channels"] = hs["channels"]?.DeepClone(), ["videoDir"] = hs["videoDir"]?.DeepClone(), ["downloading"] = hs["downloading"]?.DeepClone() } : null,
             };
+            if (Options.FlashParent != null) info["flash"] = new JsonObject { ["parent"] = Options.FlashParent, ["tag"] = Options.FlashTag };
+            if (Flashes?.People > 0) info["flashes"] = Flashes.People;
             try { Engine.PublishNodeInfo(new JsonObject { ["grant"] = JsonNode.Parse(grantJson), ["roles"] = JsonSerializer.SerializeToNode(roles.Take(8).ToList()), ["addrs"] = JsonSerializer.SerializeToNode(addrs.Take(8).ToList()), ["info"] = info }); }
             catch (Exception e) { Log("announce failed: " + e.Message); }
             var wake = new TaskCompletionSource(); announceWake = wake;
@@ -435,6 +441,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
     }
     TaskCompletionSource? announceWake;
     /// <summary>Tell the owner's Devices page now (after a change), not at the next half-minute.</summary>
+    async Task<string?> PublicIpCached() { if (DateTime.UtcNow - publicIpAt > TimeSpan.FromMinutes(10)) { publicIpAt = DateTime.UtcNow; publicIp = (await Internet.PublicIPv4())?.ToString() ?? publicIp; } return publicIp; }
     public void AnnounceSoon() => _ = Task.Delay(1500).ContinueWith(_ => announceWake?.TrySetResult());
 
     // ---- the peer mesh: the network's WebRTC room, as every browser joins it (see Mesh)
@@ -444,6 +451,11 @@ public sealed class OpenTubeNode : IAsyncDisposable
     public Earnings? Earn { get; private set; }
     public Updater? Update { get; private set; }
     public Coordination? Coord { get; private set; }
+    public Flash? Flashes { get; private set; }
+    /// <summary>The hubs' latest viewer counts for streams this computer sends or relays (stream -> message), for "watching" in its status.</summary>
+    public readonly ConcurrentDictionary<string, JsonObject> LiveStats = new();
+    public void NoteViewers(string stream, JsonObject m) { m["at"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); LiveStats[stream] = m; }
+    string? publicIp; DateTime publicIpAt;
     async Task JoinMesh()
     {
         await Task.Delay(1500, stop.Token).ContinueWith(_ => { });
