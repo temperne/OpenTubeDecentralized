@@ -6,6 +6,7 @@ namespace OpenTube.App;
 /// opentube torrent seed FILE [--port=N]            seed a file; prints its infohash (the same WebTorrent gives it)
 /// opentube torrent get INFOHASH OUT HOST:PORT…      download from peers (only the infohash needed: the rest comes from them)
 /// opentube torrent hash FILE                       just the infohash
+/// --tracker=wss://…   (seed, get) also on this WebSocket tracker, with browsers over WebRTC (repeatable)
 /// </summary>
 static class TorrentTool
 {
@@ -14,13 +15,15 @@ static class TorrentTool
         if (a.Length < 2) { Console.Error.WriteLine("opentube torrent seed FILE [--port=N] | get INFOHASH OUT HOST:PORT… | hash FILE"); return 2; }
         var port = int.TryParse(a.FirstOrDefault(x => x.StartsWith("--port="))?[7..], out var pp) ? pp : 0;
         var rest = a.Where(x => !x.StartsWith("--")).ToArray();
+        var trackers = a.Where(x => x.StartsWith("--tracker=")).Select(x => x[10..]).ToList();   // WebSocket trackers: browsers (WebRTC)
+        OpenTube.Node.WebTorrentPeers? Web(BtClient bt, TorrentData t) { if (trackers.Count == 0) return null; var w = new OpenTube.Node.WebTorrentPeers(bt, Console.Error.WriteLine); w.Announce(t, trackers); return w; }
         switch (rest[0])
         {
             case "hash": Console.WriteLine(TorrentMeta.Create(rest[1]).InfoHash); return 0;
             case "seed":
             {
                 var bt = new BtClient { Log = Console.Error.WriteLine }; var t = bt.Add(TorrentData.Seed(rest[1]));
-                bt.Listen(port);
+                bt.Listen(port); var web = Web(bt, t);
                 Console.WriteLine($"{t.InfoHashHex} {bt.Port}");
                 while (true) { Thread.Sleep(5000); Console.Error.WriteLine($"peers {bt.PeerCount} uploaded {t.Uploaded}"); }
             }
@@ -28,7 +31,7 @@ static class TorrentTool
             {
                 var bt = new BtClient { Log = Console.Error.WriteLine }; var t = bt.Add(TorrentData.Fetch(rest[1], rest[2]));
                 var done = new TaskCompletionSource(); t.Done += _ => done.TrySetResult();
-                bt.Listen(port);
+                bt.Listen(port); var web = Web(bt, t);
                 foreach (var hp in rest[3..]) { var i = hp.LastIndexOf(':'); _ = bt.Connect(t, hp[..i], int.Parse(hp[(i + 1)..])); }
                 var t0 = DateTime.UtcNow;
                 if (!done.Task.Wait(TimeSpan.FromMinutes(5))) { Console.Error.WriteLine($"timed out: {t.HaveCount} pieces"); return 1; }

@@ -12,7 +12,9 @@ namespace OpenTube.Core.BitTorrent;
 public sealed class BtClient : IAsyncDisposable
 {
     /// <summary>Peer id in WebTorrent's style (-WW0300-…), so browsers treat us like any WebTorrent peer.</summary>
-    public readonly byte[] PeerId = [.. Encoding.ASCII.GetBytes("-OT0100-"), .. System.Security.Cryptography.RandomNumberGenerator.GetBytes(12)];
+    public readonly byte[] PeerId;
+    /// <param name="peerId">20 bytes (a node uses SHA-1("opentube-node:" + its key), so browsers know whose bytes they get).</param>
+    public BtClient(byte[]? peerId = null) => PeerId = peerId ?? [.. Encoding.ASCII.GetBytes("-OT0100-"), .. System.Security.Cryptography.RandomNumberGenerator.GetBytes(12)];
     public readonly ConcurrentDictionary<string, TorrentData> Torrents = [];
     readonly ConcurrentDictionary<PeerSession, TorrentData?> peers = [];
     TcpListener? listener; readonly CancellationTokenSource cts = new();
