@@ -9,11 +9,20 @@ else
 {
     <div class="panel @(unbacked > 0 ? "warn" : "")">
         <div class="head-row"><h3>Back up</h3>@if (unbacked > 0) { <span class="badge warnb">@unbacked key@(unbacked == 1 ? "" : "s") not backed up</span> } else { <span class="badge ok">all keys backed up</span> }</div>
-        <p class="sub">Your keys exist only on this device. Whoever holds a channel’s key controls that channel. “Back up all keys” saves your personal key (with your encryption and messaging keys) and every channel and list key in one file: keep it private. “Import keys” takes that file, or any single key file, here or on the website.</p>
+        <p class="sub">Your keys exist only on this device. Whoever holds a channel’s key controls that channel. “Back up all keys” saves your personal key (with your encryption and messaging keys) and every channel and list key in one file, locked with a password you choose: without it the file is useless, so remember it (nobody can recover it). “Import keys” takes that file, or any single key file, here or on the website.</p>
+        <label>Password for exported files (at least @KeyFile.MinPassword characters)</label>
+        <div class="row-actions"><input type="password" id="keys-pass" @bind="pass" @bind:event="oninput" autocomplete="new-password" class="grow-input" placeholder="Password" /><input type="password" id="keys-pass2" @bind="pass2" @bind:event="oninput" autocomplete="new-password" class="grow-input" placeholder="Repeat it" /></div>
         <div class="row-actions">
             <button class="primary" @onclick="Backup">Back up all keys</button>
             <label class="button file-button">Import keys <InputFile OnChange="Import" accept=".json,application/json" /></label>
         </div>
+        @if (locked != null)
+        {
+            <div class="panel">
+                <p>This file is locked with a password. Enter it to import the keys.</p>
+                <div class="row-actions"><input type="password" id="keys-unlock" @bind="unlockPass" @bind:event="oninput" autocomplete="current-password" class="grow-input" placeholder="Password" @onkeydown="UnlockKey" /><button class="primary" @onclick="Unlock">Unlock and import</button><button @onclick="CancelUnlock">Cancel</button></div>
+            </div>
+        }
         @if (pending != null)
         {
             <div class="panel">
@@ -68,25 +77,41 @@ else
 }
 @if (msg != null) { <div class="sub" id="keys-status">@msg</div> }
 @code {
-    int unbacked; string name = ""; string? msg, rekey; bool confirmRetire;
+    int unbacked; string name = "", pass = "", pass2 = "", unlockPass = ""; string? locked; string? msg, rekey; bool confirmRetire;
     System.Text.Json.Nodes.JsonObject? pending; int pendingControls;
     List<(string, bool, bool)>? mkeys;
     protected override async Task OnInitializedAsync() { base.OnInitialized(); S.Keys.Changed += Reload; S.Mail.Changed += Reload; await Load(); }
     async Task Load() { unbacked = await S.Keys.NotBackedUp(); if (name.Length == 0) name = await S.Keys.Name(); mkeys = await S.Mail.KeyList(); }
     void Reload() => InvokeAsync(async () => { await Load(); StateHasChanged(); });
     async Task Run(Func<Task> f, string doing = "Working (a little proof of work)…") { msg = doing; StateHasChanged(); try { await f(); msg = "Done."; } catch (Exception e) { msg = e.Message; } await Load(); }
-    Task Backup() => Run(async () => { var (n, t) = await S.Keys.BackupAll(); await Files.Save(n, t); }, "Saving…");
-    Task Export(string pub) => Run(async () => { var (n, t) = await S.Keys.ExportChannel(pub); await Files.Save(n, t); }, "Saving…");
+    string? PassProblem() => pass.Length < KeyFile.MinPassword ? $"First choose a password of at least {KeyFile.MinPassword} characters (under Back up): the file is locked with it." : pass != pass2 ? "The two passwords don’t match." : null;
+    Task Backup() => PassProblem() is { } p ? Say(p) : Run(async () => { var (n, t) = await S.Keys.BackupAll(pass); await Files.Save(n, t); }, "Locking and saving…");
+    Task Export(string pub) => PassProblem() is { } p ? Say(p) : Run(async () => { var (n, t) = await S.Keys.ExportChannel(pub, pass); await Files.Save(n, t); }, "Locking and saving…");
+    Task Say(string m) { msg = m; return Task.CompletedTask; }
     async Task Import(InputFileChangeEventArgs e)
     {
         try
         {
             using var r = new StreamReader(e.File.OpenReadStream(1 << 20)); var text = await r.ReadToEndAsync();
-            var (res, personal) = await S.Keys.Import(text);
-            pending = personal; pendingControls = res.Controls;
-            msg = res.Channels > 0 ? $"Imported {res.Channels} channel/list key{(res.Channels == 1 ? "" : "s")}." : personal != null ? null : "Those keys are already here.";
+            if (KeyFile.IsEncrypted(text)) { locked = text; unlockPass = ""; msg = null; return; }
+            await ImportText(text, null);
         }
         catch (Exception ex) { msg = ex.Message; }
+    }
+    Task UnlockKey(KeyboardEventArgs e) => e.Key == "Enter" ? Unlock() : Task.CompletedTask;
+    void CancelUnlock() { locked = null; unlockPass = ""; }
+    async Task Unlock()
+    {
+        if (locked == null) return;
+        msg = "Unlocking…"; StateHasChanged();
+        try { await ImportText(locked, unlockPass); locked = null; unlockPass = ""; }
+        catch (Exception ex) { msg = ex.Message; }
+    }
+    async Task ImportText(string text, string? password)
+    {
+        var (res, personal) = await S.Keys.Import(text, password);
+        pending = personal; pendingControls = res.Controls;
+        msg = res.Channels > 0 ? $"Imported {res.Channels} channel/list key{(res.Channels == 1 ? "" : "s")}." : personal != null ? null : "Those keys are already here.";
         await Load();
     }
     async Task UsePending() { await S.Keys.UsePersonal(pending!); msg = "Using the key from the file: restarting…"; StateHasChanged(); await Files.Restart(); }

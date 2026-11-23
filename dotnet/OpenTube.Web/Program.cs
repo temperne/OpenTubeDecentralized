@@ -23,6 +23,10 @@ builder.Services.AddSingleton<IVideoPlayer, BrowserTorrents>();
 builder.Services.AddSingleton(new UiPlatform("C# · WebAssembly"));
 builder.Services.AddSingleton<IDeviceFiles, BrowserFiles>();
 var host = builder.Build();
+{   // password-locked key files: the browser's own PBKDF2 (a managed one in WebAssembly takes many seconds)
+    var js = host.Services.GetRequiredService<IJSRuntime>();
+    KeyFile.Pbkdf2 = async (pw, salt, it) => Convert.FromBase64String(await js.InvokeAsync<string>("otKdf", Convert.ToBase64String(pw), Convert.ToBase64String(salt), it));
+}
 await host.Services.GetRequiredService<ClientSession>().Start();
 await host.RunAsync();
 

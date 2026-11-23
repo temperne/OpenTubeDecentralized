@@ -2211,6 +2211,49 @@ async function addChannelKey(k) {
   ownedSigners.set(k.pub, await makeSigner(k));
   await kv.set('channelKeys', channelKeys);
 }
+// ---- key files locked with a password (the C# site and app read and write the same format): the file's JSON, encrypted
+// with AES-256-GCM under a key derived from the password (PBKDF2-SHA256, random salt, the iteration count in the file).
+const KEYFILE_ITER = 210000, KEYFILE_MIN = 8;
+async function keyFileKey(password, salt, iterations, use) {
+  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(password.normalize('NFC')), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations }, base, { name: 'AES-GCM', length: 256 }, false, [use]);
+}
+async function lockKeyFile(obj, password) {
+  const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await keyFileKey(password, salt, KEYFILE_ITER, 'encrypt'), new TextEncoder().encode(JSON.stringify(obj)));
+  return { format: 'opentube-encrypted', v: 1, kdf: 'pbkdf2-sha256', iterations: KEYFILE_ITER, salt: b64u.enc(salt), iv: b64u.enc(iv), ct: b64u.enc(new Uint8Array(ct)),
+    note: 'OpenTube keys, locked with a password. Import this file in OpenTube and enter the password.' };
+}
+async function unlockKeyFile(f, password) {
+  if (f.kdf !== 'pbkdf2-sha256' || !(f.iterations >= 1000 && f.iterations <= 10000000)) throw new Error('This locked file uses a format this version doesn’t know');
+  try {
+    const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64u.dec(f.iv) }, await keyFileKey(password, b64u.dec(f.salt), f.iterations, 'decrypt'), b64u.dec(f.ct));
+    return new TextDecoder().decode(plain);
+  } catch { throw new Error('Wrong password'); }
+}
+// A small password dialog: resolves to the password, or null if cancelled. With twice: asks for it twice (for a new file).
+function askPassword(title, twice) {
+  return new Promise((resolve) => {
+    const p1 = h('input', { type: 'password', id: 'pw1', autocomplete: twice ? 'new-password' : 'current-password', placeholder: 'Password' });
+    const p2 = twice ? h('input', { type: 'password', id: 'pw2', autocomplete: 'new-password', placeholder: 'Repeat it' }) : null;
+    const err = h('div', { class: 'sub', id: 'pw-err' });
+    const d = h('dialog', { id: 'pw-dialog', style: 'max-width:420px;width:calc(100% - 32px)' });
+    const done = (v) => { d.close(); d.remove(); resolve(v); };
+    const ok = () => {
+      if (twice && p1.value.length < KEYFILE_MIN) return (err.textContent = `Use at least ${KEYFILE_MIN} characters.`);
+      if (twice && p1.value !== p2.value) return (err.textContent = 'The two passwords don’t match.');
+      if (!p1.value) return (err.textContent = 'Enter the password.');
+      done(p1.value);
+    };
+    for (const i of [p1, p2]) if (i) { i.style.cssText = 'display:block;width:100%;margin:6px 0;box-sizing:border-box'; i.onkeydown = (e) => { if (e.key === 'Enter') ok(); }; }
+    d.append(h('h3', {}, title),
+      h('p', { class: 'sub' }, twice ? 'The file is locked with this password. Without it the file is useless, and nobody can recover it: remember it.' : 'This file is locked with a password.'),
+      p1, p2 || '', err,
+      h('div', { class: 'row' }, h('button', { class: 'primary', id: 'pw-ok', onclick: ok }, twice ? 'Lock and save' : 'Unlock'), h('button', { onclick: () => done(null) }, 'Cancel')));
+    d.addEventListener('cancel', (e) => { e.preventDefault(); done(null); });
+    document.body.append(d); d.showModal(); p1.focus();
+  });
+}
 function download(name, obj) {
   const a = h('a', { href: URL.createObjectURL(new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' })), download: name });
   document.body.append(a); a.click(); a.remove();
@@ -2224,33 +2267,41 @@ function markExported(pub) {
   if (pub === me.pub) kv.set('personalExported', (personalExported = true));
   scheduleRender();
 }
-function exportChannelKey(chainId) {
+async function exportChannelKey(chainId) {
   const g = genesisFor(chainId); if (!g) return;
   const k = channelKeys[g.author] || (g.author === me.pub ? identity : null);
   if (!k) return toast('This browser does not hold the key for that ' + g.payload.kind);
   const file = { format: 'opentube-key', kind: g.payload.kind, chain: chainId, name: g.payload.name, pub: k.pub, priv: k.priv };
   // An older channel shares the personal key: say so in the file, and list everything that key controls.
   if (g.author === me.pub) Object.assign(file, { sharedWithPersonalKey: true, controls: personalChains() });
-  download(`opentube-${g.payload.kind}-${safeName(g.payload.name)}-${fp(k.pub)}.json`, file);
+  const pw = await askPassword(`Lock the ${g.payload.kind} key with a password`, true); if (pw == null) return;
+  download(`opentube-${g.payload.kind}-${safeName(g.payload.name)}-${fp(k.pub)}.json`, await lockKeyFile(file, pw));
   markExported(k.pub);
 }
 const keyExported = (pub) => pub === me.pub ? personalExported : !!channelKeys[pub]?.exported;
-function backupAllKeys() {
+async function backupAllKeys() {
   const owned = (pub) => [...new Set([...E.directory.keys(), ...mempool.keys(), ...chains.keys()])].filter(id => id !== MAIN_ID && genesisFor(id)?.author === pub);
-  download(`opentube-all-keys-${new Date().toISOString().slice(0, 10)}.json`, {
+  const pw = await askPassword('Lock your keys with a password', true); if (pw == null) return;
+  download(`opentube-all-keys-${new Date().toISOString().slice(0, 10)}.json`, await lockKeyFile({
     format: 'opentube-keys', created: new Date().toISOString(),
     personal: { pub: identity.pub, priv: identity.priv, ...(identity.enc ? { enc: identity.enc } : {}), ...(identity.msg ? { msg: identity.msg } : {}), controls: personalChains() },
     channels: Object.values(channelKeys).map(k => {
       const id = k.chain || owned(k.pub)[0]; const g = id && genesisFor(id);
       return { chain: id || null, kind: g?.payload.kind || 'channel', name: g?.payload.name || k.name || '', pub: k.pub, priv: k.priv };
     })
-  });
+  }, pw));
   markExported(me.pub); for (const pub of Object.keys(channelKeys)) markExported(pub);
-  toast('All keys saved in one file. Keep it private.');
+  toast('All keys saved in one file, locked with your password.');
 }
 // One import for every kind of key file: a full backup, a channel/list key, or a personal key.
 async function importKeyFile(text) {
   let f; try { f = JSON.parse(text); } catch { return toast('That file is not JSON'); }
+  if (f?.format === 'opentube-encrypted') {
+    for (;;) {
+      const pw = await askPassword('Unlock the key file', false); if (pw == null) return;
+      try { f = JSON.parse(await unlockKeyFile(f, pw)); break; } catch (e) { toast(e.message); if (e.message !== 'Wrong password') return; }
+    }
+  }
   const channelEntries = f.format === 'opentube-keys' ? (f.channels || []) : (f.kind === 'channel' || f.kind === 'list') && !f.sharedWithPersonalKey ? [f] : [];
   const personal = f.format === 'opentube-keys' ? f.personal : (f.kind === 'personal' || f.sharedWithPersonalKey || !f.kind) ? f : null;
   let added = 0, firstChain = null;
@@ -7906,7 +7957,7 @@ views.me = { render(all = false) {
     h('div', { class: 'panel', style: unbacked ? 'border-color:var(--warn)' : '' },
       h('div', { class: 'row', style: 'justify-content:space-between' }, h('h3', { style: 'margin:0' }, 'Keys & backup'),
         unbacked ? h('span', { class: 'badge warn' }, `${unbacked} key${unbacked === 1 ? '' : 's'} not backed up`) : h('span', { class: 'badge ok' }, 'all keys backed up')),
-      h('p', { class: 'sub' }, 'Your keys exist only in this browser. Whoever holds a channel’s private key controls that channel. “Back up all keys” saves your personal key and every channel and list key in one file. “Import keys” accepts that file, or any single key file, on another browser.'),
+      h('p', { class: 'sub' }, 'Your keys exist only in this browser. Whoever holds a channel’s private key controls that channel. “Back up all keys” saves your personal key and every channel and list key in one file, locked with a password you choose (remember it: nobody can recover it). “Import keys” accepts that file, or any single key file, on another browser or in the app.'),
       h('div', { class: 'row' },
         h('button', { class: 'primary', onclick: backupAllKeys }, 'Back up all keys'),
         h('button', { onclick: () => importIn.click() }, 'Import keys'), importIn),

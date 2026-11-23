@@ -44,8 +44,9 @@ public sealed class Keys
     }).ToList();
 
     /// <summary>Everything in one file (keep it private): your personal key with its encryption and messaging keys, and every channel and list key.</summary>
-    public async Task<(string Name, string Json)> BackupAll()
+    public async Task<(string Name, string Json)> BackupAll(string password)
     {
+        if (password.Length < KeyFile.MinPassword) throw new ArgumentException($"Choose a password of at least {KeyFile.MinPassword} characters");
         var id = await Identity();
         var personal = new JsonObject { ["pub"] = id["pub"]?.DeepClone(), ["priv"] = id["priv"]?.DeepClone() };
         if (id["enc"] != null) personal["enc"] = id["enc"]!.DeepClone();
@@ -59,18 +60,20 @@ public sealed class Keys
             chans.Add(new JsonObject { ["chain"] = chain, ["kind"] = (string?)g?["payload"]?["kind"] ?? "channel", ["name"] = (string?)g?["payload"]?["name"] ?? (string?)k["name"] ?? "", ["pub"] = pub, ["priv"] = k["priv"]?.DeepClone() });
         }
         var file = new JsonObject { ["format"] = "opentube-keys", ["created"] = DateTimeOffset.UtcNow.ToString("o"), ["personal"] = personal, ["channels"] = chans };
+        var locked = await KeyFile.Lock(file.ToJsonString(), password);
         await MarkAllExported();
-        return ($"opentube-all-keys-{DateTime.UtcNow:yyyy-MM-dd}.json", file.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        return ($"opentube-all-keys-{DateTime.UtcNow:yyyy-MM-dd}.json", locked);
     }
     /// <summary>One channel's (or list's) key in a file of its own, to hand that channel to another device or person.</summary>
-    public async Task<(string Name, string Json)> ExportChannel(string pub)
+    public async Task<(string Name, string Json)> ExportChannel(string pub, string password)
     {
+        if (password.Length < KeyFile.MinPassword) throw new ArgumentException($"Choose a password of at least {KeyFile.MinPassword} characters");
         var ck = s.ChannelKeys; if (ck[pub] is not JsonObject k) throw new InvalidOperationException("This device doesn’t hold that key");
         var info = Channels().First(c => c.Pub == pub);
         var file = new JsonObject { ["format"] = "opentube-key", ["kind"] = info.Kind, ["chain"] = info.Chain, ["name"] = info.Name, ["pub"] = pub, ["priv"] = k["priv"]?.DeepClone() };
         k["exported"] = true; await s.SaveChannelKeys(ck); Changed?.Invoke();
         var safe = string.Concat(info.Name.Select(c => char.IsLetterOrDigit(c) || c is '-' or '_' ? c : '_'));
-        return ($"opentube-{info.Kind}-{(safe.Length > 0 ? safe[..Math.Min(40, safe.Length)] : "key")}-{pub[..6]}.json", file.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        return ($"opentube-{info.Kind}-{(safe.Length > 0 ? safe[..Math.Min(40, safe.Length)] : "key")}-{pub[..6]}.json", await KeyFile.Lock(file.ToJsonString(), password));
     }
 
     /// <summary>A key pair is real: its private key signs, and the public key verifies.</summary>
@@ -82,8 +85,14 @@ public sealed class Keys
     public sealed record ImportResult(int Channels, string? PersonalPub, int Controls, string? FirstChain);
     /// <summary>Read a key file: a full backup, a channel/list key, or a personal key. Channel keys are added at once;
     /// a different personal key is returned (to confirm), then <see cref="UsePersonal"/>.</summary>
-    public async Task<(ImportResult Result, JsonObject? Personal)> Import(string text)
+    /// <param name="password">For a file locked with a password (see <see cref="KeyFile"/>); unlocked files need none.</param>
+    public async Task<(ImportResult Result, JsonObject? Personal)> Import(string text, string? password = null)
     {
+        if (KeyFile.IsEncrypted(text))
+        {
+            if (string.IsNullOrEmpty(password)) throw new ArgumentException("This file is locked with a password: enter it");
+            text = await KeyFile.Unlock(text, password);
+        }
         JsonObject f; try { f = JsonNode.Parse(text) as JsonObject ?? throw new Exception(); } catch { throw new ArgumentException("That file isn’t an OpenTube key file"); }
         var backup = (string?)f["format"] == "opentube-keys"; var kind = (string?)f["kind"];
         var chans = backup ? (f["channels"] as JsonArray ?? []).OfType<JsonObject>().ToList() : (kind is "channel" or "list") && !Js.IsTrue(f["sharedWithPersonalKey"]) ? [f] : [];

@@ -1,4 +1,11 @@
 // The thin bindings OpenTube's C# website needs from the browser. Everything else is C# (WebAssembly).
+// PBKDF2-SHA256 → 32 bytes (password-locked key files), base64 in and out.
+window.otKdf = async (pw, salt, iterations) => {
+  const dec = (b) => Uint8Array.from(atob(b), c => c.charCodeAt(0));
+  const base = await crypto.subtle.importKey('raw', dec(pw), 'PBKDF2', false, ['deriveBits']);
+  const bits = new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: dec(salt), iterations }, base, 256));
+  return btoa(String.fromCharCode(...bits));
+};
 // Storage: the same IndexedDB the JavaScript page used, so a browser keeps its key and its chains.
 (() => {
   const open = () => new Promise((res, rej) => {
