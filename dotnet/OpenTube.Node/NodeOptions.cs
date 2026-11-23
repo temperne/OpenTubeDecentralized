@@ -42,6 +42,8 @@ public sealed class NodeOptions
     public bool Ranks { get; set; } = true;
     /// <summary>Join the network's WebRTC room (the peer mesh) like every browser. --no-mesh (or MESH=0) turns it off.</summary>
     public bool Mesh { get; set; } = true;
+    /// <summary>Find and announce hosted videos on the BitTorrent DHT (BEP 5) too. --no-dht (or DHT=0) turns it off.</summary>
+    public bool Dht { get; set; } = true;
     /// <summary>A flash computer: the computer that started it (its node key) and its tag (set by the setup script).</summary>
     public string? FlashParent { get; set; }
     public string? FlashTag { get; set; }
@@ -87,6 +89,7 @@ public sealed class NodeOptions
         o.VideoDir = Get("videos", "VIDEO_DIR") ?? o.VideoDir;
         if (double.TryParse(Get("cap-gb", "CAP_GB"), System.Globalization.CultureInfo.InvariantCulture, out var cap) && cap > 0) o.CapGB = cap;
         if (args.Contains("--no-mesh") || Environment.GetEnvironmentVariable("MESH") == "0") o.Mesh = false;
+        if (args.Contains("--no-dht") || Environment.GetEnvironmentVariable("DHT") == "0") o.Dht = false;
         if (Get("mesh-trackers", "MESH_TRACKERS") is { Length: > 0 } mt) o.MeshTrackers = mt.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
         o.RankName = Get("ranking-name", "NODE_NAME");
         o.Site = Get("site", "NODE_SITE")?.TrimEnd('/');

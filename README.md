@@ -44,8 +44,11 @@ runs:
 - **a full node** that keeps the network, serves the website, the tracker and a live hub, and joins the peer mesh;
 - **video hosting** for your joined channels and your own channels: their videos in a folder (`--videos=…`, default
   `~/OpenTube Videos`, the same `Channel/channel.json` layout as a browser), shared with viewers' browsers over WebRTC
-  on the meet places (every public computer's tracker) and with other computers over BitTorrent; `--cap-gb=5` limits
-  each channel you joined (your own channels are never trimmed);
+  on the meet places (every public computer's tracker) and with other computers over BitTorrent, found through
+  trackers and the BitTorrent DHT (BEP 5, so any BitTorrent app can find them by infohash; `--no-dht` turns it off);
+  `--cap-gb=5` limits each channel you joined (your own channels are never trimmed);
+- **the C# website** (Blazor WebAssembly) at `/app/`, built by the node itself the first time and after each update.
+  It runs the same C# engine in the browser and shares the browser's key and channels with the JavaScript page;
 - **an OBS receiver** (`rtmp://this-computer/live`, a stream key per person), with recordings, group streams,
   YouTube forwarding and flash computers;
 - **a public address** by itself: its own HTTPS when it's directly on the internet, otherwise a Cloudflare tunnel.

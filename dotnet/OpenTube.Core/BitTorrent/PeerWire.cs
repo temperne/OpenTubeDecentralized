@@ -161,6 +161,9 @@ public sealed class PeerSession : IAsyncDisposable
     public TorrentData? Torrent { get; private set; }
     public byte[]? RemoteId { get; private set; }
     public string Label = "";
+    /// <summary>The DHT (BEP 5): this client's DHT UDP port to tell the peer (0: none); the peer's, when it tells us.</summary>
+    public int DhtPort; public Action<int>? OnDhtPort;
+    bool peerSupportsDht;
     bool[] peerHas = []; bool peerChokingUs = true, weInterested, peerSupportsExt; int peerUtMetadata, peerMetaSize;
     int outstanding;
     const int Pipeline = 16;
@@ -191,13 +194,14 @@ public sealed class PeerSession : IAsyncDisposable
             if (torrent != null) { Torrent = torrent; await SendHandshake(); }
             var h = new byte[68]; await s.ReadExactlyAsync(h, ct);
             if (!h.AsSpan(0, 20).SequenceEqual(Proto)) throw new InvalidDataException("not BitTorrent: " + Convert.ToHexString(h, 0, 24));
-            peerSupportsExt = (h[25] & 0x10) != 0;
+            peerSupportsExt = (h[25] & 0x10) != 0; peerSupportsDht = (h[27] & 0x01) != 0;
             var ih = h[28..48]; RemoteId = h[48..68];
             if (Torrent == null) { Torrent = lookup?.Invoke(ih) ?? throw new InvalidDataException("unknown torrent"); await SendHandshake(); }
             else if (!ih.AsSpan().SequenceEqual(Torrent.InfoHash)) throw new InvalidDataException("wrong torrent");
             var t = Torrent;
             if (peerSupportsExt) await SendExtHandshake();
             if (t.Meta != null && t.HaveCount > 0) await SendBitfield();
+            if (peerSupportsDht && DhtPort > 0) await Msg(9, [(byte)(DhtPort >> 8), (byte)DhtPort]);
             t.PieceDone += OnPieceDone;
             t.MetaReady += OnMetaReady;
             try { await ReadLoop(ct); }
@@ -208,7 +212,7 @@ public sealed class PeerSession : IAsyncDisposable
 
     async Task SendHandshake()
     {
-        var h = new byte[68]; Proto.CopyTo(h, 0); h[25] |= 0x10; Torrent!.InfoHash.CopyTo(h, 28); peerId.CopyTo(h, 48);
+        var h = new byte[68]; Proto.CopyTo(h, 0); h[25] |= 0x10; if (DhtPort > 0) h[27] |= 0x01; Torrent!.InfoHash.CopyTo(h, 28); peerId.CopyTo(h, 48);
         await Write(h);
     }
     async Task SendExtHandshake()
@@ -282,6 +286,7 @@ public sealed class PeerSession : IAsyncDisposable
                 else await Fill();
                 break;
             }
+            case 9: if (p.Length >= 2) OnDhtPort?.Invoke(p.Span[0] << 8 | p.Span[1]); break;   // the peer's DHT port
             case 20: await HandleExt(p.Span[0], p[1..]); break;
         }
     }

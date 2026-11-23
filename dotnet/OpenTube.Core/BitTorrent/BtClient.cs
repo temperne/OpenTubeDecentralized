@@ -26,7 +26,40 @@ public sealed class BtClient : IAsyncDisposable
     public IEnumerable<PeerSession> Sessions => peers.Keys;
     public int PeersOf(string infoHash) => peers.Count(p => p.Key.Torrent?.InfoHashHex == infoHash);
 
-    public TorrentData Add(TorrentData t) => Torrents.GetOrAdd(t.InfoHashHex, t);
+    public TorrentData Add(TorrentData t) { var added = Torrents.GetOrAdd(t.InfoHashHex, t); if (added == t && Dht != null) _ = FindPeers(t); return added; }
+
+    // ---- the DHT (BEP 5): peers without a tracker
+    public Dht? Dht { get; private set; }
+    /// <summary>The most TCP peers per torrent this client dials by itself (it still accepts more).</summary>
+    public int WantPeers = 30;
+    readonly ConcurrentDictionary<string, HashSet<string>> dialed = new();
+    /// <summary>Find peers on the DHT for every torrent, now and every 15 minutes, and announce this client's TCP port there.</summary>
+    public void UseDht(Dht dht)
+    {
+        Dht = dht;
+        _ = Task.Run(async () =>
+        {
+            while (!cts.IsCancellationRequested)
+            {
+                foreach (var t in Torrents.Values.ToList()) { if (cts.IsCancellationRequested) return; try { await FindPeers(t); } catch (Exception e) { Log?.Invoke("[dht] " + e.Message); } }
+                await Task.Delay(TimeSpan.FromMinutes(15), cts.Token).ContinueWith(_ => { });
+            }
+        });
+    }
+    /// <summary>One DHT lookup for a torrent: dial the peers it finds (up to <see cref="WantPeers"/>), announce our port.</summary>
+    public async Task FindPeers(TorrentData t)
+    {
+        if (Dht == null) return;
+        var tried = dialed.GetOrAdd(t.InfoHashHex, _ => []);
+        void Dial(System.Net.IPEndPoint ep)
+        {
+            if (PeersOf(t.InfoHashHex) >= WantPeers || t.Complete && t.Meta != null) return;   // a seed waits for peers to come to it
+            lock (tried) if (!tried.Add(ep.ToString())) return;
+            _ = Connect(t, ep.Address.ToString(), ep.Port);
+        }
+        if (Port == 0) await Dht.GetPeers(t.InfoHash, Dial);   // not listening: only looking
+        else await Dht.Announce(t.InfoHash, Port, Dial);
+    }
     public void Remove(string infoHash) { if (Torrents.TryRemove(infoHash, out _)) foreach (var p in peers.Keys.Where(p => p.Torrent?.InfoHashHex == infoHash)) _ = p.DisposeAsync(); }
 
     /// <summary>Accept peers on a TCP port (0 picks one).</summary>
@@ -55,7 +88,7 @@ public sealed class BtClient : IAsyncDisposable
             s = Mse.LooksPlain(first) ? new PrefixStream(s, first) : await Mse.Accept(s, first, Mse.Finder(Torrents.Values.Select(x => x.InfoHash).ToList()), t.Token);
         }
         catch (Exception e) { Log?.Invoke($"peer {label}: {e.Message}"); c.Dispose(); return; }
-        await AddPeer(s, null, label + (s is PrefixStream ? "" : " (encrypted)"));
+        await AddPeer(s, null, label + (s is PrefixStream ? "" : " (encrypted)"), (c.Client.RemoteEndPoint as IPEndPoint)?.Address);
     }
     /// <summary>Encrypt outgoing TCP connections (falling back to plain if the other side won't).</summary>
     public bool Encrypt = true;
@@ -72,14 +105,19 @@ public sealed class BtClient : IAsyncDisposable
                 if (attempt == 0) s = await Mse.Connect(s, t.InfoHash, to.Token);
             }
             catch (Exception e) { c.Dispose(); Log?.Invoke($"peer {host}:{port}{(attempt == 0 ? " (encrypted)" : "")}: {e.Message}"); continue; }
-            await AddPeer(s, t, $"{host}:{port}{(attempt == 0 ? " (encrypted)" : "")}");
+            await AddPeer(s, t, $"{host}:{port}{(attempt == 0 ? " (encrypted)" : "")}", (c.Client.RemoteEndPoint as IPEndPoint)?.Address);
             return;
         }
     }
     /// <summary>A peer over any stream. <paramref name="t"/> null: the peer says which torrent in its handshake.</summary>
-    public async Task AddPeer(Stream stream, TorrentData? t, string label)
+    public async Task AddPeer(Stream stream, TorrentData? t, string label, IPAddress? remote = null)
     {
         var p = new PeerSession(stream, PeerId) { Label = label, Log = Log };
+        if (Dht is { } dht && remote != null)   // TCP peers tell each other their DHT ports: one more node to know
+        {
+            p.DhtPort = dht.Port; var ip = remote.IsIPv4MappedToIPv6 ? remote.MapToIPv4() : remote;
+            p.OnDhtPort = port => { if (port > 0 && ip.AddressFamily == AddressFamily.InterNetwork) _ = dht.Query(new IPEndPoint(ip, port), "ping", []); };
+        }
         OnSession?.Invoke(p);
         peers[p] = t;
         try { await p.Run(t, ih => Torrents.GetValueOrDefault(Convert.ToHexStringLower(ih))); }
@@ -87,7 +125,7 @@ public sealed class BtClient : IAsyncDisposable
     }
     public async ValueTask DisposeAsync()
     {
-        cts.Cancel(); listener?.Stop();
+        cts.Cancel(); listener?.Stop(); Dht?.Dispose();
         foreach (var p in peers.Keys) await p.DisposeAsync();
     }
 }

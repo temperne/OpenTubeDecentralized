@@ -67,6 +67,7 @@ public sealed class Host : IAsyncDisposable
     public async Task Run()
     {
         Bt.Listen(0);
+        if (node.Options.Dht) _ = Task.Run(StartDht);
         trackers = node.MeshTrackerUrls();
         log($"[host] hosting for {node.OwnerUser?[..8]}… in {videoDir} ({trackers.Count} trackers, BitTorrent on TCP port {Bt.Port})");
         _ = Task.Run(async () => { while (!stop.IsCancellationRequested) { await Task.Delay(4000, stop.Token).ContinueWith(_ => { }); try { Tabs.Tick(Bt.Sessions); } catch (Exception e) { log("[pay] tabs: " + e.Message); } } });
@@ -417,6 +418,21 @@ public sealed class Host : IAsyncDisposable
                 ["overCap"] = folders.Values.Any(f => f.OverCap), ["held"] = new JsonArray(done.Select(t => (JsonNode?)t.InfoHashHex).ToArray()),
             };
         }
+    }
+    /// <summary>The BitTorrent DHT: other BitTorrent clients find this node's videos by infohash, no tracker needed.</summary>
+    async Task StartDht()
+    {
+        try
+        {
+            var file = Path.Combine(node.Options.DataDir, "dht-nodes.txt");
+            var d = new Dht(SHA1.HashData(Encoding.UTF8.GetBytes("opentube-dht:" + node.NodeKey))) { Log = _ => { } };   // the same DHT ID each run
+            d.Start(0); var boot = d.Load(file);
+            await d.Bootstrap(boot);
+            Bt.UseDht(d);
+            log($"[host] BitTorrent DHT: {d.NodeCount} nodes (UDP port {d.Port})");
+            while (!stop.IsCancellationRequested) { await Task.Delay(TimeSpan.FromMinutes(10), stop.Token).ContinueWith(_ => { }); d.Save(file); }
+        }
+        catch (Exception e) { log("[host] BitTorrent DHT: " + e.Message); }
     }
     public async ValueTask DisposeAsync() { stop.Cancel(); await Web.DisposeAsync(); await Bt.DisposeAsync(); }
 }
