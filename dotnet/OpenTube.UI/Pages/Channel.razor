@@ -24,8 +24,14 @@ else
                 @if (!registered) { <span class="badge warnb">registration pending</span> }
             </div>
             <div class="row-actions">
-                @if (S.Notes.Subscription(Id) is { } how) { <button class="on" @onclick="() => S.Notes.Subscribe(Id, false)">@(how == "join" ? "Joined" : "Subscribed") ✓</button> }
+                @if (S.Notes.Subscription(Id) is { } how) { <button class="on" @onclick="() => S.Notes.Subscribe(Id, false)">Subscribed ✓</button> }
                 else { <button class="primary" @onclick="() => S.Notes.Subscribe(Id, true)">Subscribe</button> }
+                @if (d.Kind == "channel" && !mine)
+                {
+                    var hosts = S.Publish.StorageNodes();
+                    @if (S.Notes.Subscription(Id) == "join") { <button class="on" title="Your computers host this channel’s videos. Click to stop." @onclick="() => Run(() => S.Join(Id, false), null, LeftText)">Joined ✓</button> }
+                    else { <button disabled="@(hosts.Count == 0)" title="@(hosts.Count == 0 ? "Joining means hosting its videos: run OpenTube on a computer (Devices) first" : "Your computers download every video this channel posts and share it with viewers")" @onclick="() => Run(() => S.Join(Id, true), null, JoinedText)">Join</button> }
+                }
                 @if (S.Notes.Subscription(Id) != null)
                 {
                     <select value="@S.Notes.ObjectMode(Id)" @onchange="e => S.Notes.SetObject(Id, (string)e.Value!)" title="Notifications from this @d.Kind">
@@ -187,6 +193,26 @@ else
         case "flags": case "reports": case "rules": case "filings": case "cases": case "courts": case "people":
             <OrgTab Id="@Id" Tab="@tab" />
             break;
+        case "ranking":
+            var rk = S.Rank(Id);
+            if (rk.Local) { <p class="sub">This ranking list has not published a ranking yet.</p> }
+            else
+            {
+                <p class="sub">@rk.Items.Count videos · algorithm @rk.Algo · published @Ago(rk.At), signed by this list’s key.</p>
+                <div class="grid">
+                    @{ int rn = 0; }
+                    @foreach (var i in rk.Items.Take(100))
+                    {
+                        rn++;
+                        var rv = S.Chain(i.Chain)?.Videos.FirstOrDefault(x => (string?)x["hash"] == i.Video);
+                        <div class="ranked"><span class="rank-n">#@rn</span>
+                            @if (rv != null) { <VideoCard Chain="@i.Chain" Block="(JsonObject)rv.DeepClone()" ChannelName="@i.Channel" /> }
+                            else { <a class="card" href="v/@i.Chain/@i.Video"><div class="thumb-empty">▶</div><div class="title">@i.Title</div><div class="sub">@i.Channel · 👍 @i.Up</div></a> }
+                        </div>
+                    }
+                </div>
+            }
+            break;
         case "advertise":
             <ChannelAdvertise Id="@Id" />
             break;
@@ -200,6 +226,7 @@ else
 }
 @code {
     [Parameter] public string Id { get; set; } = ""; [Parameter] public string? Tab { get; set; }
+    const string JoinedText = "Joined: your computers host this channel’s videos.", LeftText = "Left: your computers stop hosting it (you stay subscribed).";
     string? msg; bool tipOpen, posting, keyUnbacked; double tipAmt = 1; string postText = "", addLink = "", addNote = "", addChannel = "";
     readonly Dictionary<string, string> replyText = []; HashSet<string>? friends, mutedTags;
     protected override async Task OnInitializedAsync()
@@ -215,6 +242,7 @@ else
         "group" => [.. new[] { "discussion", "members", "about" }, .. mine ? new[] { "manage" } : []],
         "org" => [.. new[] { "flags", "reports", "rules", "filings", "cases", "courts", "people", "about" }, .. mine ? new[] { "manage" } : []],
         "case" => [.. new[] { "docket", "about" }, .. mine ? new[] { "manage" } : []],
+        _ when d.Profile["ranking"] != null => [.. new[] { "ranking", "about" }, .. mine ? new[] { "manage" } : []],
         _ => [.. new[] { "feed", "channels", "about" }, .. mine ? new[] { "manage" } : []],
     };
     static string TabName(string t) => t switch { "feed" => "Feed", "discussion" => "Discussion", _ => char.ToUpperInvariant(t[0]) + t[1..] };

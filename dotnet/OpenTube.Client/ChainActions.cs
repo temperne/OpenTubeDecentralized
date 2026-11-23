@@ -114,4 +114,25 @@ public static class ChainActions
     }
     /// <summary>The identity a channel's key is bound to (coins paid to the channel go there).</summary>
     public static string OwnerIdentity(this ClientSession s, string chain) { var d = s.Chain(chain); return d?.Owner == null ? "" : s.Engine.Read(e => e.Store.Ledger.Resolve(d.Owner)); }
+
+    /// <summary>Join a channel (your computers host its videos) or leave it (stay subscribed): your membership list,
+    /// signed and published, tells your computers what to host (your own channels always).</summary>
+    public static async Task Join(this ClientSession s, string chain, bool on)
+    {
+        await s.Notes.SetSubscription(chain, on ? "join" : "sub");
+        s.PublishMembership();
+    }
+    public static void PublishMembership(this ClientSession s)
+    {
+        var own = s.Directory().Where(c => c.Kind == "channel" && s.IsMine(c.Owner)).Select(c => c.Id).ToList();
+        s.Engine.PublishMembership(s.Notes.Joined, own);
+    }
+    /// <summary>Publish again when your channels or joined list changed since the last one.</summary>
+    public static void RefreshMembership(this ClientSession s)
+    {
+        var m = s.Engine.Read(e => e.Memberships.TryGetValue(s.Me.pub, out var x) ? (JsonObject)x.DeepClone() : null);
+        var joined = (m?["joined"] as JsonArray ?? []).Select(x => (string?)x).ToHashSet();
+        var own = s.Directory().Where(c => c.Kind == "channel" && s.IsMine(c.Owner)).Select(c => c.Id);
+        if (own.Concat(s.Notes.Joined).Any(id => !joined.Contains(id)) || (m != null && s.Notes.Joined.Count == 0 && joined.Count > own.Count())) s.PublishMembership();
+    }
 }

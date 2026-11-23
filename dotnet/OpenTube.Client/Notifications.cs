@@ -109,6 +109,9 @@ public sealed class Notifications
 
     // ---- subscriptions (shared with the JavaScript page: chain -> "sub" | "join")
     public string? Subscription(string chain) => (string?)subs[chain];
+    /// <summary>Subscribe ("sub"), join ("join": your computers host it), or neither (null).</summary>
+    public async Task SetSubscription(string chain, string? mode) { if (mode != null) subs[chain] = mode; else subs.Remove(chain); await store.Set("subs", subs.ToJsonString()); Changed?.Invoke(); }
+    public List<string> Joined { get { lock (gate) return subs.Where(kv => (string?)kv.Value == "join").Select(kv => kv.Key).ToList(); } }
     public async Task Subscribe(string chain, bool on) { if (on) subs[chain] = subs[chain]?.DeepClone() ?? "sub"; else subs.Remove(chain); await store.Set("subs", subs.ToJsonString()); Changed?.Invoke(); }
 
     // ---- making them

@@ -86,7 +86,8 @@ public sealed class ClientSession : IAsyncDisposable
         Publish = new Publish(this); Trade = new Trade(this, store);
         try { if (await store.Get("retiredIdentities") is { } ri && JsonNode.Parse(ri) is JsonArray ra) foreach (var r in ra.OfType<JsonObject>()) if ((string?)r["pub"] is { } rp && (string?)r["priv"] is { } rk) Retired[rp] = new Identity(rp, rk); } catch { }
         Keys = new Keys(this, store); Keys.Start();
-        Social = new Social(this, store); Media = new Media(store); _ = Task.Run(async () => { await Task.Delay(5000); try { await Social.Refresh(); } catch { } });
+        Social = new Social(this, store); Media = new Media(store);
+        _ = Task.Run(async () => { await Task.Delay(20000); while (true) { try { if (!Paused) this.RefreshMembership(); } catch { } await Task.Delay(30000); } }); _ = Task.Run(async () => { await Task.Delay(5000); try { await Social.Refresh(); } catch { } });
         Ready = true; Changed?.Invoke();
         online = CancellationTokenSource.CreateLinkedTokenSource(stop.Token);
         _ = Task.Run(() => FindNodes(online));
