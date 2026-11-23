@@ -71,6 +71,11 @@ let fail = 0; const check = (ok, what) => { log(ok ? 'ok  ' : 'FAIL', what); if 
   // ---- OBS settings from your computer
   await C.click('button:has-text("Show OBS settings")'); await C.waitForSelector('text=Stream key:', { timeout: 30000 }).catch(() => {});
   check(/rtmp:\/\/[^ ]+:1938\/live/.test(await C.textContent('main')) && /Stream key: host-key/.test(await C.textContent('main')), 'OBS settings from your computer (server with its port, your stream key)');
+  // ---- the recording your computer made: publish it as a video
+  await C.goto(BASE + 'app/c/' + chain); 
+  check(await waitText(C, /Recording ready: Camera from C#/, 180000), 'the channel offers your computer’s recording of the stream');
+  await C.fill('.recording input', 'Camera from C# (recording)'); await C.click('button:has-text("Publish recording")');
+  check(await A.evaluate(async ({ c, s }) => { for (let i = 0; i < 120; i++) { const bs = [...opentube.engine.chains.get(c).blocks.values()]; if (bs.some(b => b.payload.type === 'video' && b.payload.stream === s) && bs.some(b => b.payload.type === 'liveend' && b.payload.stream === s && b.payload.outcome === 'published')) return true; await new Promise(r => setTimeout(r, 1000)); } return false; }, { c: chain, s: lb.stream }), 'publishing it: a video of the stream, and the stream marked published (the JavaScript page sees both)');
   check(errs.length === 0, 'no page errors' + (errs.length ? ': ' + errs.slice(0, 3).join(' | ') : ''));
   for (const c of ctxs) await c.close(); P.kill(); process.exit(fail);
 })().catch(e => { console.error(e); P?.kill(); process.exit(1); });

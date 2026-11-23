@@ -135,4 +135,29 @@ public static class ChainActions
         var own = s.Directory().Where(c => c.Kind == "channel" && s.IsMine(c.Owner)).Select(c => c.Id);
         if (own.Concat(s.Notes.Joined).Any(id => !joined.Contains(id)) || (m != null && s.Notes.Joined.Count == 0 && joined.Count > own.Count())) s.PublishMembership();
     }
+
+    public sealed record NodeRecording(string Stream, string Title, JsonObject R);
+    /// <summary>Live streams one of your computers recorded that are over and not yet published or discarded.</summary>
+    public static List<NodeRecording> NodeRecordings(this ClientSession s, string chain)
+    {
+        var d = s.Chain(chain); if (d == null || !s.IsMine(d.Owner)) return [];
+        return d.NodeRecs.Where(kv => d.LiveEnds.GetValueOrDefault(kv.Key) == "ended" && !d.Recordings.ContainsKey(kv.Key))
+            .Select(kv => new NodeRecording(kv.Key, (string?)d.Streams.FirstOrDefault(b => (string?)b["payload"]?["stream"] == kv.Key)?["payload"]?["title"] ?? "Live", (JsonObject)kv.Value.DeepClone()))
+            .OrderByDescending(x => Js.Num(x.R["at"]) ?? 0).ToList();
+    }
+    /// <summary>Publish a recording as a video on the channel (and pay its posting fee), or discard it.</summary>
+    public static async Task SettleRecording(this ClientSession s, string chain, NodeRecording r, bool publish, string title, string desc)
+    {
+        if (publish)
+        {
+            var size = Js.Num(r.R["size"]) ?? 0;
+            var vb = await Task.Run(() => s.Engine.Append(chain, new JsonObject
+            {
+                ["type"] = "video", ["title"] = (title.Trim().Length > 0 ? title.Trim() : r.Title)[..Math.Min(140, Math.Max(1, (title.Trim().Length > 0 ? title.Trim() : r.Title).Length))], ["desc"] = desc.Trim()[..Math.Min(5000, desc.Trim().Length)],
+                ["infohash"] = r.R["infohash"]?.DeepClone(), ["file"] = r.R["file"]?.DeepClone(), ["size"] = r.R["size"]?.DeepClone(), ["mime"] = r.R["mime"]?.DeepClone(), ["thumb"] = (string?)r.R["thumb"] ?? "", ["stream"] = r.Stream,
+            }));
+            await s.Engine.SubmitTx(new JsonObject { ["post"] = new JsonObject { ["chain"] = chain, ["video"] = (string)vb["hash"]!, ["size"] = size, ["amt"] = s.Publish.PostCost(size) } }, s.Me);
+        }
+        await Task.Run(() => s.Engine.Append(chain, new JsonObject { ["type"] = "liveend", ["stream"] = r.Stream, ["outcome"] = publish ? "published" : "discarded" }));
+    }
 }

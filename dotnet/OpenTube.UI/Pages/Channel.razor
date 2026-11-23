@@ -64,6 +64,7 @@ else
     {
         case "videos":
             foreach (var lb in d.LiveNow) { <a class="live-banner" href="live/@Id/@lb["payload"]!["stream"]">🔴 Live now: @((string?)lb["payload"]?["title"]) · watch</a> }
+            foreach (var rec in S.NodeRecordings(Id)) { <RecordingPanel Chain="@Id" R="rec" /> }
             if (mine) { <div class="row-actions"><a class="button primary-link" href="upload/@Id">＋ Add video</a><a class="button" href="golive/@Id">● Go live</a></div> }
             var vids = d.Videos.Where(v => mine || !Muted(v)).OrderByDescending(v => Js.Num(v["ts"])).ToList();
             if (vids.Count == 0) { <p class="sub">No videos yet.</p> }
