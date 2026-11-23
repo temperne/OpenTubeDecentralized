@@ -67,3 +67,28 @@ public class NativeHookTests
         Console.WriteLine($"checkSigned × {js["r"]!.AsArray().Count}: JavaScript in .NET {js["ms"]} ms, native C# {native["ms"]} ms");
     }
 }
+
+// validPayload: the C# port against the JavaScript core's answers on 20,000 blocks over chains of every kind
+public class PayloadTests
+{
+    [Fact]
+    public void ValidPayload_agrees_with_javascript()
+    {
+        var V = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "../../../data/payload.json")))!;
+        var chains = V["chains"]!.AsArray().Select(c =>
+        {
+            var g = c!["genesis"]!.AsObject(); var ch = new Chain((string)g["hash"]!, g);
+            foreach (var b in c["blocks"]!.AsArray()) ch.Add(b!.AsObject());
+            return (kind: (string)c["kind"]!, ch);
+        }).ToList();
+        var bad = new List<string>(); int n = 0;
+        foreach (var c in V["cases"]!.AsArray())
+        {
+            n++; var (kind, ch) = chains[(int)c!["c"]!];
+            var want = c["ok"]!.ToJsonString(); bool got;
+            try { got = Payload.Valid(ch, c["b"]!.AsObject()); } catch (Exception e) { bad.Add($"{kind}: C# threw {e.GetType().Name}: {e.Message} on {c["b"]!["payload"]!.ToJsonString()}"); continue; }
+            if (want != (got ? "true" : "false")) bad.Add($"{kind}: JS {want}, C# {got} — author {((string?)c["b"]!["author"])?[..6]} hash {((string?)c["b"]!["hash"])?[..6]} payload {c["b"]!["payload"]!.ToJsonString()[..Math.Min(300, c["b"]!["payload"]!.ToJsonString().Length)]}");
+        }
+        Assert.True(bad.Count == 0, $"{bad.Count} of {n} disagree:\n" + string.Join("\n", bad.Take(12)));
+    }
+}
