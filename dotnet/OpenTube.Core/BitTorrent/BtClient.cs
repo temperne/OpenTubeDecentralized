@@ -35,16 +35,41 @@ public sealed class BtClient : IAsyncDisposable
             while (!cts.IsCancellationRequested)
             {
                 TcpClient c; try { c = await listener.AcceptTcpClientAsync(cts.Token); } catch { return; }
-                c.NoDelay = true; _ = AddPeer(c.GetStream(), null, c.Client.RemoteEndPoint?.ToString() ?? "");
+                c.NoDelay = true; _ = Incoming(c);
             }
         });
     }
+    /// <summary>Plain or encrypted (as WebTorrent in Node.js connects by default): told apart by the first 20 bytes.</summary>
+    async Task Incoming(TcpClient c)
+    {
+        var label = c.Client.RemoteEndPoint?.ToString() ?? ""; Stream s = c.GetStream();
+        try
+        {
+            using var t = CancellationTokenSource.CreateLinkedTokenSource(cts.Token); t.CancelAfter(TimeSpan.FromSeconds(30));
+            var first = new byte[20]; await s.ReadExactlyAsync(first, t.Token);
+            s = Mse.LooksPlain(first) ? new PrefixStream(s, first) : await Mse.Accept(s, first, Mse.Finder(Torrents.Values.Select(x => x.InfoHash).ToList()), t.Token);
+        }
+        catch (Exception e) { Log?.Invoke($"peer {label}: {e.Message}"); c.Dispose(); return; }
+        await AddPeer(s, null, label + (s is PrefixStream ? "" : " (encrypted)"));
+    }
+    /// <summary>Encrypt outgoing TCP connections (falling back to plain if the other side won't).</summary>
+    public bool Encrypt = true;
     /// <summary>Connect to a peer at host:port for a torrent.</summary>
     public async Task Connect(TorrentData t, string host, int port)
     {
-        var c = new TcpClient { NoDelay = true };
-        try { await c.ConnectAsync(host, port, cts.Token); } catch (Exception e) { c.Dispose(); Log?.Invoke($"peer {host}:{port}: {e.Message}"); return; }
-        _ = AddPeer(c.GetStream(), t, $"{host}:{port}");
+        for (int attempt = Encrypt ? 0 : 1; attempt < 2; attempt++)
+        {
+            var c = new TcpClient { NoDelay = true }; Stream s;
+            try
+            {
+                using var to = CancellationTokenSource.CreateLinkedTokenSource(cts.Token); to.CancelAfter(TimeSpan.FromSeconds(20));
+                await c.ConnectAsync(host, port, to.Token); s = c.GetStream();
+                if (attempt == 0) s = await Mse.Connect(s, t.InfoHash, to.Token);
+            }
+            catch (Exception e) { c.Dispose(); Log?.Invoke($"peer {host}:{port}{(attempt == 0 ? " (encrypted)" : "")}: {e.Message}"); continue; }
+            await AddPeer(s, t, $"{host}:{port}{(attempt == 0 ? " (encrypted)" : "")}");
+            return;
+        }
     }
     /// <summary>A peer over any stream. <paramref name="t"/> null: the peer says which torrent in its handshake.</summary>
     public async Task AddPeer(Stream stream, TorrentData? t, string label)

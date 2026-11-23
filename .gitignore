@@ -5,3 +5,7 @@ cloudflare/core.gen.mjs
 .wrangler/
 dotnet/**/bin/
 dotnet/**/obj/
+dotnet/OpenTube.Tests/torrent-interop/node_modules/
+dotnet/OpenTube.Tests/torrent-interop/files/
+dotnet/OpenTube.Tests/torrent-interop/out/
+dotnet/OpenTube.Tests/torrent-interop/*.out

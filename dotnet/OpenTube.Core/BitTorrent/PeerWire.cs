@@ -168,7 +168,7 @@ public sealed class PeerSession : IAsyncDisposable
         {
             if (torrent != null) { Torrent = torrent; await SendHandshake(); }
             var h = new byte[68]; await s.ReadExactlyAsync(h, ct);
-            if (!h.AsSpan(0, 20).SequenceEqual(Proto)) throw new InvalidDataException("not BitTorrent");
+            if (!h.AsSpan(0, 20).SequenceEqual(Proto)) throw new InvalidDataException("not BitTorrent: " + Convert.ToHexString(h, 0, 24));
             peerSupportsExt = (h[25] & 0x10) != 0;
             var ih = h[28..48]; RemoteId = h[48..68];
             if (Torrent == null) { Torrent = lookup?.Invoke(ih) ?? throw new InvalidDataException("unknown torrent"); await SendHandshake(); }
