@@ -86,13 +86,13 @@ public sealed class LiveRelays(OpenTubeNode node)
         });
     }
     /// <summary>The hub a stream lives on: named in its live block (its hub node), else an entry node's or the site's.</summary>
-    string HubUrlFor(string chain, string stream)
+    public string HubUrlFor(string chain, string stream, string? hubNode = null)
     {
         string Own() => $"ws://127.0.0.1:{node.Options.Port}/live";
         return node.Engine.Read(e =>
         {
             var lb = e.Store.Chains.TryGetValue(chain, out var ch) ? Derived.Of(ch).Streams.FirstOrDefault(b => (string?)b["payload"]?["stream"] == stream) : null;
-            var hub = (string?)lb?["payload"]?["hub"];
+            var hub = hubNode ?? (string?)lb?["payload"]?["hub"];
             if (hub == node.NodeKey) return Own();
             if (hub != null && e.Nodes.TryGetValue(hub, out var n))
             {

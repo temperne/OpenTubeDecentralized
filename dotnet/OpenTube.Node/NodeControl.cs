@@ -156,12 +156,24 @@ public sealed class NodeControl(OpenTubeNode node)
                     };
                     break;
                 }
+                case "group" or "group.set" or "group.invite" or "group.uninvite" or "group.studio" or "group.air" or "group.mute" or "group.logo" or "group.kick.all" or "group.kick" or "group.join":
+                {   // the group stream: yours (or, for a guest, the one you were invited to; or another user's you share this computer with)
+                    if (node.Obs == null) return Fail("OBS is off on this computer (started with --no-obs)");
+                    var me = Users[user] as JsonObject; var guestOf = (string?)me?["guestOf"];
+                    var hostArg = Js.Str(a["host"]);
+                    var joinHost = guestOf == null && hostArg != null && hostArg != user && (hostArg == node.OwnerUser || (Users[hostArg] is JsonObject hu && hu["guestOf"] == null)) ? hostArg : null;
+                    var hostUser = guestOf ?? joinHost ?? user;
+                    if (!May(user, "obs")) return Fail("you may not stream through this computer");
+                    if (joinHost != null && cmd is not ("group" or "group.join" or "group.kick")) return Fail("only the host can change their group stream");
+                    try { data = await node.Obs.GroupOf(hostUser).Control(cmd, a, user, guestOf == null && joinHost == null, owner); }
+                    catch (Exception e) { return Fail(e.Message); }
+                    break;
+                }
                 case var fm when Host.Commands.Contains(fm):   // the file manager (Manage files on the site)
                     if (!owner && !May(user, "manage")) return Fail("you may not manage this computer’s files");
                     if (node.Hosting == null) return Fail("video hosting is off on this computer (started with --no-host, or without --grant)");
                     data = node.Hosting.Command(cmd, a); break;
                 default:
-                    if (cmd.StartsWith("group", StringComparison.Ordinal)) return Fail("group streams aren’t in the .NET version of OpenTube yet: run the Node.js program on this computer for them");
                     if (cmd.StartsWith("flash", StringComparison.Ordinal)) return Fail("flash computers aren’t in the .NET version of OpenTube yet");
                     if (cmd == "update") return Fail("restart it yourself: run the same command again (it downloads the current version)");
                     return Fail("this computer doesn’t know that command (it runs the .NET version of OpenTube)");

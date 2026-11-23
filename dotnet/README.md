@@ -100,13 +100,18 @@ layout, and shares them over BitTorrent with browsers (WebRTC, WebTorrent's trac
 encrypted). Manage files and "store" work from the site; OBS and relayed recordings are kept in the channel's folder
 and offered for publishing; live streams are also shared in small torrent chunks (`test-host.cjs`).
 
+**Group streams** (needs ffmpeg): your OBS key, key-2…key-9 for more cameras, invited guests' keys and browser
+streams sent into your group are combined into one 1280×720 picture (one decoder per input, composed here 30 times
+a second, one encoder for the whole stream), with the studio from the site: waiting room and previews, on/off air,
+grid/spotlight/solo, mute, a scrolling ticker, a logo (`test-group.cjs`). **YouTube forwarding** of OBS streams
+(`test-youtube.cjs`).
+
 **Getting paid:** receipts submitted in `serve` transactions, pay per piece (`ot_pay`: signed tabs both ways, cashed in
 every minute; peers that don't pay stop getting pieces), storage proofs with other hosts (`test-proof.cjs`), earnings
 passed to the owner. The C# engine makes its own transactions (proof of work, signed).
 
 **Not in the .NET node yet** (the JavaScript node has them):
 - the DHT (finding ordinary BitTorrent apps without a tracker);
-- the group studio;
 
 - flash computers;
 - self-update and public/tunnel switching from the site.

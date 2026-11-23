@@ -41,25 +41,73 @@ public sealed class ObsLive
     public List<string> LinkedChannels() => node.Engine.Read(e => e.Store.Chains.Values.Where(c => c != e.Store.Main && (string?)c.Genesis["payload"]?["kind"] == "channel")
         .Where(c => Derived.Of(c).Relays.Contains(node.NodeKey!)).Select(c => c.Id).ToList());
 
-    /// <summary>OBS published with this stream key: a sink for the stream, or why not.</summary>
+    /// <summary>The channel a person's OBS stream goes live on: the one they picked (if this computer is linked to it), else one they own that's linked.</summary>
+    public string? ChannelFor(string user, JsonObject profile)
+    {
+        var linked = LinkedChannels();
+        return (string?)profile["channel"] is { } c && linked.Contains(c) ? c : linked.FirstOrDefault(ch => node.Engine.Read(e => e.Store.Chains.TryGetValue(ch, out var x) ? x.Owner : null) is { } o && (o == user || node.Engine.Read(e => e.Store.Ledger.Resolve(o)) == node.Engine.Read(e => e.Store.Ledger.Resolve(user))))
+            ?? (user == node.OwnerUser ? linked.FirstOrDefault() : null);
+    }
+    bool MayObs(string user) => user == node.OwnerUser || (Store["users"]?[user] is JsonObject u && (u["can"] as JsonArray ?? []).Any(x => (string?)x == "obs") && !(Js.Num(u["until"]) < DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+    public string NameOf(string user) => (string?)Store["users"]?[user]?["name"] is { Length: > 0 } n ? n : user == node.OwnerUser ? "the owner" : user[..8];
+    public readonly Dictionary<string, GroupStudio> Groups = [];
+    public GroupStudio GroupOf(string hostUser) { lock (Groups) return Groups.TryGetValue(hostUser, out var g) ? g : Groups[hostUser] = new GroupStudio(node, this, hostUser); }
+
+    /// <summary>
+    /// OBS published with this stream key: a sink for the stream, or why not. A person's key, or key-2…key-9 (more
+    /// cameras into their group stream); an invited guest's key goes into their host's group stream.
+    /// </summary>
     public object OnPublish(string key)
     {
-        key = key.Trim(); string? user = null;
-        foreach (var (u, pn) in (JsonObject)Store["profiles"]!) if (pn is JsonObject p && (string?)p["key"] == key) { user = u; break; }
+        key = key.Trim(); string? user = null; int slot = 0;
+        foreach (var (u, pn) in (JsonObject)Store["profiles"]!)
+        {
+            if (pn is not JsonObject p || !MayObs(u)) continue;
+            var pk = (string?)p["key"]; var sl = key == pk ? 1 : Enumerable.Range(2, 8).FirstOrDefault(i => key == pk + "-" + i);
+            if (sl > 0) { user = u; slot = sl; break; }
+        }
         if (user == null) return "Wrong stream key. Copy it from Go live (or Devices) on the site, or from this computer’s window.";
+        var who = NameOf(user);
+        node.Log($"[obs] stream from {who}");
+        var suffix = slot > 1 ? "-" + slot : "";
+        if ((string?)Store["users"]?[user]?["guestOf"] is { } host)
+        {   // an invited guest: into the host's group stream
+            var hp = ProfileOf(host);
+            if (!Js.IsTrue(hp["tile"]?["on"])) return "The group stream you were invited to isn’t on right now.";
+            if (!Media.HasFfmpeg) return "Group streams need ffmpeg on this computer.";
+            return (object?)GroupOf(host).AddInput("obs:" + user + suffix, who + (slot > 1 ? " " + slot : ""), user, "obs", "mp4", null) ?? "The group picture is full (9).";
+        }
         var profile = ProfileOf(user);
-        var linked = LinkedChannels();
-        var chain = (string?)profile["channel"] is { } c && linked.Contains(c) ? c : linked.FirstOrDefault(ch => node.Engine.Read(e => e.Store.Chains.TryGetValue(ch, out var x) ? x.Owner : null) is { } o && (o == user || node.Engine.Read(e => e.Store.Ledger.Resolve(o)) == node.Engine.Read(e => e.Store.Ledger.Resolve(user))))
-            ?? (user == node.OwnerUser ? linked.FirstOrDefault() : null);
+        if (Js.IsTrue(profile["tile"]?["on"]))
+        {
+            if (!Media.HasFfmpeg) return "Group streams need ffmpeg on this computer.";
+            if (ChannelFor(user, profile) == null) { node.Log("[obs] refused: no channel picked for this stream key (Devices → OBS → Channel)"); return "No channel picked for this stream key: on the site, Devices → OBS → Channel."; }
+            return (object?)GroupOf(user).AddInput("obs:" + user + suffix, "host" + (slot > 1 ? $" (camera {slot})" : ""), user, "obs", "mp4", null) ?? "The group picture is full (9).";
+        }
+        if (slot > 1) return "The group stream is off on this computer: use the main stream key.";
+        var chain = ChannelFor(user, profile);
         if (chain == null) return "Not linked to a channel yet. On the site: Go live → OBS → pick this computer and link it to your channel.";
-        node.Log($"[obs] stream from {(user == node.OwnerUser ? "the owner" : user[..8])}");
+        return NewSink(chain, (string?)profile["title"] ?? "Live", profile);
+    }
+    public Sink NewSink(string chain, string title, JsonObject profile)
+    {
         var yt = profile["youtube"] as JsonObject;
-        return new Sink(node, chain, (string?)profile["title"] ?? "Live", Js.IsTrue(yt?["on"]) && (string?)yt?["key"] is { Length: > 0 } yk ? yk : null);
+        return new Sink(node, chain, title, Js.IsTrue(yt?["on"]) && (string?)yt?["key"] is { Length: > 0 } yk ? yk : null);
     }
 
-    sealed class Sink(OpenTubeNode node, string chain, string title, string? youtubeKey) : IStreamSink
+    public sealed class Sink(OpenTubeNode node, string chain, string title, string? youtubeKey) : IStreamSink
     {
         readonly string stream = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
+        /// <summary>The live block's hash, once it's on the channel.</summary>
+        public string? Block { get; private set; }
+        public string Stream => stream;
+        public string Chain => chain;
+        /// <summary>The group picture restarted (its encoder): same stream, a new start.</summary>
+        public void Reinit(byte[] header)
+        {
+            Piece(header, true);
+            if (youtubeKey != null) { youtube?.End(); youtube = YouTube.Start(youtubeKey, node.Log); youtube?.Write(header); }
+        }
         long n, offset; (Action<JsonObject> Seg, Action End, Action<JsonObject> Chunk)? local; RemoteBroadcast? remote; Chunker? chunks; YouTube? youtube; FileStream? rec; string? recPath, recFile;
         readonly object gate = new();
 
@@ -76,7 +124,7 @@ public sealed class ObsLive
             }
             var payload = new JsonObject { ["type"] = "live", ["title"] = title[..Math.Min(140, title.Length)], ["stream"] = stream, ["mime"] = mime };
             if (hubNode != null) payload["hub"] = hubNode;
-            try { node.Engine.Append(chain, payload); }
+            try { Block = (string?)node.Engine.Append(chain, payload)["hash"]; }
             catch (Exception e) { node.Log("[obs] couldn’t go live: " + e.Message); return; }
             var name = node.Engine.Read(e => e.Store.Chains.TryGetValue(chain, out var c) ? (string?)Derived.Of(c).Profile["name"] : null) ?? chain[..8];
             node.Log($"[obs] live on {name}: “{title}”" + (hubUrl != null ? $" (viewers through {hubUrl.Replace("wss://", "").Replace("ws://", "").Replace("/live", "")})" : " (viewers through this computer)"));
