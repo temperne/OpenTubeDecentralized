@@ -16,6 +16,7 @@ else
     {
         <div class="panel">
             <textarea placeholder="Share with your friends…" @bind="text" @bind:event="oninput" rows="3"></textarea>
+            <AttachBox @ref="attach" />
             <div class="row-actions">
                 <select @bind="audience">
                     <option value="acquaintances">All friends</option><option value="friends">Friends and close friends</option><option value="close">Close friends only</option>
@@ -35,7 +36,8 @@ else
                         @if (x.Content == null) { <div class="sub">🔒 A post that isn’t shared with you</div> }
                         else
                         {
-                            <div class="post-text">@((string?)x.Content["text"])</div>
+                            <Rich Text="@((string?)x.Content["text"])" Author="@x.Author" />
+                            <MediaView Refs="@(x.Content["media"] as System.Text.Json.Nodes.JsonArray)" />
                             <div class="replies">
                                 @foreach (var r in x.Replies) { <div class="post reply"><b>@Name(r.Author)</b> <span class="sub">· @Ago(r.Ts)</span><div class="post-text">@(r.Content == null ? "🔒 not shared with you" : (string?)r.Content["text"])</div></div> }
                             </div>
@@ -92,7 +94,8 @@ else
     void Reload() => InvokeAsync(async () => { await Load(); StateHasChanged(); });
     async Task Run(string doing, Func<Task> f) { busy = true; msg = doing; StateHasChanged(); try { await f(); msg = null; } catch (Exception e) { msg = e.Message; } busy = false; await Load(); }
     Task Start() => Run("Registering your page (proof of work on the main chain)…", () => S.Social.StartPage());
-    Task Post() => Run("Encrypting…", async () => { await S.Social.PostToFriends(text, audience); text = ""; });
+    AttachBox? attach;
+    Task Post() => Run("Encrypting…", async () => { await S.Social.PostToFriends(text, audience, attach?.Count > 0 ? () => attach.GetRefs(true) : null); text = ""; attach?.Clear(); });
     Task Reply(Social.Sealed x) => Run("Encrypting…", async () => { var k = (string)x.Block["hash"]!; await S.Social.ReplyToFriends(x.Page, x.Block, x.Content!, replies.GetValueOrDefault(k) ?? ""); replies[k] = ""; });
     Task Add() => Run("", async () => { await S.Social.AddFriend(addKey, addName); addKey = addName = ""; });
     public override void Dispose() { base.Dispose(); S.Social.Changed -= Reload; }

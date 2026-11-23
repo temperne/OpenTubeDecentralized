@@ -20,6 +20,14 @@ public sealed class FileStore : IClientStore
                     try { if (JsonNode.Parse(line) is JsonObject r && (string?)r["c"] is { } c && r["b"] is JsonObject b) list.Add((c, (JsonObject)b.DeepClone())); } catch { }   // a line cut short by a crash
         return Task.FromResult(list);
     }
+    string BlobPath(string key) => Path.Combine(dir, "files", string.Concat(key.Select(c => char.IsLetterOrDigit(c) ? c : '_')));
+    public Task SetBytes(string key, byte[]? data, string mime = "application/octet-stream")
+    {
+        Directory.CreateDirectory(Path.Combine(dir, "files")); var p = BlobPath(key);
+        if (data == null) { if (File.Exists(p)) File.Delete(p); } else File.WriteAllBytes(p, data);
+        return Task.CompletedTask;
+    }
+    public Task<byte[]?> GetBytes(string key) => Task.FromResult(File.Exists(BlobPath(key)) ? File.ReadAllBytes(BlobPath(key)) : null);
     public void SaveBlock(string chain, JsonObject block)
     {
         var line = new JsonObject { ["c"] = chain, ["b"] = block.DeepClone() }.ToJsonString() + "\n";

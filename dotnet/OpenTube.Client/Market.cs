@@ -65,7 +65,7 @@ public static class Market
     {
         public string Type = "goods", Kind = "fixed", Title = "", About = "", Contact = "", Org = "", Category = "", Deal = "sale", Tags = "";
         public string Price = ""; public int Days = 7; public string? Image; public JsonObject? Place;
-        public Dictionary<string, string> Fields = []; public List<string> Certs = [];
+        public Dictionary<string, string> Fields = []; public List<string> Certs = []; public JsonArray? Media;
     }
     public static async Task<string> ListDraft(this ClientSession s, Draft x)
     {
@@ -104,6 +104,7 @@ public static class Market
             .Where(t => t.Length > 0 && t.Length <= 24).Distinct().Take(8).ToList();
         if (tags.Count > 0) L["tags"] = new JsonArray(tags.Select(t => (JsonNode?)t).ToArray());
         if (x.Image != null) L["image"] = x.Image;
+        if (x.Media is { Count: > 0 }) L["media"] = x.Media.DeepClone();
         var tx = await s.Engine.SubmitTx(new JsonObject { ["list"] = L }, s.Me);
         return (string)tx["hash"]!;
     }

@@ -30,6 +30,7 @@ else
     {
         <div class="panel">
             <textarea placeholder="What’s happening?" @bind="text" @bind:event="oninput" maxlength="1000" rows="3"></textarea>
+            <AttachBox @ref="attach" />
             <div class="row-actions">
                 <button class="primary" disabled="@(busy || string.IsNullOrWhiteSpace(text))" @onclick="() => Send(m, text, null)">Post</button>
                 <span class="sub">Public: anyone can read it, forever.</span>
@@ -49,11 +50,11 @@ else
 @if (msg != null) { <div class="sub" id="post-status">@msg</div> }
 @code {
     [Parameter] public string? Month { get; set; } [Parameter] public string? Hash { get; set; }
-    string text = "", reply = ""; string? msg; bool busy, popular;
+    string text = "", reply = ""; string? msg; bool busy, popular; AttachBox? attach;
     async Task Send(string m, string t, string? to)
     {
         busy = true; msg = "Doing anti-spam work…"; StateHasChanged();
-        try { await S.Social.PostTo(m, t, to); if (to == null) text = ""; else reply = ""; msg = null; }
+        try { await S.Social.PostTo(m, t, to, to == null && attach?.Count > 0 ? await attach.GetRefs(false) : null); if (to == null) { text = ""; attach?.Clear(); } else reply = ""; msg = null; }
         catch (Exception e) { msg = "Couldn’t post: " + e.Message; }
         busy = false;
     }

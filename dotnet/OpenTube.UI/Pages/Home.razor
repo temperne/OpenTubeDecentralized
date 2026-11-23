@@ -41,6 +41,7 @@ else
         var m = Social.Month(DateTimeOffset.UtcNow);
         <div class="panel">
             <textarea @bind="post" @bind:event="oninput" rows="2" maxlength="1000" placeholder="Share something publicly…"></textarea>
+            <AttachBox @ref="attach" />
             <div class="row-actions"><button class="primary" disabled="@posting" @onclick="() => Post(m)">Post</button>@if (postMsg != null) { <span class="sub">@postMsg</span> }</div>
         </div>
         <div class="timeline">
@@ -75,7 +76,8 @@ else
                             <div class="panel post">
                                 <div class="sub">@(x.Kind == "gpost" ? "👥 in " : "📣 ")<ChainLink Id="@x.Chain" /> · @Ago(x.Ts)</div>
                                 @if (x.Kind == "gpost") { <div><a class="person" href="@a.Href"><b>@a.Name</b></a></div> }
-                                <Rich Text="@((string?)x.Block["payload"]?["text"])" />
+                                <Rich Text="@((string?)x.Block["payload"]?["text"])" Author="@((string?)x.Block["author"])" />
+                                <MediaView Refs="@(x.Block["payload"]?["media"] as JsonArray)" />
                                 @if (x.Kind == "gpost") { <a class="sub" href="c/@x.Chain">Reply in the group</a> }
                             </div>
                             break;
@@ -86,6 +88,7 @@ else
     }
 }
 @code {
+    AttachBox? attach;
     string homeView = "all", feedSort = "hot", post = ""; string? postMsg; bool posting; HashSet<string> muted = [];
     List<Feeds.TimelineItem>? timeline; List<Social.Sealed>? friendPosts; DateTime loaded;
     protected override async Task OnInitializedAsync()
@@ -112,7 +115,7 @@ else
     {
         if (post.Trim().Length == 0) return;
         posting = true; postMsg = "Anti-spam work…"; StateHasChanged();
-        try { await S.Social.PostTo(m, post); post = ""; postMsg = null; await Load(); } catch (Exception e) { postMsg = e.Message; }
+        try { await S.Social.PostTo(m, post, null, attach?.Count > 0 ? await attach.GetRefs(false) : null); post = ""; attach?.Clear(); postMsg = null; await Load(); } catch (Exception e) { postMsg = e.Message; }
         posting = false;
     }
 }

@@ -25,6 +25,9 @@ else
             <p class="sub">Your public profile, as others see it:</p>
             <ProfileView Key="@S.Me.pub" />
             break;
+        case "media":
+            <MediaTab />
+            break;
         case "channels":
             <div class="panel">
                 <h3>Create a channel, list or group</h3>
@@ -96,8 +99,8 @@ else
 }
 @code {
     [Parameter] public string? Tab { get; set; }
-    static readonly (string, string, string)[] tabs = [("profile", "Profile", "you"), ("channels", "Channels", "you/channels"), ("wallet", "Wallet", "wallet"), ("keys", "Keys & security", "you/keys"), ("settings", "Settings", "you/settings")];
-    string tab => Tab is "channels" or "settings" ? Tab : "profile";
+    static readonly (string, string, string)[] tabs = [("profile", "Profile", "you"), ("media", "Media", "you/media"), ("channels", "Channels", "you/channels"), ("wallet", "Wallet", "wallet"), ("keys", "Keys & security", "you/keys"), ("settings", "Settings", "you/settings")];
+    string tab => Tab is "channels" or "settings" or "media" ? Tab : "profile";
     bool starting, busy; string? starterMsg, msg; string name = "", about = "", kind = "channel", join = "open";
     (HashSet<string> Tags, HashSet<string> Cats)? muted;
     protected override async Task OnParametersSetAsync() { if (S.Ready) muted = await S.Social.Muted(); }

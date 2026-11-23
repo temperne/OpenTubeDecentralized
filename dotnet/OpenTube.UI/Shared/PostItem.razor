@@ -2,6 +2,7 @@
 <div class="post @(Reply ? "reply" : "")">
     <div><a class="person" href="u/@S.Engine.Read(e => e.Store.Ledger.Resolve(P.Author))"><b>@P.Name</b></a> <span class="sub">· @Ago(P.Ts)</span></div>
     <Rich Text="@P.Text" Author="@P.Author" />
+    <MediaView Refs="@(P.Block["payload"]?["media"] as System.Text.Json.Nodes.JsonArray)" />
     <div class="row-actions small-actions">
         <button disabled="@(P.Mine || liked)" title="Like (pays the author)" @onclick="Like">👍 @(liked && !P.Mine ? Math.Max(P.Likes, 1) : P.Likes)</button>
         @if (!Full) { <a class="sub" href="posts/@Month/@Hash">@P.Replies repl@(P.Replies == 1 ? "y" : "ies")</a> }

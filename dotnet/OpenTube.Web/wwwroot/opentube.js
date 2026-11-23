@@ -20,6 +20,9 @@ window.otKdf = async (pw, salt, iterations) => {
     get: async (k) => { const v = await tx('kv', 'readonly', s => s.get(k)); return v == null ? null : typeof v === 'string' ? v : JSON.stringify(v); },
     set: (k, v) => { let o = v; try { o = JSON.parse(v); } catch {} return tx('kv', 'readwrite', s => s.put(o, k)); },   // JSON stays an object (as the JavaScript page keeps it)
     blocks: async () => JSON.stringify(await tx('blocks', 'readonly', s => s.getAll()) || []),
+    // files (your media library): kept as Blobs, as the JavaScript page keeps them; bytes cross as Uint8Array
+    setBytes: (k, bytes, mime) => tx('kv', 'readwrite', s => bytes ? s.put(new Blob([bytes], { type: mime }), k) : s.delete(k)),
+    getBytes: async (k) => { const v = await tx('kv', 'readonly', s => s.get(k)); return v instanceof Blob ? new Uint8Array(await v.arrayBuffer()) : null; },
     put: (chainId, blockJson) => { const b = JSON.parse(blockJson); return tx('blocks', 'readwrite', s => s.put({ hash: b.hash, chainId, block: b })); }
   };
   // WebRTC: the browser's data channels, for the C# BitTorrent client (BrowserRtc). Complete SDP (no trickle), as

@@ -108,13 +108,14 @@ public sealed class Social
         return new Post(c.Id, (JsonObject)b.DeepClone(), author, name, (string?)p["text"] ?? "", Js.Num(b["ts"]) ?? 0, likes, replies, s.IsMine(author));
     }
     /// <summary>A public post (or a reply to one): anti-spam proof of work, then it's on the month's chain for good.</summary>
-    public async Task PostTo(string month, string text, string? replyTo = null)
+    public async Task PostTo(string month, string text, string? replyTo = null, JsonArray? media = null)
     {
         text = text.Trim(); if (text.Length == 0) throw new ArgumentException("Write something first");
         if (text.Length > 1000) throw new ArgumentException("At most 1000 characters");
         var c = Square(month) ?? throw new InvalidOperationException("No public feed for that month");
         var payload = new JsonObject { ["type"] = replyTo != null ? "comment" : "post", ["text"] = text, ["name"] = (await MyName())[..Math.Min(60, (await MyName()).Length)] };
         if (replyTo != null) payload["target"] = replyTo;
+        if (media is { Count: > 0 }) payload["media"] = media.DeepClone();
         await Task.Run(() => s.Engine.Append(c.Id, payload, s.Me)); Changed?.Invoke();
     }
     /// <summary>Like a post: a vote, and its payment to the author (only paid likes count).</summary>
@@ -244,7 +245,8 @@ public sealed class Social
         await SaveSettings(st);
     }
     /// <summary>Post to friends: sealed to you and the friends in the audience (close ⊂ friends ⊂ acquaintances) who have a page.</summary>
-    public async Task PostToFriends(string text, string audience)
+    /// <param name="media">Builds the media refs for this audience (encrypted copies: their keys go inside the sealed post).</param>
+    public async Task PostToFriends(string text, string audience, Func<Task<JsonArray>>? media = null)
     {
         text = text.Trim(); if (text.Length == 0) throw new ArgumentException("Write something first");
         var page = MyPage ?? throw new InvalidOperationException("Start your friends page first");
@@ -252,6 +254,7 @@ public sealed class Social
         var pick = (await Friends()).Where(f => Rank(f.Level) <= Rank(audience)).Select(f => (f.Key, Enc: EncOf(f.Key))).Where(f => f.Enc != null).ToList();
         if (pick.Count == 0) throw new InvalidOperationException("nobody in that audience has a friends page yet");
         var content = new JsonObject { ["text"] = text, ["to"] = new JsonArray([s.Me.pub, .. pick.Select(f => (JsonNode?)f.Key)]), ["name"] = await MyName() };
+        if (media != null && await media() is { Count: > 0 } refs) content["media"] = refs;
         var payload = new JsonObject { ["type"] = "sealed" }; foreach (var (k, v) in await Seal(content, pick.Select(f => f.Enc!))) payload[k] = v?.DeepClone();
         await Task.Run(() => s.Engine.Append(page, payload, s.Me)); Changed?.Invoke();
     }

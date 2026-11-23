@@ -3,6 +3,7 @@
 @inject ClientSession S
 @inject OpenTube.UI.UiPlatform Platform
 @inject NavigationManager Nav
+@inject IVideoPlayer Player
 <header class="top">
     <a class="logo" href="">Open<span>Tube</span></a>
     <nav>
@@ -31,6 +32,7 @@
     protected override void OnInitialized()
     {
         S.Changed += Poke;
+        _ = Task.Run(async () => { for (int i = 0; i < 300 && !S.Ready; i++) await Task.Delay(200); if (S.Ready) MediaUi.ReseedOnce(S, Player); });
         AppNav.Go += Open;   // a tapped notification (phone)
         if (AppNav.Pending is { } p) _ = InvokeAsync(() => Open(p));
     }

@@ -44,6 +44,8 @@ else if (T == "new")
         @if (d.Category == "housing" && d.Type != "housing") { <label>Housing</label><select @bind="d.Deal"><option value="sale">For sale</option><option value="rent">For rent (price per month)</option></select> }
         <label>Cover picture (optional)</label>
         <div class="row-actions">@if (d.Image != null) { <img class="avatar big" style="border-radius:8px" src="@d.Image" alt="" /> }<InputFile OnChange="PickImage" accept="image/*" /></div>
+        <label>More pictures and videos (from My media, up to 10)</label>
+        <AttachBox @ref="attach" />
         <label>Where (optional: helps people nearby find it)</label>
         <div class="row-actions"><input class="grow-input" @bind="placeLabel" placeholder="Place, e.g. Lisbon, Portugal" /><button @onclick="Locate">📍 Use my location</button></div>
         @if (d.Place != null) { <div class="sub">📍 @((double?)d.Place["lat"]), @((double?)d.Place["lon"])</div> }
@@ -137,7 +139,7 @@ else
     const string HousingKey = "housing", JobKey = "job", WantedKey = "wanted", FixedKey = "fixed", NumberKey = "number", DateKey = "date", DateTimeKey = "datetime", TrueText = "true", FalseText = "false", CashedText = "Cashed in: the coins arrive with the next main-chain block.", RunsText = "Their ads now run on your channel.";
     static readonly (string, string)[] tabs = [("items", "Listings"), ("housing", "🏠 Housing"), ("auctions", "Auctions"), ("adviews", "Ad views"), ("ads", "Ad board"), ("mine", "Mine"), ("new", "＋ Sell something")];
     string T => Tab is "housing" or "auctions" or "adviews" or "adviews-mine" or "ads" or "mine" or "new" ? Tab : Tab == "browse" ? "items" : "items";
-    Market.Draft d = new(); string q = "", kindFilter = "all", deal = "all", placeLabel = "", giveTo = "", sponsorOn = ""; string? msg; bool busy;
+    AttachBox? attach; Market.Draft d = new(); string q = "", kindFilter = "all", deal = "all", placeLabel = "", giveTo = "", sponsorOn = ""; string? msg; bool busy;
     async Task Run(Func<Task> f, string? done = null) { msg = null; StateHasChanged(); try { await f(); msg = done; } catch (Exception e) { msg = e.Message; } }
     void ToggleCerts(List<string> ids, bool on) { d.Certs.RemoveAll(ids.Contains); if (on) d.Certs.AddRange(ids); }
     Task Give(List<Market.Cert> list) { var to = S.Recipient(giveTo); if (to == null) { msg = "Not a user or channel ID"; return Task.CompletedTask; } return Run(() => S.GiveCerts(list, to), "Given."); }
@@ -169,7 +171,7 @@ else
     {
         if (d.Place != null) d.Place["label"] = placeLabel.Trim();
         busy = true; msg = "Listing (a little proof of work)…"; StateHasChanged();
-        try { await S.ListDraft(d); msg = "Listed: it shows once the next main-chain block includes it."; d = new(); placeLabel = ""; Nav.NavigateTo("market/mine"); }
+        try { if (attach?.Count > 0) d.Media = await attach.GetRefs(false); await S.ListDraft(d); msg = "Listed: it shows once the next main-chain block includes it."; d = new(); placeLabel = ""; Nav.NavigateTo("market/mine"); }
         catch (Exception e) { msg = e.Message; }
         busy = false;
     }

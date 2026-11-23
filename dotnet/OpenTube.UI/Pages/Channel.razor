@@ -69,6 +69,7 @@ else
             if (canPost)
             {
                 <div class="panel">
+                    <AttachBox @ref="attach" />
                     <textarea @bind="postText" @bind:event="oninput" maxlength="5000" placeholder="@(d.Kind == "group" ? $"Write to {name}…" : "Write a post for your channel…")" rows="3"></textarea>
                     <div class="row-actions"><button class="primary" disabled="@posting" @onclick="Post">Post</button>@if (posting) { <span class="sub">@(mine ? "Posting…" : "Doing anti-spam work…")</span> }</div>
                 </div>
@@ -84,6 +85,7 @@ else
                     <div><a class="person" href="@a.Href"><b>@a.Name</b></a>@if (a.Owner) { <span class="badge ok">owner</span> }<span class="sub"> · @Ago(Js.Num(p["ts"]) ?? 0)</span></div>
                     <Rich Text="@((string?)p["payload"]?["text"])" Author="@pa" />
                     @if ((string?)p["payload"]?["image"] is { Length: > 0 } img) { <img class="post-img" src="@img" alt="" /> }
+                    <MediaView Refs="@(p["payload"]?["media"] as JsonArray)" />
                     <div class="row-actions small-actions">
                         @if (d.Kind == "group") { <button disabled="@(S.IsMine(pa) || pv.Mine > 0)" title="Like (pays the author)" @onclick="() => Like(ph, pa)">👍 @pv.Up</button> }
                         @if (mine || S.IsMine(pa)) { <button @onclick="() => Run(() => S.Hide(Id, ph))">Hide</button> }
@@ -228,7 +230,8 @@ else
     Task AddFriend(string key) => Run(async () => { await S.Social.AddFriend(key, S.NameOf(key)); friends?.Add(key); }, "Adding…", "Added as a friend.");
     Task Tip(string to, string name) => Run(async () => { await S.Tip(to, Math.Round(tipAmt * 100), "tip for " + name); tipOpen = false; }, "Sending…", $"Tipped {tipAmt:0.##} coins. It confirms in the next main-chain block.");
     Task Like(string target, string author) => Run(() => S.Vote(Id, target, 1, author), "Liking (pays the author)…");
-    async Task Post() { posting = true; await Run(async () => { await S.Post(Id, postText); postText = ""; }); posting = false; }
+    AttachBox? attach;
+    async Task Post() { posting = true; await Run(async () => { await S.Post(Id, postText, null, attach?.Count > 0 ? await attach.GetRefs(false) : null); postText = ""; attach?.Clear(); }); posting = false; }
     Task Reply(string post) => Run(async () => { await S.Comment(Id, post, replyText.GetValueOrDefault(post) ?? ""); replyText.Remove(post); });
     Task Remove(JsonObject b) => Run(() => S.Hide(Id, (string)b["hash"]!));
     Task AddChannel() => addChannel.Length == 0 ? Task.CompletedTask : Run(async () => { await S.AddChannel(Id, addChannel, addNote.Trim()); addChannel = addNote = ""; }, "Adding…", "Added to the list.");

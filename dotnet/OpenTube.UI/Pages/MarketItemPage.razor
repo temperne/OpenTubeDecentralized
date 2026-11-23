@@ -24,6 +24,7 @@ else
         <div class="big-price">@Trade.Coins(l.PriceNow) <span class="sub">coins@(l.Kind == "auction" ? (l.L["high"] != null ? $" · high bid · {Js.Num(l.L["bids"])} bid(s)" : " · starting bid") : "")</span></div>
         @if (l.Kind == "auction" && l.State == "open") { <div class="sub">Ends @DateTimeOffset.FromUnixTimeMilliseconds((long)(Js.Num(l.L["ends"]) ?? 0)).LocalDateTime</div> }
         @if ((string?)l.L["about"] is { Length: > 0 } ab) { <Rich Text="@ab" /> }
+        <MediaView Refs="@(l.L["media"] as System.Text.Json.Nodes.JsonArray)" />
         @if ((string?)l.L["contact"] is { Length: > 0 } ct) { <div class="sub">Contact: @ct</div> }
         @if ((string?)l.L["org"] is { } org) { <div class="sub">🛡 Payment held in escrow; disputes heard by <a href="c/@org">@(S.Genesis(org)?["payload"]?["name"])</a> (released after @(Js.Num(l.L["hold"]) ?? 14) days unless disputed).</div> }
         @if (escrow != null)

@@ -41,6 +41,8 @@ sealed class BrowserStore(IJSRuntime js) : IClientStore
         return (JsonNode.Parse(json)?.AsArray() ?? []).Where(r => r?["chainId"] != null && r["block"] is JsonObject).Select(r => ((string)r!["chainId"]!, (JsonObject)r["block"]!.DeepClone())).ToList();
     }
     public void SaveBlock(string chain, JsonObject block) => _ = js.InvokeVoidAsync("otStore.put", chain, block.ToJsonString()).AsTask();
+    public async Task SetBytes(string key, byte[]? data, string mime = "application/octet-stream") => await js.InvokeVoidAsync("otStore.setBytes", key, data, mime);
+    public async Task<byte[]?> GetBytes(string key) => await js.InvokeAsync<byte[]?>("otStore.getBytes", key);
 }
 
 /// <summary>Keys in the browser: a backup downloads; another identity reloads the page.</summary>

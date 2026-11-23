@@ -19,6 +19,9 @@ public interface IClientStore
     /// <summary>Every saved block: (chain id, block).</summary>
     Task<List<(string Chain, JsonObject Block)>> LoadBlocks();
     void SaveBlock(string chain, JsonObject block);
+    /// <summary>Bytes kept on this device (your media library's files); null removes them.</summary>
+    Task SetBytes(string key, byte[]? data, string mime = "application/octet-stream") => throw new NotSupportedException("this device can’t keep files");
+    Task<byte[]?> GetBytes(string key) => Task.FromResult<byte[]?>(null);
 }
 
 /// <summary>
@@ -47,6 +50,7 @@ public sealed class ClientSession : IAsyncDisposable
     public Mail Mail { get; private set; } = null!;
     /// <summary>Posts and friends.</summary>
     public Social Social { get; private set; } = null!;
+    public Media Media { get; private set; } = null!;
     /// <summary>Publishing videos, and help from your computers.</summary>
     public Publish Publish { get; private set; } = null!;
     /// <summary>The market, the exchange, organizations.</summary>
@@ -82,7 +86,7 @@ public sealed class ClientSession : IAsyncDisposable
         Publish = new Publish(this); Trade = new Trade(this, store);
         try { if (await store.Get("retiredIdentities") is { } ri && JsonNode.Parse(ri) is JsonArray ra) foreach (var r in ra.OfType<JsonObject>()) if ((string?)r["pub"] is { } rp && (string?)r["priv"] is { } rk) Retired[rp] = new Identity(rp, rk); } catch { }
         Keys = new Keys(this, store); Keys.Start();
-        Social = new Social(this, store); _ = Task.Run(async () => { await Task.Delay(5000); try { await Social.Refresh(); } catch { } });
+        Social = new Social(this, store); Media = new Media(store); _ = Task.Run(async () => { await Task.Delay(5000); try { await Social.Refresh(); } catch { } });
         Ready = true; Changed?.Invoke();
         online = CancellationTokenSource.CreateLinkedTokenSource(stop.Token);
         _ = Task.Run(() => FindNodes(online));

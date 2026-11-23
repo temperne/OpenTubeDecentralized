@@ -53,3 +53,17 @@ window.otUi.playingAt = (id, i) => {
   return !v.paused && v.currentTime >= i - 1.5 && document.visibilityState === 'visible';
 };
 window.otUi.pause = (id) => { const v = document.getElementById(id); if (v) v.pause(); };
+// Bytes as an address a page element can show.
+window.otUi.blobUrl = (bytes, mime) => URL.createObjectURL(new Blob([bytes], { type: mime }));
+window.otUi.openBytes = (bytes, mime) => window.open(URL.createObjectURL(new Blob([bytes], { type: mime })), '_blank');
+// A small thumbnail (JPEG data URL) of a picture or video's bytes, or '' if it can't make one.
+window.otUi.thumbOf = (bytes, mime) => new Promise((res) => {
+  const url = URL.createObjectURL(new Blob([bytes], { type: mime })), done = (t) => { URL.revokeObjectURL(url); res(t || ''); };
+  const draw = (el, w, h) => { const scale = Math.min(1, 160 / Math.max(w, h)); const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(w * scale)); c.height = Math.max(1, Math.round(h * scale)); c.getContext('2d').drawImage(el, 0, 0, c.width, c.height); return c.toDataURL('image/jpeg', 0.7); };
+  if (mime.startsWith('image/')) { const i = new Image(); i.onload = () => done(draw(i, i.naturalWidth, i.naturalHeight)); i.onerror = () => done(''); i.src = url; return; }
+  if (!mime.startsWith('video/')) return done('');
+  const v = document.createElement('video'); v.muted = true; v.playsInline = true; v.preload = 'auto';
+  v.onloadeddata = () => { v.currentTime = Math.min(1, (v.duration || 2) / 2); };
+  v.onseeked = () => done(draw(v, v.videoWidth, v.videoHeight)); v.onerror = () => done(''); setTimeout(() => done(''), 8000);
+  v.src = url;
+});

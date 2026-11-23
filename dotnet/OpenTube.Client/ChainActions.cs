@@ -69,12 +69,13 @@ public static class ChainActions
         .Where(c => c.Kind == "list" && s.IsMine(c.Owner) && s.Genesis(c.Id)?["payload"]?["ranking"] == null).Select(c => (c.Id, c.Name)).ToList();
 
     /// <summary>A post on a channel (its owner) or in a group (members; with your name).</summary>
-    public static async Task Post(this ClientSession s, string chain, string text, string? image = null)
+    public static async Task Post(this ClientSession s, string chain, string text, string? image = null, JsonArray? media = null)
     {
         text = text.Trim(); if (text.Length == 0) throw new ArgumentException("Write something first");
         var d = s.Chain(chain) ?? throw new InvalidOperationException("This channel hasn’t loaded yet");
         var p = new JsonObject { ["type"] = "post", ["text"] = text };
         if (image != null) p["image"] = image;
+        if (media is { Count: > 0 }) p["media"] = media.DeepClone();
         if (!s.IsMine(d.Owner)) { if (!d.CanPost(s.Me.pub)) throw new InvalidOperationException("You can’t post here"); var n = await s.Social.MyName(); p["name"] = n[..Math.Min(60, n.Length)]; }
         await Append(s, chain, p);
     }
