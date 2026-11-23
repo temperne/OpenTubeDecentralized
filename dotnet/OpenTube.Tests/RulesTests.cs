@@ -126,3 +126,40 @@ public class LedgerTests
         Assert.True(txs > 1000);
     }
 }
+
+// The engine's chains: the same mined blocks through C#'s ChainStore as through the JavaScript engine, step by step
+public class ChainStoreTests
+{
+    static string SnapL(Ledger L) => Blocks.Canon(new JsonObject
+    {
+        ["bal"] = Obj(L.Bal), ["seq"] = Obj(L.Seq), ["starters"] = new JsonArray(L.Starters.Order(StringComparer.Ordinal).Select(x => (JsonNode?)x).ToArray()),
+        ["names"] = new JsonObject(L.Names.Select(kv => new KeyValuePair<string, JsonNode?>(kv.Key, kv.Value.DeepClone()))), ["nameOf"] = new JsonObject(L.NameOf.Select(kv => new KeyValuePair<string, JsonNode?>(kv.Key, kv.Value))),
+        ["minted"] = L.Minted, ["burned"] = L.Burned, ["txCount"] = L.TxCount, ["prices"] = Obj(L.Prices),
+    });
+    static JsonObject Obj(Dictionary<string, double> m) => new(m.Select(kv => new KeyValuePair<string, JsonNode?>(kv.Key, kv.Value)));
+
+    [Fact]
+    public void ChainStore_agrees_with_the_javascript_engine()
+    {
+        var V = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "../../../data/engine.json")))!;
+        var store = new ChainStore(V["mainGenesis"]!.AsObject(), (double)V["now"]!);
+        foreach (var s in V["steps"]!.AsArray())
+        {
+            var label = (string)s!["label"]!; var want = s["after"]!;
+            store.Insert((string)s["chain"]!, s["blocks"]!.AsArray().Select(b => b!.DeepClone()));
+            Assert.True((string)want["best"]! == Str(store.MainBest["hash"]), $"{label}: best main block");
+            Assert.True(Blocks.Canon(want["directory"]) == Blocks.Canon(new JsonArray(store.Directory.Keys.Order(StringComparer.Ordinal).Select(x => (JsonNode?)x).ToArray())), $"{label}: directory");
+            Assert.True(Blocks.Canon(want["mempool"]) == Blocks.Canon(new JsonArray(store.Mempool.Keys.Order(StringComparer.Ordinal).Select(x => (JsonNode?)x).ToArray())), $"{label}: mempool");
+            Assert.True(Blocks.Canon(want["txpool"]) == Blocks.Canon(new JsonArray(store.TxPool.Keys.Order(StringComparer.Ordinal).Select(x => (JsonNode?)x).ToArray())), $"{label}: txpool");
+            Assert.True((string)want["ledger"]! == SnapL(store.Ledger), $"{label}: ledger\n  JS {want["ledger"]}\n  C# {SnapL(store.Ledger)}");
+            Assert.True(Blocks.Canon(want["rejected"]) == Blocks.Canon(new JsonObject(store.Rejected.Select(kv => new KeyValuePair<string, JsonNode?>(kv.Key, kv.Value)))), $"{label}: rejected\n  JS {Blocks.Canon(want["rejected"])}\n  C# {Blocks.Canon(new JsonObject(store.Rejected.Select(kv => new KeyValuePair<string, JsonNode?>(kv.Key, kv.Value))))}");
+            var chains = new JsonObject(store.Chains.Select(kv => new KeyValuePair<string, JsonNode?>(kv.Key, new JsonObject
+            {
+                ["heads"] = new JsonArray(kv.Value.Heads.Order(StringComparer.Ordinal).Select(x => (JsonNode?)x).ToArray()), ["n"] = kv.Value.Blocks.Count,
+                ["orphans"] = new JsonArray(kv.Value.Orphans.Keys.Order(StringComparer.Ordinal).Select(x => (JsonNode?)x).ToArray()),
+            })));
+            Assert.True(Blocks.Canon(want["chains"]) == Blocks.Canon(chains), $"{label}: chains\n  JS {Blocks.Canon(want["chains"])[..Math.Min(500, Blocks.Canon(want["chains"]).Length)]}\n  C# {Blocks.Canon(chains)[..Math.Min(500, Blocks.Canon(chains).Length)]}");
+        }
+    }
+    static string? Str(JsonNode? n) => Js.Str(n);
+}
