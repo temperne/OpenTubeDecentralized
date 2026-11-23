@@ -59,7 +59,7 @@ public sealed class ObsLive
     sealed class Sink(OpenTubeNode node, string chain, string title) : IStreamSink
     {
         readonly string stream = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
-        long n, offset; (Action<JsonObject> Seg, Action End, Action<JsonObject> Chunk)? local; RemoteBroadcast? remote; FileStream? rec; string? recPath, recFile;
+        long n, offset; (Action<JsonObject> Seg, Action End, Action<JsonObject> Chunk)? local; RemoteBroadcast? remote; Chunker? chunks; FileStream? rec; string? recPath, recFile;
         readonly object gate = new();
 
         public void Init(byte[] header, string mime)
@@ -81,6 +81,8 @@ public sealed class ObsLive
             node.Log($"[obs] live on {name}: “{title}”" + (hubUrl != null ? $" (viewers through {hubUrl.Replace("wss://", "").Replace("ws://", "").Replace("/live", "")})" : " (viewers through this computer)"));
             local = node.Hub.Local(stream, chain, mime);
             if (hubUrl != null) remote = new RemoteBroadcast(node, hubUrl, stream, chain, mime);
+            var lc = local.Value.Chunk; var rb = remote;
+            chunks = new Chunker(node, stream, c => { if (rb != null) rb.Chunk(c); else lc(c); });
             // the recording: OBS's stream as one MP4 file
             // (with hosting on, in the channel's folder, shared and offered to the channel's owner for publishing)
             if (node.Hosting != null) { (recPath, recFile) = node.Hosting.RecordingPath(chain, title, ".mp4"); }
@@ -103,7 +105,7 @@ public sealed class ObsLive
                 var g = new JsonObject { ["stream"] = stream, ["n"] = n, ["o"] = offset, ["h"] = h };
                 g["sig"] = node.Identity!.Sign($"opentube-live:{stream}:{n}:{offset}:{h}"); g["d"] = Convert.ToBase64String(bytes); if (key) g["k"] = 1;
                 n++; offset += bytes.Length;
-                local.Value.Seg((JsonObject)g.DeepClone()); node.Engine.PublishLiveSeg((JsonObject)g.DeepClone()); remote?.Seg(g);
+                local.Value.Seg((JsonObject)g.DeepClone()); node.Engine.PublishLiveSeg((JsonObject)g.DeepClone()); remote?.Seg(g); chunks?.Seg(g);
                 try { rec?.Write(bytes); } catch { }
             }
         }
@@ -112,7 +114,9 @@ public sealed class ObsLive
             lock (gate)
             {
                 if (local == null) return;
-                local.Value.End(); remote?.Close(); rec?.Dispose(); local = null;
+                var lend = local.Value.End; var rem = remote; var ch = chunks;
+                _ = (ch?.End() ?? Task.CompletedTask).ContinueWith(_ => { lend(); rem?.Close(); });   // the last chunk first, then leave
+                rec?.Dispose(); local = null;
                 node.Log($"[obs] stream ended; recording saved: {recPath} ({offset / 1e6:0.0} MB)");
             }
             var end = new JsonObject { ["type"] = "liveend", ["stream"] = stream, ["outcome"] = "ended" };
@@ -143,6 +147,7 @@ public sealed class ObsLive
             _ = Task.Run(Run);
         }
         public int Children => kids.OpenCount;
+        public void Chunk(JsonObject c) => outbox.Writer.TryWrite(new JsonObject { ["t"] = "lchunk", ["stream"] = stream, ["chunk"] = c }.ToJsonString());
         public void Seg(JsonObject g) { var m = new JsonObject { ["t"] = "seg", ["seg"] = g.DeepClone() }.ToJsonString(); lock (pending) { if (on) outbox.Writer.TryWrite(m); else { pending.Add(m); if (pending.Count > 120) pending.RemoveAt(0); } } kids.Seg(g); }
         public void Close() { closed = true; outbox.Writer.TryWrite(new JsonObject { ["t"] = "leave", ["stream"] = stream }.ToJsonString()); _ = Task.Delay(1000).ContinueWith(_ => { kids.Close(); try { ws?.Abort(); } catch { } }); }
         async Task Run()

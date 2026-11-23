@@ -131,7 +131,7 @@ public sealed class Earnings
         var host = node.Hosting; if (host == null) return;
         var mine = host.Complete(); if (mine.Count == 0) return;
         var (ih, _) = mine[RandomNumberGenerator.GetInt32(mine.Count)];
-        var size = host.ProgressOf(ih)?["size"] is JsonNode s ? (double?)s : null;
+        var size = Js.Num(host.ProgressOf(ih)?["size"]);
         var targets = node.Engine.Read(e => e.Nodes.Values.Where(n => n["roles"] is JsonArray r && r.Any(x => (string?)x == "host") && Now() - (Js.Num(n["at"]) ?? 0) < 120000).Select(n => (string?)n["node"]).Where(k => k != null && k != node.NodeKey).Select(k => k!).ToList())
             .OrderBy(_ => RandomNumberGenerator.GetInt32(1000)).Take(4).ToList();
         foreach (var key in targets)

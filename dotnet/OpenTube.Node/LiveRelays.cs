@@ -110,11 +110,18 @@ public sealed class LiveRelays(OpenTubeNode node)
     {
         readonly OpenTubeNode node; readonly string stream, chain, url, title; readonly LiveKids kids; readonly CancellationTokenSource cts = new();
         readonly System.Threading.Channels.Channel<string> outbox = System.Threading.Channels.Channel.CreateUnbounded<string>();
-        FileStream? rec; string? recPath, recFile; long got; public bool Done;
+        FileStream? rec; string? recPath, recFile; long got; public bool Done; readonly Chunker? chunks;
+        static bool FromBrowser(OpenTubeNode node, string chain, string stream) => node.Engine.Read(e =>
+        {
+            if (!e.Store.Chains.TryGetValue(chain, out var ch)) return true;
+            var lb = Derived.Of(ch).Streams.FirstOrDefault(b => (string?)b["payload"]?["stream"] == stream);
+            return lb == null || ((string?)lb["author"] == ch.Owner && lb["payload"]?["relay"] == null);
+        });
         public Relay(OpenTubeNode node, string stream, string chain, string url, string title, bool record)
         {
             this.node = node; this.stream = stream; this.chain = chain; this.url = url; this.title = title;
             kids = new LiveKids(stream, m => outbox.Writer.TryWrite(m.ToJsonString()), node.Log);
+            if (FromBrowser(node, chain, stream)) chunks = new Chunker(node, stream, c => Send(new JsonObject { ["t"] = "lchunk", ["stream"] = stream, ["chunk"] = c }));   // a computer streaming makes its own chunks
             if (record)
             {
                 if (node.Hosting != null) (recPath, recFile) = node.Hosting.RecordingPath(chain, title, ".webm");
@@ -163,7 +170,7 @@ public sealed class LiveRelays(OpenTubeNode node)
                     break;
                 case "seg" when m["seg"] is JsonObject g && (string?)g["stream"] == stream:
                     if (!Verified(g)) return;
-                    kids.Seg(g); Record(g);
+                    kids.Seg(g); Record(g); chunks?.Seg(g);
                     if (got++ == 0) node.Log($"[live] relaying “{title}” on {Name()} to viewers over WebRTC");
                     break;
                 case "child" when Js.IsTrue(m["dc"]) && (string?)m["peer"] is { } p: kids.Child(p); break;
@@ -190,6 +197,7 @@ public sealed class LiveRelays(OpenTubeNode node)
         public void Close()
         {
             if (cts.IsCancellationRequested) return;
+            chunks?.End();
             Send(new JsonObject { ["t"] = "leave", ["stream"] = stream });
             _ = Task.Delay(500).ContinueWith(_ => { cts.Cancel(); kids.Close(); });
             if (rec != null)

@@ -10,7 +10,7 @@ const until = async (p, fn, arg, ms = 120000) => { const t0 = Date.now(); while 
 const SITE = W + '/site'; fs.mkdirSync(SITE); for (const f of ['index.html', 'sw.js']) fs.copyFileSync(path.join(REPO, f), path.join(SITE, f)); fs.writeFileSync(SITE + '/seeds.json', '{"entry":[]}');
 let P, lines = []; const start = (grant) => {
   P = spawn('dotnet', [REPO + '/dotnet/OpenTube.App/bin/Debug/net10.0/opentube.dll', '--service', `--port=${N}`, `--data=${W}/node`, `--videos=${W}/videos`, '--mine=all', '--no-tunnel', '--public=off', '--no-ranking', '--no-mesh', `--obs-port=${RT}`, '--site-dir=' + SITE, ...(grant ? ['--grant=' + grant] : [])], { env: { ...process.env, PAY_DEBUG: '1' } });
-  P.stdout.on('data', d => { for (const l of String(d).split('\n')) { lines.push(l); if (/\[host\]|\[obs\]|\[pay|rror|fail/.test(l)) log('[C#]', l.trim().replace(/^\d\d:\d\d:\d\d /, '').slice(0, 170)); } });
+  P.stdout.on('data', d => { for (const l of String(d).split('\n')) { lines.push(l); if (/\[host\]|\[obs\]|\[pay|\[live\]|rror|fail/.test(l)) log('[C#]', l.trim().replace(/^\d\d:\d\d:\d\d /, '').slice(0, 170)); } });
   for (let i = 0; i < 60; i++) { try { execSync(`curl -sf localhost:${N}/status`); return; } catch { execSync('sleep 0.5'); } } };
 let fail = 0; const check = (ok, what) => { log(ok ? 'ok  ' : 'FAIL', what); if (!ok) fail = 1; };
 (async () => {
@@ -47,6 +47,14 @@ let fail = 0; const check = (ok, what) => { log(ok ? 'ok  ' : 'FAIL', what); if 
     t.on('done', async () => { clearTimeout(to); const b = new Uint8Array(await t.files[0].arrayBuffer()); res({ h: [...new Uint8Array(await crypto.subtle.digest('SHA-256', b))].map(x => x.toString(16).padStart(2, '0')).join('') }); });
   }), { ih: rec.infohash, tr: TRACKER });
   check(got.h === crypto.createHash('sha256').update(fs.readFileSync(folder + '/' + rec.file)).digest('hex'), `a viewer's browser downloaded it from the node over WebRTC: ${got.error || 'identical'} (${((Date.now() - t0) / 1000).toFixed(1)} s)`);
+  // 2b. live chunks: ~10 segments at a time were seeded as small torrents; a browser fetches the first one
+  const chunkLine = lines.find(l => /in chunks of ~10 segments \(first: [0-9a-f]{40}\)/.test(l)), cih = chunkLine?.match(/[0-9a-f]{40}/)?.[0];
+  const cgot = cih ? await V.evaluate(async ({ ih, tr }) => new Promise((res) => {
+    const t = opentube.wt.add(`magnet:?xt=urn:btih:${ih}&tr=${encodeURIComponent(tr)}`, { announce: [tr] });
+    const to = setTimeout(() => res({ error: 'timeout' }), 60000);
+    t.on('done', () => { clearTimeout(to); res({ n: t.length, name: t.name }); });
+  }), { ih: cih, tr: TRACKER }) : { error: 'no chunk announced' };
+  check(cgot.n > 1000, `live chunks: the first chunk (${cih?.slice(0, 12)}…) downloads over WebRTC: ${cgot.error || cgot.name + ', ' + cgot.n + ' bytes'}`);
   // 3. the owner's file manager, from the site
   const ctl = (cmd, args) => A.evaluate(async ({ k, cmd, args }) => { try { return (await opentube.nodeCtl(opentube.engine.nodes.get(k), cmd, args)).data; } catch (e) { return 'refused: ' + e.message; } }, { k: nodeKey, cmd, args });
   const files = await ctl('files', {});

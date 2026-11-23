@@ -94,10 +94,18 @@ page on the site, then streams with the key the site received.
 - **relaying:** when you (or someone you share the computer with) go live from a browser, the computer watches the
   stream as a member, serves viewers itself, and records streams on your channels (`test-relay.cjs`).
 
+**Video hosting** (with `--grant`; `--videos=DIR`, default `~/OpenTube Videos`; `--cap-gb=5`; `--no-host`): the
+node keeps the videos of the channels you and the people you share it with joined or own, in the browser's folder
+layout, and shares them over BitTorrent with browsers (WebRTC, WebTorrent's trackers) and computers (TCP, plain or
+encrypted). Manage files and "store" work from the site; OBS and relayed recordings are kept in the channel's folder
+and offered for publishing; live streams are also shared in small torrent chunks (`test-host.cjs`).
+
+**Getting paid:** receipts submitted in `serve` transactions, pay per piece (`ot_pay`: signed tabs both ways, cashed in
+every minute; peers that don't pay stop getting pieces), storage proofs with other hosts (`test-proof.cjs`), earnings
+passed to the owner. The C# engine makes its own transactions (proof of work, signed).
+
 **Not in the .NET node yet** (the JavaScript node has them):
-- video hosting: the BitTorrent client is done (it exchanges files with WebTorrent both ways, plain or encrypted:
-  `torrent-interop/run.sh`), but not yet the WebTorrent tracker client and WebRTC peers for browsers, keeping joined
-  channels' videos, live chunks, and offering recordings for publishing;
+- the DHT (finding ordinary BitTorrent apps without a tracker);
 - the group studio;
 - YouTube forwarding;
 - flash computers;
