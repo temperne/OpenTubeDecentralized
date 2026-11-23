@@ -28,6 +28,7 @@ const waitText = async (p, re, ms = 120000) => { const t0 = Date.now(); while (D
   const cx = await chromium.launchPersistentContext(W + '/x', { headless: true, acceptDownloads: true }); const X = cx.pages()[0]; const errs = [];
   X.on('pageerror', e => errs.push(e.message));
   await X.goto(BASE + 'app/you'); await X.waitForSelector('.mono', { timeout: 60000 }); const x = (await X.textContent('.mono')).trim();
+  await X.goto(BASE + 'app/you/channels'); await X.waitForSelector('input[placeholder=Name]', { timeout: 60000 });
   await X.fill('input[placeholder=Name]', 'Keyed Channel'); await X.click('text=Create & register');
   await X.waitForURL(/\/app\/c\//, { timeout: 180000 }); const chain = X.url().split('/c/')[1];
   const oldOwner = await (async () => { for (let i = 0; i < 60; i++) { const o = await O.evaluate((c) => opentube.engine.directory.get(c)?.genesis.author, chain); if (o) return o; await new Promise(r => setTimeout(r, 1000)); } return null; })();
@@ -88,8 +89,7 @@ const waitText = async (p, re, ms = 120000) => { const t0 = Date.now(); while (D
   check(await waitText(Y, /Imported 1 channel|already here/, 30000), 'the C# page imports the JavaScript-made locked file');
   // retire the personal key (on Y)
   await Y.click('button:has-text("Retire my personal key")'); await Y.click('button:has-text("Yes: make a new key")');
-  await Y.waitForTimeout(6000); await Y.goto(BASE + 'app/you'); await Y.waitForSelector('.mono', { timeout: 60000 });
-  const y2 = (await Y.textContent('.mono')).trim();
+  let y2 = x; for (let i = 0; i < 30 && y2 === x; i++) { await Y.waitForTimeout(3000); await Y.goto(BASE + 'app/you').catch(() => {}); await Y.waitForSelector('.mono', { timeout: 60000 }).catch(() => {}); y2 = (await Y.textContent('.mono').catch(() => x)).trim(); }
   check(y2 !== x, 'retiring: this device now uses a new personal key');
   check(await until(O, ({ old, nu }) => opentube.engine.ledger.retired.has(old) && opentube.engine.ledger.resolve(old) === nu, { old: x, nu: y2 }, 180000), 'the network retired the old key and hands what it had to the new one');
   check(errs.length === 0, 'no page errors' + (errs.length ? ': ' + errs.slice(0, 3).join(' | ') : ''));

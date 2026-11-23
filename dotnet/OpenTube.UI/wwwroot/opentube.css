@@ -91,3 +91,7 @@ a.button.on { border-color: var(--accent); color: var(--accent); font-weight: 60
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin-top: 8px; } details.tech { margin-top: 14px; } details.tech summary { cursor: pointer; }
 textarea { width: 100%; font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); margin: 4px 0; }
 label { display: block; margin-top: 10px; font-size: 13px; color: var(--sub); } .grow { flex: 1; min-width: 0; }
+/* wallet */
+.bal { font-size: 28px; font-weight: 700; margin: 6px 0; } .amt-in { color: var(--ok); font-weight: 700; } .amt-out { color: var(--accent); font-weight: 700; }
+.tx { display: flex; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); } .tx-when { text-align: right; white-space: nowrap; }
+.head-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; } .head-row h3 { margin: 0; }

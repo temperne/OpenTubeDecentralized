@@ -52,6 +52,13 @@ public sealed class Social
         m[kind] = new JsonArray(list.Select(x => (JsonNode?)x).ToArray());
         await SaveSettings(st);
     }
+    public async Task<bool> IsFollowing(string key) => ((await Settings())["following"] as JsonArray ?? []).Any(x => (string?)x == key);
+    /// <summary>Follow someone's public posts (a notification for each; kept on this device).</summary>
+    public async Task SetFollowing(string key, bool on)
+    {
+        var st = await Settings(); var list = (st["following"] as JsonArray ?? []).Select(x => (string?)x).OfType<string>().Where(k => k != key).ToList();
+        if (on) list.Add(key); st["following"] = new JsonArray(list.Select(x => (JsonNode?)x).ToArray()); await SaveSettings(st);
+    }
     public async Task<string> MyName() => (string?)(await Settings())["name"] is { Length: > 0 } n ? n : "viewer-" + s.Me.pub[..6];
 
     // ---------------------------------------------------------------- posts (the monthly public chains)

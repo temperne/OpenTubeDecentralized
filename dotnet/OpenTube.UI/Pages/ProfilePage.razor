@@ -1,0 +1,4 @@
+@page "/u/{Key}"
+@inherits Live
+@if (S.Ready) { <ProfileView Key="@Key" /> }
+@code { [Parameter] public string Key { get; set; } = ""; }

@@ -1,0 +1,78 @@
+@inherits Live
+@{
+    var key = S.Engine.Read(e => e.Store.Ledger.Resolve(Key)); var mine = key == S.Me.pub;
+    var circle = S.Social.CircleOf(key); var pr = circle != null ? S.Chain(circle)?.Profile : null;
+    var name = (string?)pr?["name"] is { Length: > 0 } pn ? pn : mine ? "You" : S.NameOf(key);
+    var owned = S.Directory().Where(c => c.Kind is not ("circle" or "case" or "square") && c.Owner != null && S.Engine.Read(e => e.Store.Ledger.Resolve(c.Owner)) == key).ToList();
+    var channels = owned.Where(c => c.Kind == "channel").ToList(); var others = owned.Where(c => c.Kind is "group" or "org" or "list").ToList();
+    var videos = channels.SelectMany(c => (S.Chain(c.Id)?.Videos ?? []).Select(v => (c, v))).OrderByDescending(x => Js.Num(x.v["ts"]) ?? 0).Take(12).ToList();
+    var live = channels.SelectMany(c => (S.Chain(c.Id)?.LiveNow ?? []).Select(lb => (c, lb))).ToList();
+    var selling = S.Trade.Listings().Where(l => l.State == "open" && S.Engine.Read(e => e.Store.Ledger.Resolve(l.Seller)) == key).ToList();
+    var handle = circle != null ? S.NameOfChain(circle) : null;
+}
+<div class="panel channel-head">
+    @if ((string?)pr?["avatar"] is { Length: > 0 } av) { <img class="avatar big" src="@av" alt="" /> } else { <span class="avatar big empty">@(name.Length > 0 ? name[..1].ToUpperInvariant() : "?")</span> }
+    <div class="grow">
+        <h2>@name</h2>
+        @if (handle != null) { <div><a href="n/@Uri.EscapeDataString(handle)"><b>@handle</b></a></div> }
+        @if ((string?)pr?["about"] is { Length: > 0 } ab) { <Rich Text="@ab" /> }
+        @if ((string?)pr?["location"] is { Length: > 0 } loc) { <div class="sub">📍 @loc</div> }
+        @{ var links = (pr?["links"] as JsonArray ?? []).OfType<JsonObject>().ToList(); }
+        @if (links.Count > 0) { <div class="row-actions">@foreach (var l in links) { <a class="tagbox" href="@((string?)l["url"])" target="_blank" rel="noopener noreferrer nofollow">🔗 @((string?)l["label"])</a> }</div> }
+        <div class="mono sub">@key</div>
+        @if (!mine)
+        {
+            <div class="row-actions">
+                <a class="button" href="messages/@key">✉ Message</a>
+                <button class="@(following ? "on" : "")" @onclick="ToggleFollow">@(following ? "Following ✓" : "Follow")</button>
+                @if (isFriend) { <span class="badge ok">friend</span> } else { <button @onclick="AddFriend">＋ Friend</button> }
+                <a class="button" href="wallet/@key">Account</a>
+            </div>
+            @if (msg != null) { <div class="sub">@msg</div> }
+        }
+    </div>
+</div>
+@if (live.Count > 0)
+{
+    <h3>🔴 Live now</h3>
+    @foreach (var (c, lb) in live) { <a class="live-banner" href="live/@c.Id/@lb["payload"]!["stream"]">🔴 @((string?)lb["payload"]?["title"]) · on @c.Name</a> }
+}
+<div class="panel"><h3>Channels</h3>
+    @if (channels.Count == 0) { <div class="sub">No channels.</div> }
+    <div class="list">@foreach (var c in channels) { <a class="row-item" href="c/@c.Id">@if (c.Avatar is { Length: > 0 } ca) { <img class="avatar" src="@ca" alt="" /> }<span class="grow"><b>@c.Name</b> <span class="sub">@c.Videos videos</span></span></a> }</div>
+</div>
+<div class="panel"><h3>Recent videos</h3>
+    @if (videos.Count == 0) { <div class="sub">No videos yet.</div> }
+    <div class="grid">@foreach (var (c, v) in videos) { <VideoCard Chain="@c.Id" Block="(JsonObject)v.DeepClone()" ChannelName="@c.Name" /> }</div>
+</div>
+<div class="panel"><h3>Public posts</h3>
+    @{ var posts = Months().SelectMany(m => S.Social.Posts(m).Where(p => S.Engine.Read(e => e.Store.Ledger.Resolve(p.Author)) == key).Select(p => (m, p))).OrderByDescending(x => x.p.Ts).Take(30).ToList(); }
+    @if (posts.Count == 0) { <div class="sub">No public posts in the last months.</div> }
+    @foreach (var (m, p) in posts) { <PostItem P="p" Month="@m" /> }
+</div>
+<div class="panel"><h3>Selling</h3>
+    @if (selling.Count == 0) { <div class="sub">Nothing for sale.</div> }
+    <div class="list">@foreach (var l in selling) { <a class="row-item" href="market/item/@l.Id"><span class="grow"><b>@l.Title</b></span><span>@ChainActions.Coins(l.PriceNow) coins</span></a> }</div>
+</div>
+@if (others.Count > 0)
+{
+    <div class="panel"><h3>Groups, lists & organizations</h3>
+        <div class="list">@foreach (var c in others) { <a class="row-item" href="c/@c.Id"><span class="grow"><b>@c.Name</b></span><span class="badge">@c.Kind</span></a> }</div>
+    </div>
+}
+@code {
+    [Parameter] public required string Key { get; set; }
+    bool following, isFriend; string? msg;
+    protected override async Task OnParametersSetAsync()
+    {
+        var key = S.Engine.Read(e => e.Store.Ledger.Resolve(Key));
+        following = await S.Social.IsFollowing(key); isFriend = (await S.Social.Friends()).Any(f => f.Key == key);
+    }
+    static IEnumerable<string> Months() { var m = Social.Month(DateTimeOffset.UtcNow); for (int i = 0; i < 3; i++) { yield return m; m = Social.PrevMonth(m); } }
+    async Task ToggleFollow() { following = !following; await S.Social.SetFollowing(S.Engine.Read(e => e.Store.Ledger.Resolve(Key)), following); }
+    async Task AddFriend()
+    {
+        var key = S.Engine.Read(e => e.Store.Ledger.Resolve(Key));
+        try { await S.Social.AddFriend(key, S.NameOf(key)); isFriend = true; msg = "Added as a friend."; } catch (Exception e) { msg = e.Message; }
+    }
+}

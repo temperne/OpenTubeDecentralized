@@ -1,0 +1,49 @@
+@inherits Live
+@{ var hist = S.History(Key); }
+@if (hist.Count == 0) { <div class="sub">No transactions yet.</div> }
+@foreach (var h in hist.Take(100))
+{
+    <div class="tx">
+        <div class="grow">
+            @if (h.Reward) { <Amt Sign="1" Units="Coin.Reward" /> <span>for confirming a main-chain block</span> }
+            else
+            {
+                var t = h.Tx!; var mine = (string?)t["from"] == Key;
+                if (Js.IsTrue(t["starter"])) { <div><Amt Sign="1" Units="Coin.Starter" /> starter coins</div> }
+                foreach (var o in (t["pay"] as JsonArray ?? []).OfType<JsonObject>())
+                {
+                    var toK = (string?)o["to"] ?? "";
+                    if (mine) { <div><Amt Sign="-1" Units="@(Js.Num(o["amt"]) ?? 0)" /> to <a href="wallet/@toK">@S.NameOf(toK)</a></div> }
+                    else if (toK == Key) { <div><Amt Sign="1" Units="@(Js.Num(o["amt"]) ?? 0)" /> from <a href="wallet/@((string?)t["from"])">@S.NameOf((string?)t["from"] ?? "")</a></div> }
+                }
+                if ((string?)t["memo"] is { Length: > 0 } m) { <div class="sub">“@m”</div> }
+                if (t["post"] is JsonObject po) { <div><Amt Sign="-1" Units="@(Js.Num(po["amt"]) ?? 0)" /> posted a video on <ChainLink Id="@((string?)po["chain"])" /> (to the channel’s hosts)</div> }
+                if (t["view"] is JsonObject vw) { if (mine) { <div><Amt Sign="-1" Units="@(Js.Num(vw["amt"]) ?? 0)" /> watched a video on <ChainLink Id="@((string?)vw["chain"])" /></div> } else { <div><Amt Sign="1" Units="@(Js.Num(vw["amt"]) ?? 0)" /> @S.NameOf((string?)t["from"] ?? "") watched your video</div> } }
+                if (t["vote"] is JsonObject vo)
+                {
+                    var up = (Js.Num(vo["v"]) ?? 0) > 0;
+                    if (mine) { <div><Amt Sign="-1" Units="@(Js.Num(vo["amt"]) ?? 0)" /> @(up ? "👍 liked" : "👎 disliked") on <ChainLink Id="@((string?)vo["chain"])" />@(up ? "" : " (burned)")</div> }
+                    else { <div><Amt Sign="1" Units="@(Js.Num(vo["amt"]) ?? 0)" /> @S.NameOf((string?)t["from"] ?? "") liked your post on <ChainLink Id="@((string?)vo["chain"])" /></div> }
+                }
+                foreach (var x in (t["tabs"] as JsonArray ?? []).OfType<JsonObject>())
+                {
+                    if ((string?)x["payer"] == Key) { <div><Amt Sign="-1" Units="@(Js.Num(x["amt"]) ?? 0)" /> watched <ChainLink Id="@((string?)x["chain"])" /> (@x["n"] pieces)</div> }
+                    else if ((string?)x["payee"] == Key) { <div><Amt Sign="1" Units="@(Js.Num(x["amt"]) ?? 0)" /> sent @S.NameOf((string?)x["payer"] ?? "") @x["n"] pieces of a video on <ChainLink Id="@((string?)x["chain"])" /> (half to the creator)</div> }
+                    else if ((string?)x["creator"] == Key) { <div>Your video on <ChainLink Id="@((string?)x["chain"])" /> was watched (@x["n"] pieces)</div> }
+                }
+                if (t["host"] is JsonObject ho) { <div>@(Js.IsTrue(ho["on"]) ? "Registered as a host of " : "Stopped hosting ")<ChainLink Id="@((string?)ho["chain"])" /></div> }
+                if (t["name"] is JsonObject nm) { <div>@((string?)nm["handle"] is { } hd ? $"Claimed {(string?)nm["space"]}{hd}" : "Released a name")</div> }
+                if (t["bind"] != null) { <div>Bound a channel key to this identity (its coins come here)</div> }
+                if (t["retire"] is JsonObject re) { <div>Retired this key: everything moved to <a href="wallet/@((string?)re["to"])">@S.NameOf((string?)re["to"] ?? "")</a></div> }
+                if (t["list"] is JsonObject li) { <div>Listed “@((string?)li["title"])” on the market</div> }
+                if (t["buy"] is JsonObject bu) { <div>Bought <a href="market/item/@((string?)bu["id"])">a market listing</a></div> }
+                if (t["bid"] is JsonObject bi) { <div><Amt Sign="-1" Units="@(Js.Num(bi["amt"]) ?? 0)" /> bid on <a href="market/item/@((string?)bi["id"])">an auction</a> (held until it ends)</div> }
+                if (t["unlist"] != null) { <div>Withdrew a market listing</div> }
+                if (t["certs"] is JsonObject ce) { <div>Gave ad-view certificates to @S.NameOf((string?)ce["to"] ?? "")</div> }
+                if (t["redeem"] != null) { <div>Cashed in ad-view certificates</div> }
+            }
+        </div>
+        <div class="sub tx-when">@if (h.Pending) { <span class="badge warnb">pending</span> } else { <span>block #@h.Height</span> }<div>@Ago(h.Ts)</div></div>
+    </div>
+}
+@code { [Parameter] public required string Key { get; set; } }

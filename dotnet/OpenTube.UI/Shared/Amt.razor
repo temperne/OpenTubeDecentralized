@@ -1,0 +1,2 @@
+<span class="@(Sign > 0 ? "amt-in" : "amt-out")">@(Sign > 0 ? "+" : "−")@OpenTube.Client.ChainActions.Coins(Units)</span>
+@code { [Parameter] public int Sign { get; set; } [Parameter] public double Units { get; set; } }

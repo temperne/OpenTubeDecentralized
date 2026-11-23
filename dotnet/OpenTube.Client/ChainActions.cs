@@ -91,7 +91,7 @@ public static class ChainActions
     public static async Task ClaimName(this ClientSession s, string chain, string? handle)
     {
         var d = s.Chain(chain) ?? throw new InvalidOperationException("This channel hasn’t loaded yet");
-        var space = d.Kind == "channel" ? "@" : "~";
+        var space = d.Kind == "channel" ? "@" : d.Kind == "circle" ? "@@" : "~";
         if (handle != null && (!NameRe.IsMatch(handle) || handle.Contains("..") || handle.Contains("__") || handle.Contains("--"))) throw new ArgumentException("3–30 characters: a–z, 0–9, and . _ - in the middle");
         if (handle != null && s.NameHolder(space + handle) is { } h && h != chain) throw new ArgumentException($"{space}{handle} is taken");
         await s.Engine.SubmitTx(new JsonObject { ["name"] = new JsonObject { ["space"] = space, ["chain"] = chain, ["handle"] = handle } }, s.KeyOf(d.Owner!) ?? throw new InvalidOperationException("You don’t hold this channel’s key"));

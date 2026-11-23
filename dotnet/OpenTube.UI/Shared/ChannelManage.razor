@@ -3,14 +3,14 @@
 @{ var d = S.Chain(Id); }
 @if (d != null)
 {
-    var space = d.Kind == "channel" ? "@" : "~"; var cur = S.NameOfChain(Id); var what = d.Kind == "channel" ? "channel" : d.Kind;
-    @if (d.Kind is "channel" or "list")
+    var space = d.Kind == "channel" ? "@" : d.Kind == "circle" ? "@@" : "~"; var cur = S.NameOfChain(Id); var what = d.Kind == "circle" ? "page" : d.Kind;
+    @if (d.Kind is "channel" or "list" or "circle")
     {
         <div class="panel">
             <h3>Username</h3>
             <p class="sub">Gives this @what a short link: @S.Site/@(space)name. One name per @what. Changing or releasing it frees the old name for anyone.</p>
             @if (cur != null) { <div class="row-actions"><span>Current:</span><a href="n/@Uri.EscapeDataString(cur)"><b>@cur</b></a></div> }
-            <div class="row-actions"><b>@space</b><input class="grow-input" id="name-input" @bind="handle" @bind:event="oninput" maxlength="30" placeholder="@(d.Kind == "channel" ? "yourchannel" : "yourlist")" />
+            <div class="row-actions"><b>@space</b><input class="grow-input" id="name-input" @bind="handle" @bind:event="oninput" maxlength="30" placeholder="@(d.Kind == "channel" ? "yourchannel" : d.Kind == "circle" ? "yourname" : "yourlist")" />
                 <button class="primary" disabled="@busy" @onclick="Claim">@(cur != null ? "Change name" : "Claim name")</button>
                 @if (cur != null) { <button disabled="@busy" @onclick="Release">Release</button> }
             </div>
@@ -18,7 +18,7 @@
         </div>
     }
     <div class="panel">
-        <h3>Profile</h3>
+        <h3>@(d.Kind == "circle" ? "Your public profile" : "Profile")</h3>
         <label>Name</label><input @bind="name" maxlength="60" />
         <label>About</label><textarea @bind="about" rows="4" maxlength="2000"></textarea>
         @if (d.Kind != "list")
@@ -55,6 +55,8 @@
             @foreach (var k in d.Revoked) { <div class="row-item"><a class="grow person" href="u/@k">@S.NameOf(k)</a><button @onclick="() => Unblock(k)">Unblock</button></div> }
         </div>
     }
+    @if (d.Kind != "circle")
+    {
     <div class="panel">
         <h3>@(char.ToUpperInvariant(what[0]) + what[1..]) key</h3>
         <p class="sub">This @what is controlled by its own key pair: whoever holds the private key controls it. Back it up (locked with a password) or give it a new key under Keys & backup.</p>
@@ -62,6 +64,7 @@
         <div class="row-actions"><a class="button primary-link" href="you/keys">Keys & backup</a>
             <span class="sub">@(S.OwnerIdentity(Id) == S.Me.pub ? "✓ Bound to your identity: coins paid here go to your wallet." : "Being bound to your identity…")</span></div>
     </div>
+    }
     @if (msg != null) { <div class="sub" id="manage-msg">@msg</div> }
 }
 @code {

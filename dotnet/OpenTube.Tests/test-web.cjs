@@ -29,7 +29,7 @@ let fail = 0; const check = (ok, what) => { log(ok ? 'ok  ' : 'FAIL', what); if 
   check(/Made in JavaScript/.test(await P2.textContent('main')), 'Explore lists the channel registered on the network');
   await P2.click('text=Made in JavaScript'); await P2.waitForFunction(() => document.querySelector('.channel-head h2')?.textContent === 'Made in JavaScript', null, { timeout: 60000 }).catch(() => {});
   check((await P2.textContent('main')).includes('videos'), 'its channel page loads from the network');
-  await P2.click('nav >> text=You'); await P2.fill('input[placeholder=Name]', 'Made in C#'); const t1 = Date.now(); await P2.click('text=Create & register');
+  await P2.click('nav >> text=You'); await P2.click('.tabs >> text=Channels'); await P2.fill('input[placeholder=Name]', 'Made in C#'); const t1 = Date.now(); await P2.click('text=Create & register');
   await P2.waitForURL(/\/app\/c\/[0-9a-f]{64}/, { timeout: 180000 }).catch(async e => { log('page says:', (await P2.innerHTML('body')).slice(0, 3000), errs.join(' | '), allLog.join('\n')); throw e; }); const cs = P2.url().split('/c/')[1];
   log('created in C# after', ((Date.now() - t1) / 1000).toFixed(1), 's:', cs.slice(0, 8));
   await J.waitForFunction((c) => opentube.engine.directory.has(c), cs, { timeout: 180000 }).then(() => check(true, `the JavaScript page sees the channel made in C# registered (${((Date.now() - t1) / 1000).toFixed(1)} s)`)).catch(() => check(false, 'the channel made in C# got registered'));
