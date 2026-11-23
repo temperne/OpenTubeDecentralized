@@ -46,7 +46,7 @@ export default {
     if (url.pathname === '/app') return Response.redirect(url.origin + '/app/', 302);
     if (url.pathname.startsWith('/app/')) {
       const r = await env.ASSETS.fetch(request);
-      return r.status === 404 ? env.ASSETS.fetch(new Request(new URL('/app/index.html', url), request)) : r;
+      return r.status === 404 ? env.ASSETS.fetch(new Request(new URL('/app/', url), request)) : r;
     }
     return env.ASSETS.fetch(request);
   }
