@@ -25,7 +25,14 @@ dotnet run --project OpenTube.App -- --help            # every option
 
 It serves the website from the repository folder (the one with `index.html`). Open http://localhost:8080.
 
-If `cloudflared` is installed, the node gets a public `https://….trycloudflare.com` address with no setup; `--no-tunnel` turns this off.
+**A public address, by itself.** At startup the node works out how it's on the internet:
+- **Directly** (a server with a public IP, or ports 80/443 forwarded to it): it serves HTTPS itself as
+  `https://<ip, dashed>.sslip.io` (or `--public=your.domain`) with a Let's Encrypt certificate it gets and renews by itself.
+  Ports 80/443 need admin rights on Linux (root, or `setcap cap_net_bind_service`).
+- **Behind a router, or ports 80/443 already used by another program** (the log names it, e.g. Caddy): a Cloudflare
+  quick tunnel (`https://….trycloudflare.com`); cloudflared is downloaded into the data folder if it isn't installed.
+
+`--tunnel` keeps a tunnel as well, `--no-tunnel` never starts one, `--public=off` never serves HTTPS itself.
 
 **Run at startup:**
 - **From the app:** Service → Run at startup in the terminal UI, or the "Run at startup" button in the window.
@@ -84,5 +91,4 @@ page on the site, then streams with the key the site received.
 - the group studio;
 - YouTube forwarding;
 - flash computers;
-- self-update and public/tunnel switching from the site;
-- remembering the tunnel name across restarts.
+- self-update and public/tunnel switching from the site.

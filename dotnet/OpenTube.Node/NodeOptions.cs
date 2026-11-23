@@ -17,8 +17,22 @@ public sealed class NodeOptions
     public string? Grant { get; set; }
     /// <summary>A name for this computer on the owner's Devices page.</summary>
     public string? Label { get; set; }
-    /// <summary>Start a Cloudflare quick tunnel (cloudflared) so the node is reachable from the internet without setup.</summary>
-    public bool Tunnel { get; set; } = true;
+    /// <summary>
+    /// A Cloudflare quick tunnel (cloudflared, downloaded if needed): "auto" when this computer can't be reached directly
+    /// (behind a router, or ports 80/443 taken), "on" always, "off" never (--no-tunnel).
+    /// </summary>
+    public string TunnelMode { get; set; } = "auto";
+    public bool Tunnel => TunnelMode != "off";
+    /// <summary>
+    /// Serving HTTPS itself: "auto" (when this computer is directly on the internet: &lt;ip&gt;.sslip.io with a Let's Encrypt
+    /// certificate), a domain name pointing at this computer, or "off".
+    /// </summary>
+    public string Public { get; set; } = "auto";
+    public string? PublicIp { get; set; }
+    public string? Email { get; set; }
+    public int HttpPort { get; set; } = 80;
+    public int HttpsPort { get; set; } = 443;
+    public string? AcmeDirectory { get; set; }
     /// <summary>Publish this node's own ranking list ("Trending on …"), like every node. --no-ranking turns it off.</summary>
     public bool Ranks { get; set; } = true;
     /// <summary>The site this node came from (--site=https://…): its /entries.json lists entry nodes to connect to.</summary>
@@ -50,7 +64,16 @@ public sealed class NodeOptions
         o.Site = Get("site", "NODE_SITE")?.TrimEnd('/');
         if (int.TryParse(Get("obs-port", "RTMP_PORT"), out var op)) o.ObsPort = op;
         if (args.Contains("--no-obs")) o.ObsPort = 0;
-        if (args.Contains("--no-tunnel") || Environment.GetEnvironmentVariable("TUNNEL") == "0") o.Tunnel = false;
+        o.TunnelMode = Get("tunnel", "TUNNEL") switch { "0" or "off" or "no" => "off", "1" or "on" or "always" => "on", _ => "auto" };
+        if (args.Contains("--no-tunnel")) o.TunnelMode = "off";
+        if (args.Contains("--tunnel")) o.TunnelMode = "on";
+        o.Public = (Get("public", "PUBLIC") ?? "auto") switch { "0" or "off" or "no" => "off", "" or "1" or "auto" => "auto", var d => d.ToLowerInvariant() };
+        if (args.Contains("--no-public")) o.Public = "off";
+        o.PublicIp = Get("public-ip", "PUBLIC_IP");
+        o.Email = Get("email", "PUBLIC_EMAIL");
+        if (int.TryParse(Get("http-port", "PUBLIC_HTTP_PORT"), out var hp)) o.HttpPort = hp;
+        if (int.TryParse(Get("https-port", "PUBLIC_HTTPS_PORT"), out var hsp)) o.HttpsPort = hsp;
+        o.AcmeDirectory = Get("acme-directory", "ACME_DIRECTORY");
         return o;
     }
     /// <summary>"1.2.3.4", "1.2.3.4:8080", "https://x.example" or "ws://x/ot" — all become a WebSocket peer address.</summary>

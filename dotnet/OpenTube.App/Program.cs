@@ -68,7 +68,13 @@ public static class Program
         --name=LABEL             this computer's name on your Devices page
         --grant=…                your grant from the site (My node), so the node shows up as yours
         --mine=own|all|off       proof of work for registrations (default own)
-        --no-tunnel              no Cloudflare tunnel
+        --public=auto            reachable from the internet by itself when it's directly on it (a server with a
+                                 public IP, or ports 80/443 forwarded): https://<ip>.sslip.io with a Let's
+                                 Encrypt certificate. --public=your.domain for your own name, --public=off
+        --email=YOU@…            for Let's Encrypt's expiry notices (optional)
+        --tunnel / --no-tunnel   a Cloudflare tunnel (cloudflared, downloaded if needed) is used when this
+                                 computer can't be reached directly or ports 80/443 are taken by another
+                                 program; --tunnel: always as well, --no-tunnel: never
       """;
 }
 
