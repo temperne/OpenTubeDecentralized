@@ -107,6 +107,6 @@ passed to the owner. The C# engine makes its own transactions (proof of work, si
 **Not in the .NET node yet** (the JavaScript node has them):
 - the DHT (finding ordinary BitTorrent apps without a tracker);
 - the group studio;
-- YouTube forwarding;
+
 - flash computers;
 - self-update and public/tunnel switching from the site.

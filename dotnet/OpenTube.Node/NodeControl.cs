@@ -150,7 +150,7 @@ public sealed class NodeControl(OpenTubeNode node)
                         ["channel"] = chan, ["title"] = p["title"]?.DeepClone(),
                         ["linked"] = chan != null && node.Obs.LinkedChannels().Contains(chan),
                         ["youtube"] = new JsonObject { ["on"] = Js.IsTrue(p["youtube"]?["on"]), ["set"] = !string.IsNullOrEmpty((string?)p["youtube"]?["key"]) }, ["tile"] = p["tile"]?.DeepClone(),
-                        ["ffmpeg"] = false, ["node"] = node.NodeKey,
+                        ["ffmpeg"] = Media.HasFfmpeg, ["node"] = node.NodeKey,
                         ["live"] = node.Rtmp == null ? null : new JsonObject { ["port"] = node.Rtmp.Port, ["listening"] = node.Rtmp.Error == null, ["error"] = node.Rtmp.Error, ["live"] = node.Rtmp.Live > 0, ["bytes"] = node.Rtmp.Bytes, ["keyInterval"] = node.Rtmp.KeyInterval, ["lastConn"] = node.Rtmp.LastStage == null ? null : new JsonObject { ["stage"] = node.Rtmp.LastStage } },
                         ["version"] = new JsonObject { ["name"] = node.Version, ["build"] = node.Build, ["impl"] = "dotnet" },
                     };

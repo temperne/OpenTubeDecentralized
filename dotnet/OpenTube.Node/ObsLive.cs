@@ -53,13 +53,14 @@ public sealed class ObsLive
             ?? (user == node.OwnerUser ? linked.FirstOrDefault() : null);
         if (chain == null) return "Not linked to a channel yet. On the site: Go live → OBS → pick this computer and link it to your channel.";
         node.Log($"[obs] stream from {(user == node.OwnerUser ? "the owner" : user[..8])}");
-        return new Sink(node, chain, (string?)profile["title"] ?? "Live");
+        var yt = profile["youtube"] as JsonObject;
+        return new Sink(node, chain, (string?)profile["title"] ?? "Live", Js.IsTrue(yt?["on"]) && (string?)yt?["key"] is { Length: > 0 } yk ? yk : null);
     }
 
-    sealed class Sink(OpenTubeNode node, string chain, string title) : IStreamSink
+    sealed class Sink(OpenTubeNode node, string chain, string title, string? youtubeKey) : IStreamSink
     {
         readonly string stream = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
-        long n, offset; (Action<JsonObject> Seg, Action End, Action<JsonObject> Chunk)? local; RemoteBroadcast? remote; Chunker? chunks; FileStream? rec; string? recPath, recFile;
+        long n, offset; (Action<JsonObject> Seg, Action End, Action<JsonObject> Chunk)? local; RemoteBroadcast? remote; Chunker? chunks; YouTube? youtube; FileStream? rec; string? recPath, recFile;
         readonly object gate = new();
 
         public void Init(byte[] header, string mime)
@@ -92,6 +93,7 @@ public sealed class ObsLive
                 recPath = Path.Combine(dir, $"{string.Concat(title.Where(ch => char.IsLetterOrDigit(ch) || " .()-_".Contains(ch))).Trim() switch { "" => "Live", var t => t }} {DateTime.Now:yyyy-MM-dd-HH-mm}.mp4");
             }
             rec = new FileStream(recPath, FileMode.Create, FileAccess.Write, FileShare.Read);
+            if (youtubeKey != null) youtube = YouTube.Start(youtubeKey, node.Log);
             Piece(header, false);
             node.Log($"[obs] recording to {recPath}");
         }
@@ -107,6 +109,7 @@ public sealed class ObsLive
                 n++; offset += bytes.Length;
                 local.Value.Seg((JsonObject)g.DeepClone()); node.Engine.PublishLiveSeg((JsonObject)g.DeepClone()); remote?.Seg(g); chunks?.Seg(g);
                 try { rec?.Write(bytes); } catch { }
+                youtube?.Write(bytes);
             }
         }
         public void End()
@@ -116,7 +119,7 @@ public sealed class ObsLive
                 if (local == null) return;
                 var lend = local.Value.End; var rem = remote; var ch = chunks;
                 _ = (ch?.End() ?? Task.CompletedTask).ContinueWith(_ => { lend(); rem?.Close(); });   // the last chunk first, then leave
-                rec?.Dispose(); local = null;
+                rec?.Dispose(); youtube?.End(); local = null;
                 node.Log($"[obs] stream ended; recording saved: {recPath} ({offset / 1e6:0.0} MB)");
             }
             var end = new JsonObject { ["type"] = "liveend", ["stream"] = stream, ["outcome"] = "ended" };
@@ -130,6 +133,29 @@ public sealed class ObsLive
                 catch (Exception e) { node.Log("[obs] couldn’t share the recording: " + e.Message); }
             try { node.Engine.Append(chain, end); } catch (Exception e) { node.Log("[obs] couldn’t post the end of the stream: " + e.Message); }
         }
+    }
+
+    /// <summary>Forwarding the stream to YouTube unchanged (fragmented MP4, H.264 + AAC → RTMP), with ffmpeg.</summary>
+    sealed class YouTube
+    {
+        readonly System.Diagnostics.Process ff; readonly Stream input;
+        YouTube(System.Diagnostics.Process p) { ff = p; input = p.StandardInput.BaseStream; }
+        public static YouTube? Start(string key, Action<string> log)
+        {
+            if (!Media.HasFfmpeg) { log("[youtube] ffmpeg isn’t installed, so the stream isn’t forwarded to YouTube"); return null; }
+            var url = (Environment.GetEnvironmentVariable("YOUTUBE_RTMP") ?? "rtmp://a.rtmp.youtube.com/live2/") + key;   // (YOUTUBE_RTMP: another server, for tests)
+            try
+            {
+                var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ffmpeg") { ArgumentList = { "-hide_banner", "-loglevel", "error", "-f", "mp4", "-i", "pipe:0", "-c", "copy", "-f", "flv", url }, RedirectStandardInput = true, RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false })!;
+                p.ErrorDataReceived += (_, e) => { if (!string.IsNullOrWhiteSpace(e.Data)) log("[youtube] " + e.Data.Trim()[..Math.Min(200, e.Data.Trim().Length)]); };
+                p.BeginErrorReadLine(); p.BeginOutputReadLine();
+                log("[youtube] forwarding the stream to YouTube");
+                return new YouTube(p);
+            }
+            catch (Exception e) { log("[youtube] couldn’t start ffmpeg: " + e.Message); return null; }
+        }
+        public void Write(byte[] b) { try { input.Write(b); input.Flush(); } catch { } }
+        public void End() { try { input.Close(); } catch { } _ = Task.Delay(10000).ContinueWith(_ => { try { if (!ff.HasExited) ff.Kill(); } catch { } }); }
     }
 
     /// <summary>Sending a stream to another computer's live hub as its broadcaster (this node signs it, as the channel's linked computer).</summary>
