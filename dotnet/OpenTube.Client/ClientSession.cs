@@ -49,6 +49,8 @@ public sealed class ClientSession : IAsyncDisposable
     public Social Social { get; private set; } = null!;
     /// <summary>Publishing videos, and help from your computers.</summary>
     public Publish Publish { get; private set; } = null!;
+    /// <summary>The market, the exchange, organizations.</summary>
+    public Trade Trade { get; private set; } = null!;
     /// <summary>The key for one of your keys (your identity or a channel's), or null.</summary>
     public Identity? KeyOf(string pub) => KeyFor(pub);
     static readonly HttpClient http = new() { Timeout = TimeSpan.FromSeconds(10) };
@@ -75,7 +77,7 @@ public sealed class ClientSession : IAsyncDisposable
         Engine.Persist = (c, b) => { try { store.SaveBlock(c, (JsonObject)b.DeepClone()); } catch { } Changed?.Invoke(); };
         Notes = new Notifications(this, store); await Notes.Load(); Notes.Start();
         Mail = new Mail(this, store); Mail.Start();
-        Publish = new Publish(this);
+        Publish = new Publish(this); Trade = new Trade(this, store);
         Social = new Social(this, store); _ = Task.Run(async () => { await Task.Delay(5000); try { await Social.Refresh(); } catch { } });
         Ready = true; Changed?.Invoke();
         online = CancellationTokenSource.CreateLinkedTokenSource(stop.Token);

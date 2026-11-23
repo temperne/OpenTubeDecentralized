@@ -1,0 +1,60 @@
+@page "/market"
+@page "/market/{Tab}"
+@inherits Live
+<div class="head-row"><h2>Market</h2><span class="sub">You have @Trade.Coins(S.Trade.Balance) coins</span></div>
+<div class="row-actions">
+    <a class="button @(T == "browse" ? "on" : "")" href="market">Browse</a>
+    <a class="button @(T == "mine" ? "on" : "")" href="market/mine">Your listings</a>
+    <a class="button @(T == "new" ? "on" : "")" href="market/new">＋ Sell something</a>
+</div>
+@if (T == "new")
+{
+    <div class="panel">
+        <p class="sub">Listings live on the main chain. With an arbitration body, the buyer’s payment is held in escrow and disputes go to it.</p>
+        <label>What are you listing?</label>
+        <select @bind="type">@foreach (var t in Trade.ListingTypes) { <option value="@t">@t</option> }</select>
+        <label>How it sells</label>
+        <select @bind="kind"><option value="fixed">Fixed price</option><option value="auction">Auction</option></select>
+        @if (kind == "auction") { <label>Days</label><input type="number" min="1" max="30" @bind="days" /> }
+        <label>Payment protection</label>
+        <select @bind="org"><option value="">None (paid straight to you)</option>@foreach (var a in S.Trade.Arbiters()) { <option value="@a.Id">@a.Name (escrow, disputes)</option> }</select>
+        <label>Title</label><input @bind="title" maxlength="120" />
+        <label>Description</label><textarea @bind="about" rows="3" maxlength="2000"></textarea>
+        <label>@(kind == "auction" ? "Starting bid (coins)" : "Price (coins)")</label><input @bind="price" inputmode="decimal" />
+        <label>Contact</label><input @bind="contact" maxlength="200" />
+        <div class="row-actions"><button class="primary" disabled="@busy" @onclick="List">List it</button><span class="sub">Listing costs @Trade.Coins(S.Trade.Price("list")) coins.</span></div>
+    </div>
+}
+else
+{
+    <div class="row-actions">
+        <input placeholder="Search" @bind="q" @bind:event="oninput" class="grow-input" />
+        <select @bind="filter"><option value="">Everything</option>@foreach (var t in Trade.ListingTypes) { <option value="@t">@t</option> }</select>
+    </div>
+    var list = S.Trade.Listings().Where(l => T == "mine" ? S.IsMine(l.Seller) : l.Open).Where(l => filter.Length == 0 || l.Type == filter)
+        .Where(l => q.Length == 0 || l.Title.Contains(q, StringComparison.OrdinalIgnoreCase) || ((string?)l.L["about"] ?? "").Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
+    @if (list.Count == 0) { <p class="sub">@(T == "mine" ? "You haven’t listed anything." : "Nothing listed yet.")</p> }
+    <div class="list">
+        @foreach (var l in list)
+        {
+            <a class="row-item" href="market/item/@l.Id">
+                <span class="avatar empty">🛍</span>
+                <span class="grow"><b>@l.Title</b><br /><span class="sub">@l.Type · @(l.Kind == "auction" ? "auction" : "fixed price")@(l.L["org"] != null ? " · 🛡 escrow" : "") · @l.State</span></span>
+                <b>@Trade.Coins(l.PriceNow)</b>
+            </a>
+        }
+    </div>
+}
+@if (msg != null) { <div class="sub" id="market-status">@msg</div> }
+@code {
+    [Parameter] public string? Tab { get; set; }
+    string T => Tab ?? "browse";
+    string type = "goods", kind = "fixed", title = "", about = "", price = "", contact = "", org = "", q = "", filter = ""; int days = 7; string? msg; bool busy;
+    async Task List()
+    {
+        busy = true; msg = "Listing (a little proof of work)…"; StateHasChanged();
+        try { await S.Trade.List(type, kind, title, about, Trade.Units(price), contact, days, org.Length > 0 ? org : null); msg = "Listed: it shows once the next main-chain block includes it."; title = about = price = ""; Nav.NavigateTo("market/mine"); }
+        catch (Exception e) { msg = e.Message; }
+        busy = false;
+    }
+}

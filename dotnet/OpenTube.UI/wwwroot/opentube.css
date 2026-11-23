@@ -49,6 +49,12 @@ textarea { width: 100%; font: inherit; padding: 8px 10px; border-radius: 8px; bo
 label { display: block; font-weight: 600; margin-top: 10px; font-size: 14px; }
 .thumb-preview { max-width: 240px; border-radius: 8px; margin-top: 8px; display: block; }
 a.primary-link { background: var(--accent); color: #fff; border: none; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.tile { display: block; padding: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; font-weight: 600; text-align: center; }
+.big-price { font-size: 28px; font-weight: 800; margin: 8px 0; } .badge.ok { background: var(--ok); color: #fff; }
+.cmd { background: var(--bg); padding: 8px; border-radius: 8px; margin: 4px 0 10px; user-select: all; }
+pre.log { white-space: pre-wrap; font-size: 11px; max-height: 360px; overflow: auto; background: var(--bg); padding: 8px; border-radius: 8px; }
+a.button.on { border-color: var(--accent); color: var(--accent); font-weight: 600; }
 /* phones: a compact header, the sections as a bar at the bottom (big enough to tap), nothing wider than the screen */
 @media (max-width: 640px) {
   html, body { overflow-x: hidden; }

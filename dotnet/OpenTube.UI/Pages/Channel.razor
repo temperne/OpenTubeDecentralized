@@ -25,6 +25,7 @@ else
             </div>
         </div>
     </div>
+    @if (d.Kind == "org") { <OrgRoles Id="@Id" Mine="@(d.Owner is { } ow && S.IsMine(ow))" /> }
     @foreach (var lb in d.LiveNow) { <a class="live-banner" href="live/@Id/@lb["payload"]!["stream"]">🔴 Live now: @((string?)lb["payload"]?["title"]) · watch</a> }
     <div class="grid">
         @foreach (var v in d.Videos.OrderByDescending(v => Js.Num(v["ts"]))) { <VideoCard Chain="@Id" Block="(JsonObject)v.DeepClone()" ChannelName="@((string?)d.Profile["name"])" /> }

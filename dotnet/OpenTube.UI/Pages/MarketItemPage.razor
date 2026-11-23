@@ -1,0 +1,44 @@
+@page "/market/item/{Id}"
+@inherits Live
+@{ var l = S.Trade.Get(Id); }
+<p><a href="market">← Market</a></p>
+@if (l == null) { <p class="sub">@(S.Trade.PendingTx(Id) ? "This listing is waiting for the next block." : "Unknown listing (it may not have synced yet).")</p> }
+else
+{
+    var mine = S.IsMine(l.Seller); var escrow = l.L["escrow"] as System.Text.Json.Nodes.JsonObject;
+    <div class="panel">
+        <h2>@l.Title</h2>
+        <div class="sub">@l.Type · @(l.Kind == "auction" ? "auction" : "fixed price") · listed by @S.NameOf(l.Seller) · @Ago(Js.Num(l.L["ts"]) ?? 0)</div>
+        <div class="big-price">@Trade.Coins(l.PriceNow) <span class="sub">coins@(l.Kind == "auction" ? (l.L["high"] != null ? $" · high bid · {Js.Num(l.L["bids"])} bid(s)" : " · starting bid") : "")</span></div>
+        @if (l.Kind == "auction" && l.State == "open") { <div class="sub">Ends @DateTimeOffset.FromUnixTimeMilliseconds((long)(Js.Num(l.L["ends"]) ?? 0)).LocalDateTime</div> }
+        @if ((string?)l.L["about"] is { Length: > 0 } ab) { <p class="post-text">@ab</p> }
+        @if ((string?)l.L["contact"] is { Length: > 0 } ct) { <div class="sub">Contact: @ct</div> }
+        @if ((string?)l.L["org"] is { } org) { <div class="sub">🛡 Payment held in escrow; disputes heard by <a href="c/@org">@(S.Genesis(org)?["payload"]?["name"])</a> (released after @(Js.Num(l.L["hold"]) ?? 14) days unless disputed).</div> }
+        @if (escrow != null)
+        {
+            var buyer = S.IsMine((string?)escrow["buyer"]); var party = buyer || mine;
+            <div class="panel">🛡 @((string?)escrow["state"]) · @Trade.Coins(Js.Num(escrow["amt"]) ?? 0) coins
+                @if (party && (string?)escrow["state"] == "held")
+                {
+                    <div class="row-actions">
+                        @if (buyer) { <button class="primary" @onclick="() => Run(() => S.Trade.Release(Id))">I got it: pay the seller</button> }
+                        <input placeholder="What went wrong?" @bind="why" class="grow-input" /><button @onclick="() => Run(() => S.Trade.Dispute(l, why))">Dispute</button>
+                    </div>
+                }
+            </div>
+        }
+        <div class="row-actions">
+            @if (!l.Open) { <span class="sub">@(l.State == "sold" ? $"Sold to {S.NameOf((string?)l.L["buyer"] ?? "")}." : l.State == "withdrawn" ? "Withdrawn by the seller." : "Ended.")</span> }
+            else if (mine) { if (l.L["high"] == null) { <button @onclick="() => Run(() => S.Trade.Unlist(Id))">Withdraw listing</button> } else { <span class="sub">You can’t withdraw it: it has a bid.</span> } }
+            else if (l.Kind == "fixed" && (Js.Num(l.L["price"]) ?? 0) == 0) { <a class="button primary-link" href="messages/@l.Seller">✉ Contact</a> }
+            else if (l.Kind == "fixed") { <button class="primary" @onclick="() => Run(() => S.Trade.Buy(Id))">Buy for @Trade.Coins(Js.Num(l.L["price"]) ?? 0) coins</button> <a class="button" href="messages/@l.Seller">✉ Ask</a> }
+            else { <input @bind="bid" inputmode="decimal" placeholder="Your bid" style="max-width:140px" /><button class="primary" @onclick="() => Run(() => S.Trade.Bid(Id, Trade.Units(bid)))">Bid</button><span class="sub">at least @Trade.Coins(S.Trade.MinBid(l)) · held until the end, refunded if someone outbids you</span> }
+        </div>
+        @if (msg != null) { <div class="sub" id="item-status">@msg</div> }
+    </div>
+}
+@code {
+    [Parameter] public string Id { get; set; } = "";
+    string bid = "", why = ""; string? msg;
+    async Task Run(Func<Task> f) { msg = "Sending (a little proof of work)…"; StateHasChanged(); try { await f(); msg = "Done: it counts once the next main-chain block includes it."; } catch (Exception e) { msg = e.Message; } }
+}

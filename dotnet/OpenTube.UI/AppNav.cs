@@ -14,6 +14,9 @@ public static class AppNav
         if (parts.Length >= 2 && parts[0] == "c") return $"c/{parts[1]}";
         if (parts[0] == "square") return parts.Length >= 3 ? $"posts/{parts[1]}/{parts[2]}" : parts.Length == 2 ? $"posts/{parts[1]}" : "posts";
         if (parts[0] == "friends") return "friends";
+        if (parts[0] == "market") return parts.Length >= 3 && parts[1] == "item" ? $"market/item/{parts[2]}" : "market";
+        if (parts[0] == "exchange") return parts.Length >= 2 && parts[1] == "swaps" ? "exchange/swaps" : "exchange";
+        if (parts[0] is "orgs" or "me" or "devices") return parts[0] == "orgs" ? "orgs" : "devices";
         if (parts[0] == "messages") return parts.Length >= 2 && parts[1].Length > 0 ? $"messages/{parts[1]}" : "messages";
         return site.TrimEnd('/') + "/#/" + h;   // not in the C# pages yet
     }

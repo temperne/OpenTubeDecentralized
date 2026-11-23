@@ -1,0 +1,29 @@
+@page "/orgs"
+@inherits Live
+<h2>Organizations</h2>
+<p class="sub">Organizations moderate and arbitrate. Arbitration bodies take filings, run cases and rule on marketplace disputes.</p>
+<div class="list">
+    @foreach (var c in S.Trade.Orgs())
+    {
+        <a class="row-item" href="c/@c.Id"><span class="avatar empty">🏛</span><span class="grow"><b>@c.Name</b><br /><span class="sub">@(S.Genesis(c.Id)?["payload"]?["orgType"] ?? "organization")@(c.About.Length > 0 ? " · " + c.About : "")</span></span></a>
+    }
+    @if (S.Trade.Orgs().Count == 0) { <p class="sub">No organizations yet.</p> }
+</div>
+<div class="panel">
+    <h3>Create an organization</h3>
+    <input placeholder="Name" @bind="name" maxlength="60" />
+    <select @bind="type">@foreach (var t in Trade.OrgTypes) { <option value="@t">@t</option> }</select>
+    <input placeholder="Jurisdiction (optional)" @bind="jur" maxlength="120" />
+    <textarea placeholder="What it does" @bind="about" rows="2"></textarea>
+    <div class="row-actions"><button class="primary" disabled="@busy" @onclick="Create">Create</button></div>
+    @if (msg != null) { <div class="sub" id="orgs-status">@msg</div> }
+</div>
+@code {
+    string name = "", type = "arbitration", jur = "", about = ""; string? msg; bool busy;
+    async Task Create()
+    {
+        busy = true; msg = "Registering (proof of work on the main chain)…"; StateHasChanged();
+        try { var id = await S.Trade.CreateOrg(name, about, type, jur); Nav.NavigateTo("c/" + id); }
+        catch (Exception e) { msg = e.Message; busy = false; }
+    }
+}

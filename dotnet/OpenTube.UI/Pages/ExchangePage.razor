@@ -1,0 +1,75 @@
+@page "/exchange"
+@page "/exchange/{Tab}"
+@inherits Live
+<div class="head-row"><h2>Exchange</h2><span class="sub">You have @Trade.Coins(S.Trade.Balance) coins</span></div>
+<p class="sub">Trade coins for bitcoin, ether, stablecoins or cash, person to person. Crypto trades are atomic swaps: coins are locked until the other side pays.</p>
+<div class="row-actions">
+    <a class="button @(T == "book" ? "on" : "")" href="exchange">Order book</a>
+    <a class="button @(T == "swaps" ? "on" : "")" href="exchange/swaps">Swaps</a>
+</div>
+@if (T == "swaps")
+{
+    <div class="panel">
+        <h3>Your swaps</h3>
+        @foreach (var x in S.Trade.MySwaps())
+        {
+            var incoming = S.IsMine(x.To);
+            <div class="post">
+                <div>@(incoming ? "⬇" : "⬆") <b>@Trade.Coins(x.Amt) coins</b> @(incoming ? "from" : "to") @S.NameOf(incoming ? x.From : x.To) <span class="badge">@x.State</span> <span class="sub">· deadline @DateTimeOffset.FromUnixTimeMilliseconds((long)x.Expires).LocalDateTime</span></div>
+                <div class="sub mono">hash @x.Hash</div>
+                @if (incoming && x.State == "locked" && DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() < x.Expires)
+                {
+                    <div class="row-actions"><input placeholder="The secret (preimage), 64 hex" value="@pre.GetValueOrDefault(x.Id)" @oninput="e => pre[x.Id] = (string?)e.Value ?? string.Empty" class="grow-input" /><button class="primary" @onclick="() => Run(() => S.Trade.Claim(x, pre.GetValueOrDefault(x.Id) ?? string.Empty))">Claim</button></div>
+                }
+                @if (!incoming && x.State == "locked" && DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() >= x.Expires) { <button @onclick="() => Run(() => S.Trade.Refund(x.Id))">Take the coins back</button> }
+            </div>
+        }
+        @if (S.Trade.MySwaps().Count == 0) { <p class="sub">No swaps yet.</p> }
+    </div>
+    <div class="panel">
+        <h3>Lock coins for a swap</h3>
+        <input placeholder="Who gets the coins (their user ID)" @bind="lockTo" />
+        <div class="row-actions"><input placeholder="Coins" @bind="lockAmt" inputmode="decimal" style="max-width:120px" /><input type="number" min="1" max="720" @bind="hours" style="max-width:90px" /><span class="sub">hours to claim</span></div>
+        <div class="row-actions"><input placeholder="sha256 hash (64 hex), e.g. a Lightning invoice’s payment hash" @bind="hash" class="grow-input" /><button @onclick="Secret">Make a secret for me</button></div>
+        <div class="row-actions"><button class="primary" @onclick="() => Run(() => S.Trade.Lock(lockTo, Trade.Units(lockAmt), hash, hours))">Lock coins</button></div>
+        @if (mySecret != null) { <div class="sub">Your secret for this hash (reveal it only to claim the other side): <span class="mono">@mySecret</span></div> }
+    </div>
+}
+else
+{
+    var offers = S.Trade.Offers().Where(o => asset == "all" || o.Asset == asset).ToList();
+    <div class="row-actions"><span class="sub">Show</span><select @bind="asset"><option value="all">All assets</option>@foreach (var a in Trade.Assets) { <option value="@a">@a</option> }</select></div>
+    @foreach (var side in new[] { "sell", "buy" })
+    {
+        <div class="panel">
+            <h3>@(side == "sell" ? "People selling coins" : "People buying coins")</h3>
+            @foreach (var o in offers.Where(o => o.Side == side))
+            {
+                <div class="row-item"><span class="grow"><b>@Trade.Coins(o.Amt) coins</b> at @o.Rate @o.Asset each<br /><span class="sub">@S.NameOf(o.From) · @string.Join(", ", o.PayBy)@((string?)o.O["note"] is { } n ? " · " + n : "")</span></span>
+                    @if (S.IsMine(o.From)) { <button @onclick="() => Run(() => S.Trade.EndOffer(o.Id))">Withdraw</button> } else { <a class="button" href="messages/@o.From">✉ Trade</a> }</div>
+            }
+            @if (!offers.Any(o => o.Side == side)) { <p class="sub">None.</p> }
+        </div>
+    }
+    <div class="panel">
+        <h3>Post an offer</h3>
+        <div class="row-actions">
+            <select @bind="oside"><option value="sell">I sell coins</option><option value="buy">I buy coins</option></select>
+            <input placeholder="How many coins" @bind="oamt" inputmode="decimal" style="max-width:140px" /><span>for</span>
+            <select @bind="oasset">@foreach (var a in Trade.Assets) { <option value="@a">@a</option> }</select><span>at</span>
+            <input placeholder="Price per coin" @bind="orate" inputmode="decimal" style="max-width:140px" />
+        </div>
+        <div class="row-actions">@foreach (var m in Trade.Methods) { <label class="check"><input type="checkbox" checked="@methods.Contains(m)" @onchange="e => { if (e.Value is true) methods.Add(m); else methods.Remove(m); }" /> @m</label> }</div>
+        <input placeholder="Terms (optional)" @bind="onote" maxlength="500" />
+        <div class="row-actions"><button class="primary" @onclick="() => Run(() => S.Trade.PostOffer(oside, oasset, Trade.Units(oamt), orate, methods, onote))">Post offer</button></div>
+    </div>
+}
+@if (msg != null) { <div class="sub" id="xchg-status">@msg</div> }
+@code {
+    [Parameter] public string? Tab { get; set; }
+    string T => Tab ?? "book";
+    string asset = "all", oside = "sell", oamt = "", oasset = "BTC", orate = "", onote = "", lockTo = "", lockAmt = "", hash = ""; int hours = 24; string? msg, mySecret;
+    readonly HashSet<string> methods = ["lightning"]; readonly Dictionary<string, string> pre = new();
+    async Task Secret() { hash = await S.Trade.MakeSecret(); mySecret = await S.Trade.SecretFor(hash); }
+    async Task Run(Func<Task> f) { msg = "Sending (a little proof of work)…"; StateHasChanged(); try { await f(); msg = "Done: it counts once the next main-chain block includes it."; } catch (Exception e) { msg = e.Message; } }
+}
