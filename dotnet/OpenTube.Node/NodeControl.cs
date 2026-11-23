@@ -68,6 +68,13 @@ public sealed class NodeControl(OpenTubeNode node)
                     _ = Task.Run(async () => { await Task.Delay(500); try { await node.SetPublic(mode); } catch (Exception e) { node.Log("[internet] " + e.Message); } });
                     return Reply(c, true, new JsonObject { ["applying"] = mode });
                 }
+                case "relay":
+                {   // "I just went live: help serve it" (from the owner's or a sharing person's browser)
+                    if (!May(user, "host")) return Fail("you may not use this computer for relaying");
+                    if (!Js.IsHex(a["stream"], 64) || !Js.IsHex(a["chain"], 64)) return Fail("bad stream");
+                    node.Relays?.Ask((string)a["stream"]!, (string)a["chain"]!, Js.IsTrue(a["record"]), Js.Str(a["title"]));
+                    return Reply(c, true, new JsonObject { ["relaying"] = true });
+                }
                 case "status":
                     data = node.Status.DeepClone(); break;
                 case "users": case "users.set":
@@ -130,7 +137,7 @@ public sealed class NodeControl(OpenTubeNode node)
                 default:
                     if (cmd.StartsWith("group", StringComparison.Ordinal)) return Fail("group streams aren’t in the .NET version of OpenTube yet: run the Node.js program on this computer for them");
                     if (cmd.StartsWith("flash", StringComparison.Ordinal)) return Fail("flash computers aren’t in the .NET version of OpenTube yet");
-                    if (cmd is "store" or "store.status" or "relay") return Fail("video hosting isn’t in the .NET version of OpenTube yet");
+                    if (cmd is "store" or "store.status") return Fail("video hosting isn’t in the .NET version of OpenTube yet");
                     if (cmd == "update") return Fail("restart it yourself: run the same command again (it downloads the current version)");
                     return Fail("this computer doesn’t know that command (it runs the .NET version of OpenTube)");
             }

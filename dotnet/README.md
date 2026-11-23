@@ -86,8 +86,18 @@ replies. It serves:
 Commands for features it doesn't have yet are refused with a clear message. `test-control.cjs` drives it from a real
 page on the site, then streams with the key the site received.
 
+**WebRTC** (SIPSorcery):
+- **the peer mesh:** the node joins the network's WebRTC room as browsers do (Trystero's wire, in C#), so browsers
+  connect to it directly through any tracker (`test-mesh.cjs`);
+- **the segment tree:** a stream from OBS on this computer, sent to another computer's hub, goes to viewers over data
+  channels from here (`test-tree.cjs`);
+- **relaying:** when you (or someone you share the computer with) go live from a browser, the computer watches the
+  stream as a member, serves viewers itself, and records streams on your channels (`test-relay.cjs`).
+
 **Not in the .NET node yet** (the JavaScript node has them):
-- video hosting (BitTorrent seeding), so recordings aren't offered for publishing yet;
+- video hosting: the BitTorrent client is done (it exchanges files with WebTorrent both ways, plain or encrypted:
+  `torrent-interop/run.sh`), but not yet the WebTorrent tracker client and WebRTC peers for browsers, keeping joined
+  channels' videos, live chunks, and offering recordings for publishing;
 - the group studio;
 - YouTube forwarding;
 - flash computers;

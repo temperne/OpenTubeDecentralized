@@ -173,6 +173,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
         foreach (var p in Options.Peers) _ = DialAsync(p);
         _ = Task.Run(FindEntryNodes);
         if (Options.Mesh) _ = Task.Run(JoinMesh);
+        Relays = new LiveRelays(this); _ = Task.Run(() => Relays.Run(stop.Token));
         _ = Task.Run(StatusLoop);
         _ = Task.Run(async () => { while (!stop.IsCancellationRequested) { await Task.Delay(60000, stop.Token).ContinueWith(_ => { }); Engine.Gossip(); } });
         _ = Task.Run(Engine.MaybeMine);
@@ -422,6 +423,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
 
     // ---- the peer mesh: the network's WebRTC room, as every browser joins it (see Mesh)
     public Mesh? MeshRoom { get; private set; }
+    public LiveRelays? Relays { get; private set; }
     async Task JoinMesh()
     {
         await Task.Delay(1500, stop.Token).ContinueWith(_ => { });
