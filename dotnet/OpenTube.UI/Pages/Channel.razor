@@ -52,7 +52,6 @@ else
     </div>
     @if (mine && keyUnbacked) { <div class="panel warn row-actions"><span class="grow">⚠ This @d.Kind’s private key exists only on this device. If you lose the device, you lose the @d.Kind.</span><a class="button primary-link" href="you/keys">Back up keys</a></div> }
     @if (msg != null) { <div class="sub" id="chan-msg">@msg</div> }
-    @if (d.Kind == "org") { <OrgRoles Id="@Id" Mine="@mine" /> }
     <div class="tabs">@foreach (var t in tabs) { <a href="c/@Id/@t" class="@(t == tab ? "active" : "")">@TabName(t)</a> }</div>
 
     @switch (tab)
@@ -158,6 +157,15 @@ else
                 @if ((string?)d.Profile["location"] is { Length: > 0 } loc) { <div class="sub">📍 @loc</div> }
                 @if (d.Profile["place"] is JsonObject place) { <div class="sub">🗺 <a href="@($"https://www.openstreetmap.org/?mlat={place["lat"]}&mlon={place["lon"]}#map=16/{place["lat"]}/{place["lon"]}")" target="_blank" rel="noopener">On the map</a> @((string?)place["label"])</div> }
                 @if (links.Count > 0) { <div class="row-actions">@foreach (var l in links) { <a class="tagbox" href="@((string?)l["url"])" target="_blank" rel="noopener noreferrer nofollow">🔗 @((string?)l["label"])</a> }</div> }
+                @if (d.Kind == "org")
+                {
+                    <div class="kv">
+                        @if ((string?)d.Profile["orgType"] is { } ot) { <div>Type</div><div>@ot</div> }
+                        @if ((string?)d.Profile["jurisdiction"] is { } jur) { <div>Jurisdiction</div><div>@jur</div> }
+                        @foreach (var (k, v) in d.Profile["details"] as JsonObject ?? []) { <div>@k</div><div>@v?.ToString()</div> }
+                    </div>
+                    @foreach (var pp in (d.Profile["people"] as JsonArray ?? []).OfType<JsonObject>()) { <div><a class="person" href="u/@((string?)pp["key"])">@S.NameOf((string?)pp["key"] ?? "")</a> · @((string?)pp["role"])@(Js.Num(pp["share"]) is double sh ? $" · {sh}%" : "")</div> }
+                }
                 @if (who.Length > 0 && who != d.Owner) { <div class="sub">Owned by <a class="person" href="u/@who">@S.NameOf(who)</a> (coins paid to this @d.Kind go to them)</div> }
                 <details class="tech"><summary class="sub">Technical details</summary>
                     <div class="kv">
@@ -173,6 +181,12 @@ else
             break;
         case "manage":
             <ChannelManage Id="@Id" />
+            break;
+        case "flags": case "reports": case "rules": case "filings": case "cases": case "courts": case "people":
+            <OrgTab Id="@Id" Tab="@tab" />
+            break;
+        case "docket":
+            <CaseDocket Id="@Id" />
             break;
         default:
             <p class="sub">This part of the @d.Kind isn’t in the C# pages yet. <a href="@($"/?#/c/{Id}/{tab}")">Open it on the JavaScript page</a>.</p>
@@ -194,7 +208,7 @@ else
     {
         "channel" => mine ? ["videos", "posts", "about", "manage"] : ["videos", "posts", "about"],
         "group" => [.. new[] { "discussion", "members", "about" }, .. mine ? new[] { "manage" } : []],
-        "org" => [.. new[] { "about", "flags", "reports", "rules", "filings", "cases", "courts", "people" }, .. mine ? new[] { "manage" } : []],
+        "org" => [.. new[] { "flags", "reports", "rules", "filings", "cases", "courts", "people", "about" }, .. mine ? new[] { "manage" } : []],
         "case" => [.. new[] { "docket", "about" }, .. mine ? new[] { "manage" } : []],
         _ => [.. new[] { "feed", "channels", "about" }, .. mine ? new[] { "manage" } : []],
     };

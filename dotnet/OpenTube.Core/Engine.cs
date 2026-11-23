@@ -253,6 +253,21 @@ public sealed class Engine
         MaybeMineSoon();
         return g;
     }
+    /// <summary>A chain registered on its parent instead of the main chain (a case on its court, a sub-court on its
+    /// parent): its genesis goes into a "child" block appended to the parent.</summary>
+    public JsonObject CreateChild(string parentId, JsonObject payload, Identity signer, Identity? parentSigner = null)
+    {
+        var p = (JsonObject)payload.DeepClone(); p["parent"] = parentId;
+        var g = MakeBlock(null, [], 0, p, 0, signer);
+        if (!Rules.ValidGenesis(g)) throw new InvalidOperationException("invalid chain data");
+        var b = Append(parentId, new JsonObject { ["type"] = "child", ["genesis"] = g.DeepClone() }, parentSigner);
+        lock (gate)
+        {
+            if (!Store.Chains.TryGetValue(parentId, out var pc) || !pc.Blocks.ContainsKey(Str(b["hash"])!)) throw new InvalidOperationException("the parent chain refused it");
+            Store.OpenChain(Str(g["hash"])!);
+        }
+        return g;
+    }
     public JsonObject Append(string chainId, JsonObject payload, Identity? asKey = null)
     {
         Chain c; List<string> parents; double height; Identity signer; int pow;

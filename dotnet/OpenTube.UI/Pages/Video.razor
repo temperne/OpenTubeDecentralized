@@ -4,6 +4,14 @@
 @inject IJSRuntime JS
 @{ var d = S.Chain(Chain); var v = d?.Videos.FirstOrDefault(x => (string?)x["hash"] == Hash); }
 @if (v == null) { <p class="sub">Loading this video from the network…</p> }
+else if (Orgs.Strongest(flags) is "hide" or "disable" && !shownAnyway && !S.IsMine(d!.Owner))
+{
+    <div class="panel" style="max-width:640px">
+        <h2>⚑ @((string?)v["payload"]?["title"])</h2>
+        <p>Flagged as @FlagText(). You chose not to open videos with this flag.</p>
+        <div class="row-actions"><button @onclick="() => shownAnyway = true">Show it anyway</button><a href="c/@Chain">Back to the channel</a></div>
+    </div>
+}
 else
 {
     var p = v["payload"]!; var mineCh = S.IsMine(d!.Owner); var votes = S.Votes(d, Hash);
@@ -33,8 +41,25 @@ else
                 {
                     <select @onchange="AddToList"><option value="">＋ Add to list…</option>@foreach (var (id, name) in lists) { <option value="@id">@name</option> }</select>
                 }
+                <button @onclick="() => reportOpen = !reportOpen">⚑ Report</button>
                 @if (mineCh) { <button @onclick="HideVideo">Hide video</button> }
             </div>
+            @if (reportOpen)
+            {
+                var orgs = S.Directory().Where(c => c.Kind == "org").ToList();
+                <div class="panel row-actions" id="report-box">
+                    @if (orgs.Count == 0) { <span class="sub">No organizations known yet. Find or create one under Orgs.</span> }
+                    else
+                    {
+                        var org = reportOrg.Length > 0 ? reportOrg : orgs[0].Id; var classes = S.Org(org)?.Classes.Values.ToList() ?? [];
+                        <span>Report to</span><select value="@org" @onchange="e => reportOrg = (string)e.Value!">@foreach (var o in orgs) { <option value="@o.Id">@o.Name</option> }</select>
+                        <span>as</span><select @bind="reportCls">@foreach (var c in classes) { <option value="@c.Id">@c.Name</option> }<option value="other">Something else</option></select>
+                        <input class="grow-input" @bind="reportNote" maxlength="2000" placeholder="What’s wrong (optional)" />
+                        <button @onclick="() => Report(org)">Report</button>
+                    }
+                </div>
+            }
+            @if (flags.Count > 0) { <div class="panel warn">⚑ Flagged as @FlagText()</div> }
             @if (tipOpen)
             {
                 <div class="panel row-actions">
@@ -105,8 +130,14 @@ else
 @code {
     [Parameter] public string Chain { get; set; } = ""; [Parameter] public string Hash { get; set; } = "";
     string? status, src, started, msg, blockAsk; string comment = ""; bool posting, busy, tipOpen; double tipAmt = 1;
-    HashSet<string>? friends;
-    protected override async Task OnInitializedAsync() { base.OnInitialized(); friends = (await S.Social.Friends()).Select(f => f.Key).ToHashSet(); }
+    HashSet<string>? friends; List<Orgs.FlagOn> flags = []; bool shownAnyway, reportOpen; string reportOrg = "", reportCls = "", reportNote = "";
+    protected override async Task OnInitializedAsync()
+    {
+        base.OnInitialized(); friends = (await S.Social.Friends()).Select(f => f.Key).ToHashSet();
+        flags = S.FlagsOn(await S.Followed(), Hash);
+    }
+    string FlagText() => string.Join(", ", flags.Select(f => $"{f.Name} ({f.OrgName})"));
+    Task Report(string org) => Do(async () => { await S.Report(org, Chain, Hash, reportCls, reportNote); reportOpen = false; reportNote = ""; }, "Doing anti-spam work…", () => msg = "Reported. The organization’s moderators review it.");
     Task AddFriend(string key, string name) => Do(async () => { await S.Social.AddFriend(key, name); friends?.Add(key); }, "Adding…", () => msg = $"{name} is now a friend: they see your friends-only posts once they add you back.");
     Task Mute(string tag) => Do(() => S.Social.SetMuted("tags", tag, true), null, () => msg = $"You won’t see videos or ads tagged #{tag}. Undo under You → Settings → Not interested.");
     static string Views(double n) => n == 1 ? "1 view" : (n >= 1e6 ? $"{n / 1e6:0.#}M" : n >= 1e4 ? $"{Math.Round(n / 1e3)}K" : n.ToString("N0")) + " views";

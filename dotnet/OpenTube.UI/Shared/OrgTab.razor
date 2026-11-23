@@ -1,0 +1,155 @@
+@inherits Live
+@{ var st = S.Org(Id); }
+@if (st == null) { <p class="sub">Loading…</p> }
+else
+{
+    var mine = S.IsMine(st.D.Owner);
+    switch (Tab)
+    {
+        case "flags":
+            var prefs = followed?[Id] as JsonObject;
+            <div class="panel">
+                <div class="head-row"><h3>@(prefs != null ? "You follow this organization" : "Follow this organization")</h3>
+                    <button class="@(prefs == null ? "primary" : "")" @onclick="() => Run(() => S.Follow(Id, prefs == null), reload: true)">@(prefs != null ? "Unfollow" : "Follow")</button></div>
+                @if (prefs == null) { <p class="sub">Follow it to see its flags on videos. You choose what each of its flags does for you.</p> }
+                else
+                {
+                    @foreach (var c in st.Classes.Values)
+                    {
+                        <div class="row-item"><span class="grow"><b>@c.Name</b> <span class="sub">@c.About</span></span>
+                            <select value="@((string?)prefs[c.Id] ?? "label")" @onchange="e => Run(() => S.SetFlagAction(Id, c.Id, (string)e.Value!), reload: true)">
+                                <option value="label">Label it</option><option value="disable">List it, but don’t open it</option><option value="hide">Hide it</option>
+                            </select></div>
+                    }
+                }
+            </div>
+            <div class="panel"><h3>Flagged</h3>
+                @if (st.Flags.Count == 0) { <div class="sub">Nothing flagged.</div> }
+                @foreach (var f in st.Flags.Values.OrderByDescending(f => f.Ts))
+                {
+                    <div class="row-item"><span class="grow"><RefLink Chain="@f.Chain" Block="@f.Block" /> · <b>@(st.Classes.TryGetValue(f.Cls, out var c) ? c.Name : f.Cls)</b>@if (f.Note != null) { <span class="sub"> · @f.Note</span> }<span class="sub"> · @Ago(f.Ts)</span></span>
+                        @if (S.IAm(Id, "moderator")) { <button @onclick="() => Run(() => S.SetFlag(Id, f.Chain, f.Block, f.Cls, false))">Remove flag</button> }</div>
+                }
+            </div>
+            break;
+        case "reports":
+            var open = st.Reports.Where(r => !st.Flags.ContainsKey((string?)r["payload"]?["ref"]?["block"] + "|" + (string?)r["payload"]?["cls"])).OrderByDescending(r => Js.Num(r["ts"]) ?? 0).ToList();
+            <div class="panel">
+                <p class="sub">Reports from anyone. Moderators review them and flag what fits a classification. Report a video from its page (⚑ Report).</p>
+                @if (open.Count == 0) { <div class="sub">No open reports.</div> }
+                @foreach (var r in open)
+                {
+                    var p = r["payload"]!; var cls = (string?)p["cls"] ?? "other";
+                    <div class="row-item"><span class="grow"><RefLink Chain="@((string?)p["ref"]?["chain"])" Block="@((string?)p["ref"]?["block"])" /> · reported as <b>@(st.Classes.TryGetValue(cls, out var c) ? c.Name : cls)</b>@if ((string?)p["note"] is { } n) { <span> · “@n”</span> }<span class="sub"> · @Ago(Js.Num(r["ts"]) ?? 0)</span></span>
+                        @if (S.IAm(Id, "moderator")) { <button class="primary" @onclick="() => Run(() => S.SetFlag(Id, (string)p[RefKey]![ChainKey]!, (string)p[RefKey]![BlockKey]!, cls, true, (string?)p[NoteKey]))">Flag it</button> }</div>
+                }
+            </div>
+            break;
+        case "rules":
+            <div class="panel"><h3>Classifications</h3>
+                @if (st.Classes.Count == 0) { <div class="sub">None yet.</div> }
+                @foreach (var c in st.Classes.Values) { <div class="row-item"><span class="grow"><b>@c.Name</b> <span class="sub">(@c.Id) · @c.About</span></span>@if (mine) { <button @onclick="() => Run(() => S.Classify(Id, ClassKey, c.Id, c.Name, string.Empty, false))">Retire</button> }</div> }
+            </div>
+            <div class="panel"><h3>Petitions for new classifications</h3>
+                @foreach (var b in st.Petitions.Where(b => !st.Classes.ContainsKey((string?)b["payload"]?["id"] ?? "")))
+                {
+                    var p = b["payload"]!; var h = (string)b["hash"]!;
+                    <div class="row-item"><span class="grow"><b>@((string?)p["name"])</b> <span class="sub">(@((string?)p["id"])) · @((string?)p["about"]) · @st.Support.GetValueOrDefault(h) supporter(s)</span></span>
+                        <button @onclick="() => Run(() => S.Support(Id, h))">Support</button>
+                        @if (mine) { <button class="primary" @onclick="() => Run(() => S.Classify(Id, ClassKey, (string)p[IdKey]!, (string)p[NameKey]!, (string?)p[AboutKey] ?? string.Empty))">Adopt</button> }</div>
+                }
+                <div class="row-actions"><input @bind="cid" placeholder="short-id, e.g. adult" style="width:160px" /><input class="grow-input" @bind="cname" placeholder="Name, e.g. Adult content" /><input class="grow-input" @bind="cabout" placeholder="What it covers" /></div>
+                <div class="row-actions">
+                    @if (mine) { <button class="primary" @onclick="() => Make(ClassKey)">Add classification</button> }
+                    <button @onclick="() => Make(PetitionKey)">Petition for it</button>
+                </div>
+            </div>
+            break;
+        case "filings":
+            var clerk = S.IAm(Id, "clerk"); var filed = new HashSet<string>(st.Cases.SelectMany(g => S.Docket((string)g["hash"]!)).Select(b => (string?)b["payload"]?["ref"]).OfType<string>());
+            <div class="panel"><h3>File with the clerk</h3>
+                <div class="row-actions">
+                    <select @bind="what">@foreach (var w in Orgs.Filings.Where(w => w != "order")) { <option value="@w">@w</option> }</select>
+                    <input class="grow-input" @bind="ftitle" maxlength="140" placeholder="Title" />
+                    <select @bind="fcase"><option value="">New matter</option>@foreach (var g in st.Cases) { <option value="@g["hash"]">@((string?)g["payload"]?["name"])</option> }</select>
+                </div>
+                <textarea @bind="ftext" rows="3" placeholder="What you’re filing (public)"></textarea>
+                <button class="primary" @onclick="File">File</button>
+            </div>
+            <div class="panel"><h3>Filed with this court</h3>
+                @if (st.Submits.Count == 0) { <div class="sub">Nothing filed yet.</div> }
+                @foreach (var b in st.Submits.OrderByDescending(b => Js.Num(b["ts"]) ?? 0))
+                {
+                    var p = b["payload"]!; var bh = (string)b["hash"]!;
+                    <div class="item">
+                        <div><span class="badge">@((string?)p["what"])</span> <b>@((string?)p["title"])</b><span class="sub"> · by @S.NameOf((string?)b["author"] ?? "") · @Ago(Js.Num(b["ts"]) ?? 0)</span>@if ((string?)p["case"] is { } pc) { <span class="sub"> · for <a href="c/@pc/docket">@((string?)S.Genesis(pc)?["payload"]?["name"] ?? "a case")</a></span> }</div>
+                        @if ((string?)p["text"] is { Length: > 0 } tx) { <p class="pre">@tx</p> }
+                        @if (clerk && !filed.Contains(bh) && (string?)p["what"] != "order")
+                        {
+                            <div class="row-actions">
+                                <button class="primary" @onclick="() => OpenCaseFrom(b)">Open a case</button>
+                                @if (st.Cases.Count > 0) { <select @bind="intoCase"><option value="">File into case…</option>@foreach (var g in st.Cases) { <option value="@g["hash"]">@((string?)g["payload"]?["name"])</option> }</select><button @onclick="() => FileIntoCase(b)">File into case</button> }
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+            break;
+        case "cases":
+            <div class="panel">
+                @if (st.Cases.Count == 0) { <div class="sub">No cases yet. Clerks open cases from filings.</div> }
+                @foreach (var g in Enumerable.Reverse(st.Cases)) { var gh = (string)g["hash"]!; <div class="row-item"><a class="grow" href="c/@gh/docket"><b>@((string?)g["payload"]?["name"])</b></a><span class="badge">@(S.CaseStatus(gh) ?? "filed")</span></div> }
+            </div>
+            break;
+        case "courts":
+            var parent = (string?)S.Genesis(Id)?["payload"]?["parent"];
+            <div class="panel">
+                <p class="sub">Arbitration levels nest (for example by region). Appeals stay inside the network: they go to the next level up. The coins stay held until a ruling stands.</p>
+                @if (parent != null) { <div>Above: <ChainLink Id="@parent" /></div> } else { <div class="sub">This is a top-level organization.</div> }
+                @if ((string?)st.D.Profile["jurisdiction"] is { } j) { <div class="sub">Jurisdiction: @j</div> }
+                <h4>Below</h4>
+                @if (st.Courts.Count == 0) { <div class="sub">None.</div> }
+                @foreach (var g in st.Courts) { <div><a href="c/@g["hash"]">@((string?)g["payload"]?["name"])</a> <span class="sub">@((string?)g["payload"]?["jurisdiction"])</span></div> }
+                @if (mine)
+                {
+                    <div class="row-actions"><input class="grow-input" @bind="courtName" placeholder="Name, e.g. Superior Court of Los Angeles County" /><input @bind="courtJur" placeholder="Jurisdiction" style="width:200px" /><button @onclick="AddCourt">Add a level below this one</button></div>
+                }
+            </div>
+            break;
+        case "people":
+            <div class="panel">
+                <div class="kv"><div>Owner</div><div><a class="person" href="u/@S.OwnerIdentity(Id)">@S.NameOf(S.OwnerIdentity(Id))</a></div>
+                    @foreach (var (k, r) in st.Roles) { <div>@string.Join(", ", r.Select(Trade.RoleName))</div><div><a class="person" href="u/@k">@S.NameOf(k)</a>@if (mine) { foreach (var x in r) { <button class="small-btn" @onclick="() => Run(() => S.SetRoleOnLedger(Id, k, x, false))">remove @Trade.RoleName(x)</button> } }</div> }
+                </div>
+                @if (mine)
+                {
+                    <div class="row-actions"><input class="grow-input" @bind="roleKey" placeholder="User ID" /><select @bind="role">@foreach (var r in Trade.OrgRoles) { <option value="@r">@Trade.RoleName(r)</option> }</select><button @onclick="AddRole">Add</button></div>
+                }
+                <div class="row-actions"><span>Appeal window for this arbitration body’s rulings:</span>
+                    @if (mine) { <input type="number" min="0" max="365" @bind="days" style="width:90px" /><span>days</span><button @onclick="SaveDays">Save</button> }
+                    else { <b>@S.AppealDaysOf(Id)</b><span>days</span> }
+                </div>
+            </div>
+            break;
+    }
+    @if (msg != null) { <div class="sub" id="org-msg">@msg</div> }
+}
+@code {
+    [Parameter] public required string Id { get; set; }
+    [Parameter] public required string Tab { get; set; }
+    const string RefKey = "ref", ChainKey = "chain", BlockKey = "block", NoteKey = "note", ClassKey = "class", PetitionKey = "petition", IdKey = "id", NameKey = "name", AboutKey = "about";
+    JsonObject? followed; string? msg; string cid = "", cname = "", cabout = "", what = "complaint", ftitle = "", ftext = "", fcase = "", intoCase = "", courtName = "", courtJur = "", roleKey = "", role = "moderator"; int days = Orgs.AppealDays;
+    protected override async Task OnParametersSetAsync() { followed = await S.Followed(); days = (int)S.AppealDaysOf(Id); }
+    async Task Run(Func<Task> f, string? done = null, bool reload = false)
+    {
+        msg = null; StateHasChanged();
+        try { await f(); msg = done; if (reload) followed = await S.Followed(); } catch (Exception e) { msg = e.Message; }
+    }
+    Task Make(string type) => Run(async () => { await S.Classify(Id, type, cid.Trim(), cname, cabout); cid = cname = cabout = ""; }, type == "class" ? "Added." : "Petition filed.");
+    Task File() => Run(async () => { await S.Submit(Id, what, ftitle, ftext, fcase); ftitle = ftext = ""; }, "Filed. The clerk dockets it.");
+    Task OpenCaseFrom(JsonObject b) => Run(async () => { var c = await S.OpenCase(Id, (string?)b["payload"]?["title"] ?? "Case", (string?)b["payload"]?["text"] ?? "", (string?)b["payload"]?["listing"]); await S.FileInto(c, b); Nav.NavigateTo($"c/{c}/docket"); }, "Opening a case…");
+    Task FileIntoCase(JsonObject b) => intoCase.Length == 0 ? Task.CompletedTask : Run(() => S.FileInto(intoCase, b), "Docketed.");
+    Task AddCourt() => Run(async () => { await S.CreateSubCourt(Id, courtName, courtJur); courtName = courtJur = ""; }, "Created. It appears here when its block is in.");
+    Task SaveDays() => Run(() => S.SetAppealDays(Id, days), "Saved on the ledger.");
+    Task AddRole() => Run(async () => { await S.SetRoleOnLedger(Id, roleKey.Trim(), role, true); roleKey = ""; }, "Done.");
+}
