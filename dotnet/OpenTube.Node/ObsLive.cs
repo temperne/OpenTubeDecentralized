@@ -59,7 +59,7 @@ public sealed class ObsLive
     sealed class Sink(OpenTubeNode node, string chain, string title) : IStreamSink
     {
         readonly string stream = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
-        long n, offset; (Action<JsonObject> Seg, Action End, Action<JsonObject> Chunk)? local; RemoteBroadcast? remote; FileStream? rec; string? recPath;
+        long n, offset; (Action<JsonObject> Seg, Action End, Action<JsonObject> Chunk)? local; RemoteBroadcast? remote; FileStream? rec; string? recPath, recFile;
         readonly object gate = new();
 
         public void Init(byte[] header, string mime)
@@ -82,8 +82,13 @@ public sealed class ObsLive
             local = node.Hub.Local(stream, chain, mime);
             if (hubUrl != null) remote = new RemoteBroadcast(node, hubUrl, stream, chain, mime);
             // the recording: OBS's stream as one MP4 file
-            var dir = Path.Combine(node.Options.DataDir, "recordings"); Directory.CreateDirectory(dir);
-            recPath = Path.Combine(dir, $"{string.Concat(title.Where(ch => char.IsLetterOrDigit(ch) || " .()-_".Contains(ch))).Trim() switch { "" => "Live", var t => t }} {DateTime.Now:yyyy-MM-dd-HH-mm}.mp4");
+            // (with hosting on, in the channel's folder, shared and offered to the channel's owner for publishing)
+            if (node.Hosting != null) { (recPath, recFile) = node.Hosting.RecordingPath(chain, title, ".mp4"); }
+            else
+            {
+                var dir = Path.Combine(node.Options.DataDir, "recordings"); Directory.CreateDirectory(dir);
+                recPath = Path.Combine(dir, $"{string.Concat(title.Where(ch => char.IsLetterOrDigit(ch) || " .()-_".Contains(ch))).Trim() switch { "" => "Live", var t => t }} {DateTime.Now:yyyy-MM-dd-HH-mm}.mp4");
+            }
             rec = new FileStream(recPath, FileMode.Create, FileAccess.Write, FileShare.Read);
             Piece(header, false);
             node.Log($"[obs] recording to {recPath}");
@@ -110,7 +115,16 @@ public sealed class ObsLive
                 local.Value.End(); remote?.Close(); rec?.Dispose(); local = null;
                 node.Log($"[obs] stream ended; recording saved: {recPath} ({offset / 1e6:0.0} MB)");
             }
-            try { node.Engine.Append(chain, new JsonObject { ["type"] = "liveend", ["stream"] = stream, ["outcome"] = "ended" }); } catch (Exception e) { node.Log("[obs] couldn’t post the end of the stream: " + e.Message); }
+            var end = new JsonObject { ["type"] = "liveend", ["stream"] = stream, ["outcome"] = "ended" };
+            if (node.Hosting != null && recFile != null && offset >= 1000)
+                try
+                {
+                    var r = node.Hosting.SeedRecording(chain, recFile, title, stream);
+                    end["rec"] = new JsonObject { ["infohash"] = r["infohash"]?.DeepClone(), ["file"] = recFile.Length > 200 ? recFile[..200] : recFile, ["size"] = r["size"]?.DeepClone(), ["mime"] = "video/mp4", ["thumb"] = Media.Thumb(recPath!) };
+                    node.Log("[obs] recording ready: the channel’s owner can publish it from the site");
+                }
+                catch (Exception e) { node.Log("[obs] couldn’t share the recording: " + e.Message); }
+            try { node.Engine.Append(chain, end); } catch (Exception e) { node.Log("[obs] couldn’t post the end of the stream: " + e.Message); }
         }
     }
 

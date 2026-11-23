@@ -110,15 +110,19 @@ public sealed class LiveRelays(OpenTubeNode node)
     {
         readonly OpenTubeNode node; readonly string stream, chain, url, title; readonly LiveKids kids; readonly CancellationTokenSource cts = new();
         readonly System.Threading.Channels.Channel<string> outbox = System.Threading.Channels.Channel.CreateUnbounded<string>();
-        FileStream? rec; string? recPath; long got; public bool Done;
+        FileStream? rec; string? recPath, recFile; long got; public bool Done;
         public Relay(OpenTubeNode node, string stream, string chain, string url, string title, bool record)
         {
             this.node = node; this.stream = stream; this.chain = chain; this.url = url; this.title = title;
             kids = new LiveKids(stream, m => outbox.Writer.TryWrite(m.ToJsonString()), node.Log);
             if (record)
             {
-                var dir = Path.Combine(node.Options.DataDir, "recordings"); Directory.CreateDirectory(dir);
-                recPath = Path.Combine(dir, $"{string.Concat(title.Where(c => char.IsLetterOrDigit(c) || " .()-_".Contains(c))).Trim() switch { "" => "Live", var t => t }} {DateTime.Now:yyyy-MM-dd-HH-mm}.webm");
+                if (node.Hosting != null) (recPath, recFile) = node.Hosting.RecordingPath(chain, title, ".webm");
+                else
+                {
+                    var dir = Path.Combine(node.Options.DataDir, "recordings"); Directory.CreateDirectory(dir);
+                    recPath = Path.Combine(dir, $"{string.Concat(title.Where(c => char.IsLetterOrDigit(c) || " .()-_".Contains(c))).Trim() switch { "" => "Live", var t => t }} {DateTime.Now:yyyy-MM-dd-HH-mm}.webm");
+                }
                 try { rec = new FileStream(recPath, FileMode.Create, FileAccess.Write, FileShare.Read); node.Log($"[live] recording “{title}” to {recPath}"); } catch (Exception e) { node.Log("[live] can’t record: " + e.Message); }
             }
             _ = Task.Run(Run);
@@ -188,7 +192,23 @@ public sealed class LiveRelays(OpenTubeNode node)
             if (cts.IsCancellationRequested) return;
             Send(new JsonObject { ["t"] = "leave", ["stream"] = stream });
             _ = Task.Delay(500).ContinueWith(_ => { cts.Cancel(); kids.Close(); });
-            if (rec != null) { var size = rec.Length; rec.Dispose(); rec = null; node.Log($"[live] recording saved: {recPath} ({size / 1048576.0:0.0} MB)"); }
+            if (rec != null)
+            {
+                var size = rec.Length; rec.Dispose(); rec = null;
+                if (size < 1000) { try { File.Delete(recPath!); } catch { } return; }
+                node.Log($"[live] recording saved: {recPath} ({size / 1048576.0:0.0} MB)");
+                if (node.Hosting != null && recFile != null)
+                    _ = Task.Run(() =>
+                    {   // shared from the channel's folder, offered to the channel's owner for publishing
+                        try
+                        {
+                            var r = node.Hosting.SeedRecording(chain, recFile, title, stream);
+                            node.Engine.Append(chain, new JsonObject { ["type"] = "liveend", ["stream"] = stream, ["outcome"] = "ended", ["rec"] = new JsonObject { ["infohash"] = r["infohash"]?.DeepClone(), ["file"] = recFile.Length > 200 ? recFile[..200] : recFile, ["size"] = r["size"]?.DeepClone(), ["mime"] = "video/webm", ["thumb"] = Media.Thumb(recPath!) } });
+                            node.Log("[live] recording ready: the channel’s owner can publish it from the site");
+                        }
+                        catch (Exception e) { node.Log("[live] recording failed: " + e.Message); }
+                    });
+            }
         }
     }
 }

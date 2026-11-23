@@ -174,6 +174,9 @@ public sealed class OpenTubeNode : IAsyncDisposable
         _ = Task.Run(FindEntryNodes);
         if (Options.Mesh) _ = Task.Run(JoinMesh);
         Relays = new LiveRelays(this); _ = Task.Run(() => Relays.Run(stop.Token));
+        if (Options.Host && OwnerUser != null)
+            try { Hosting = new Host(this, Options.VideoDir, Options.CapGB); _ = Task.Run(Hosting.Run); }
+            catch (Exception e) { Log("video hosting unavailable: " + e.Message); }
         _ = Task.Run(StatusLoop);
         _ = Task.Run(async () => { while (!stop.IsCancellationRequested) { await Task.Delay(60000, stop.Token).ContinueWith(_ => { }); Engine.Gossip(); } });
         _ = Task.Run(Engine.MaybeMine);
@@ -410,6 +413,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
                 ["users"] = new JsonObject(((Obs?.Store["users"] as JsonObject) ?? []).Where(kv => !(Js.Num(kv.Value?["until"]) < DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())).Take(20)
                     .Select(kv => new KeyValuePair<string, JsonNode?>(kv.Key, string.Concat((kv.Value?["can"] as JsonArray ?? []).Select(x => ((string?)x ?? " ")[0])) + (kv.Value?["guestOf"] != null ? "g" : "")))),
                 ["obs"] = Rtmp == null ? null : new JsonObject { ["port"] = Rtmp.Port, ["listening"] = Rtmp.Error == null, ["live"] = Rtmp.Live > 0, ["error"] = Rtmp.Error },
+                ["host"] = Hosting?.Status() is { } hs ? new JsonObject { ["hosting"] = hs["hosting"]?.DeepClone(), ["hostedBytes"] = hs["hostedBytes"]?.DeepClone(), ["channels"] = hs["channels"]?.DeepClone(), ["videoDir"] = hs["videoDir"]?.DeepClone(), ["downloading"] = hs["downloading"]?.DeepClone() } : null,
             };
             try { Engine.PublishNodeInfo(new JsonObject { ["grant"] = JsonNode.Parse(grantJson), ["roles"] = JsonSerializer.SerializeToNode(roles.Take(8).ToList()), ["addrs"] = JsonSerializer.SerializeToNode(addrs.Take(8).ToList()), ["info"] = info }); }
             catch (Exception e) { Log("announce failed: " + e.Message); }
@@ -424,6 +428,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
     // ---- the peer mesh: the network's WebRTC room, as every browser joins it (see Mesh)
     public Mesh? MeshRoom { get; private set; }
     public LiveRelays? Relays { get; private set; }
+    public Host? Hosting { get; private set; }
     async Task JoinMesh()
     {
         await Task.Delay(1500, stop.Token).ContinueWith(_ => { });
@@ -450,7 +455,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
         }
     }
     /// <summary>The trackers the room is found through: entry nodes' own (fresh), the network's public ones, the site's, and this node's own.</summary>
-    List<string> MeshTrackerUrls()
+    public List<string> MeshTrackerUrls()
     {
         if (Options.MeshTrackers != null) return Options.MeshTrackers;
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); var urls = new List<string>();
@@ -467,7 +472,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        stop.Cancel(); Rtmp?.Stop(); if (MeshRoom != null) await MeshRoom.DisposeAsync();
+        stop.Cancel(); Rtmp?.Stop(); if (MeshRoom != null) await MeshRoom.DisposeAsync(); if (Hosting != null) await Hosting.DisposeAsync();
         foreach (var p in peers.Values) p.Out.Writer.TryComplete();
         await Task.Delay(100);
         lock (this) { blockLog?.Dispose(); blockLog = null; }

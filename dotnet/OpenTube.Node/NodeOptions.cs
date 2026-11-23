@@ -37,6 +37,12 @@ public sealed class NodeOptions
     public bool Ranks { get; set; } = true;
     /// <summary>Join the network's WebRTC room (the peer mesh) like every browser. --no-mesh (or MESH=0) turns it off.</summary>
     public bool Mesh { get; set; } = true;
+    /// <summary>Video hosting (with --grant): keep and share the videos of your joined and own channels. --no-host turns it off.</summary>
+    public bool Host { get; set; } = true;
+    /// <summary>Where the videos are kept (--videos=DIR, VIDEO_DIR). Default: "OpenTube Videos" in your home folder.</summary>
+    public string VideoDir { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "OpenTube Videos");
+    /// <summary>Size limit per joined channel, in GB (--cap-gb=5); your own channels are never trimmed.</summary>
+    public double CapGB { get; set; } = 5;
     /// <summary>Only these trackers for the peer mesh (comma-separated, for tests).</summary>
     public List<string>? MeshTrackers { get; set; }
     /// <summary>The site this node came from (--site=https://…): its /entries.json lists entry nodes to connect to.</summary>
@@ -64,6 +70,9 @@ public sealed class NodeOptions
         o.Grant = Get("grant", "NODE_GRANT");
         o.Label = Get("name", "NODE_LABEL");
         if (args.Contains("--no-ranking") || Environment.GetEnvironmentVariable("RANKER") == "0") o.Ranks = false;
+        if (args.Contains("--no-host")) o.Host = false;
+        o.VideoDir = Get("videos", "VIDEO_DIR") ?? o.VideoDir;
+        if (double.TryParse(Get("cap-gb", "CAP_GB"), System.Globalization.CultureInfo.InvariantCulture, out var cap) && cap > 0) o.CapGB = cap;
         if (args.Contains("--no-mesh") || Environment.GetEnvironmentVariable("MESH") == "0") o.Mesh = false;
         if (Get("mesh-trackers", "MESH_TRACKERS") is { Length: > 0 } mt) o.MeshTrackers = mt.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
         o.RankName = Get("ranking-name", "NODE_NAME");

@@ -41,7 +41,7 @@ public static class Program
 
     static int RunService(string[] args)
     {
-        var b = Host.CreateApplicationBuilder(args.Where(a => !a.StartsWith("--", StringComparison.Ordinal) || a.Contains('=')).ToArray());
+        var b = Microsoft.Extensions.Hosting.Host.CreateApplicationBuilder(args.Where(a => !a.StartsWith("--", StringComparison.Ordinal) || a.Contains('=')).ToArray());
         b.Services.AddSystemd();                                                       // Linux: talks to systemd (ready, stopping)
         b.Services.AddWindowsService(o => o.ServiceName = ServiceInstaller.Name);      // Windows: runs as a service
         b.Services.AddSingleton(NodeOptions.From(args));

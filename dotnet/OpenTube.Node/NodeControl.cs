@@ -76,7 +76,28 @@ public sealed class NodeControl(OpenTubeNode node)
                     return Reply(c, true, new JsonObject { ["relaying"] = true });
                 }
                 case "status":
-                    data = node.Status.DeepClone(); break;
+                    data = node.Status.DeepClone(); if (data is JsonObject so) so["host"] = node.Hosting?.Status(); break;
+                case "store": case "store.status":
+                {   // keep a video someone uploaded from a browser (their storage is this computer)
+                    if (!May(user, "host")) return Fail("you may not store videos on this computer");
+                    if (node.Hosting == null) return Fail("video hosting is off on this computer");
+                    if (!Js.IsHex(a["ih"], 40)) return Fail("bad video");
+                    var ih = (string)a["ih"]!;
+                    if (cmd == "store")
+                    {
+                        if (!Js.IsHex(a["chain"], 64)) return Fail("bad channel");
+                        var ch = (string)a["chain"]!; bool ok = owner || OwnsChannel(user, ch);
+                        if (!ok && Js.Str(a["channelSig"]) is { } cs2)
+                        {
+                            var key = node.Engine.Read(e => e.Store.Chains.TryGetValue(ch, out var cc) ? cc.Owner : e.Store.Directory.TryGetValue(ch, out var dd) ? (string?)dd.Genesis["author"] : null);
+                            ok = key != null && Rules.VerifySig(key, $"opentube-obs-channel:{node.NodeKey}:{user}:{ch}", cs2);
+                        }
+                        if (!ok) return Fail("that channel isn’t yours");
+                        try { await node.Hosting.StoreVideo(ch, ih); } catch (Exception e) { return Fail(e.Message); }
+                        node.Log($"[host] storing a video for {who}");
+                    }
+                    return Reply(c, true, node.Hosting.ProgressOf(ih));
+                }
                 case "users": case "users.set":
                     if (!owner) return Fail("only the owner can share this computer");
                     if (cmd == "users.set")
@@ -134,10 +155,13 @@ public sealed class NodeControl(OpenTubeNode node)
                     };
                     break;
                 }
+                case var fm when Host.Commands.Contains(fm):   // the file manager (Manage files on the site)
+                    if (!owner && !May(user, "manage")) return Fail("you may not manage this computer’s files");
+                    if (node.Hosting == null) return Fail("video hosting is off on this computer (started with --no-host, or without --grant)");
+                    data = node.Hosting.Command(cmd, a); break;
                 default:
                     if (cmd.StartsWith("group", StringComparison.Ordinal)) return Fail("group streams aren’t in the .NET version of OpenTube yet: run the Node.js program on this computer for them");
                     if (cmd.StartsWith("flash", StringComparison.Ordinal)) return Fail("flash computers aren’t in the .NET version of OpenTube yet");
-                    if (cmd is "store" or "store.status") return Fail("video hosting isn’t in the .NET version of OpenTube yet");
                     if (cmd == "update") return Fail("restart it yourself: run the same command again (it downloads the current version)");
                     return Fail("this computer doesn’t know that command (it runs the .NET version of OpenTube)");
             }

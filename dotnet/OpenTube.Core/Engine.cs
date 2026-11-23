@@ -42,6 +42,10 @@ public sealed class Engine
     IEnumerable<string> HeadsOf(Chain c) => c == Store.Main ? [Str(Store.MainBest["hash"])!] : c.Heads;
     JsonArray Arr(IEnumerable<string> s) => new(s.Select(x => (JsonNode?)x).ToArray());
     public void Announce(Chain c, string? to = null) => Send(new JsonObject { ["t"] = "heads", ["c"] = c.Id, ["h"] = Arr(HeadsOf(c)) }, to);
+    /// <summary>A video's posting fee is paid (or it's from before the coin): hosts only keep paid videos.</summary>
+    public bool PostPaid(JsonObject v) { lock (gate) return Num(v["ts"]) < Coin.Epoch || IsPaid("post:" + Str(v["hash"]), null); }
+    /// <summary>Ask peers for someone's signed list of joined channels.</summary>
+    public void RequestMembership(string author) => Send(new JsonObject { ["t"] = "memrq", ["a"] = author }, null);
     public void RequestChain(Chain c, string? to = null) => Send(new JsonObject { ["t"] = "rq", ["c"] = c.Id, ["w"] = new JsonArray(), ["h"] = Arr(HeadsOf(c)) }, to);
     public Chain? OpenChain(string id) { lock (gate) return Store.OpenChain(id); }
 
