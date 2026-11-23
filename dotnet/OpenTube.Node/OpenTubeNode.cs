@@ -178,6 +178,8 @@ public sealed class OpenTubeNode : IAsyncDisposable
             try { Hosting = new Host(this, Options.VideoDir, Options.CapGB); _ = Task.Run(Hosting.Run); }
             catch (Exception e) { Log("video hosting unavailable: " + e.Message); }
         try { Flashes = new Flash(this); _ = Task.Run(() => Flashes.Run(stop.Token)); } catch (Exception e) { Log("flash computers unavailable: " + e.Message); }
+        Hub.IngestTicket = Ingest.NewTicket;   // the owner's browser may have OBS send a stream here (/ingest)
+        _ = Task.Run(CloseLeftOpen);
         Coord = new Coordination(this); _ = Task.Run(() => Coord.Run(stop.Token));
         Update = new Updater(this); _ = Task.Run(() => Update.Run(stop.Token));
         Earn = new Earnings(this) { PendingTabs = Hosting != null ? Hosting.Tabs.Pending : null }; _ = Task.Run(() => Earn.Run(stop.Token));
@@ -442,6 +444,23 @@ public sealed class OpenTubeNode : IAsyncDisposable
     TaskCompletionSource? announceWake;
     /// <summary>Tell the owner's Devices page now (after a change), not at the next half-minute.</summary>
     async Task<string?> PublicIpCached() { if (DateTime.UtcNow - publicIpAt > TimeSpan.FromMinutes(10)) { publicIpAt = DateTime.UtcNow; publicIp = (await Internet.PublicIPv4())?.ToString() ?? publicIp; } return publicIp; }
+    /// <summary>Streams this computer started and is still sending (any other open stream of its own — it crashed or was stopped mid-stream — is closed on its channel, so it doesn't stay "live" for everyone).</summary>
+    public readonly ConcurrentDictionary<string, bool> MyLive = new();
+    async Task CloseLeftOpen()
+    {
+        while (!stop.IsCancellationRequested)
+        {
+            await Task.Delay(TimeSpan.FromMinutes(2), stop.Token).ContinueWith(_ => { });
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var open = Engine.Read(e => e.Store.Chains.Values.Where(c => c != e.Store.Main).SelectMany(c => Derived.Of(c).LiveNow.Where(b => (string?)b["author"] == NodeKey).Select(b => (c.Id, (string)b["payload"]!["stream"]!, (string?)b["payload"]!["title"], Js.Num(b["ts"]) ?? now))).ToList());
+            foreach (var (chain, stream, title, ts) in open)
+                if (!MyLive.ContainsKey(stream) && now - ts > 3 * 60000)
+                {
+                    MyLive[stream] = true;   // once
+                    try { Engine.Append(chain, new JsonObject { ["type"] = "liveend", ["stream"] = stream, ["outcome"] = "ended" }); Log($"[obs] closed a stream left open: {title ?? stream[..8]}"); } catch (Exception e) { Log("[obs] liveend: " + e.Message); }
+                }
+        }
+    }
     public void AnnounceSoon() => _ = Task.Delay(1500).ContinueWith(_ => announceWake?.TrySetResult());
 
     // ---- the peer mesh: the network's WebRTC room, as every browser joins it (see Mesh)

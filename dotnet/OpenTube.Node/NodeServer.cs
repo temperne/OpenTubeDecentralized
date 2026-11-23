@@ -134,6 +134,8 @@ public sealed partial class NodeServer : IAsyncDisposable
         {
             ctx.Response.Headers.AccessControlAllowOrigin = "*";
             var path = ctx.Request.Path.Value;
+            if (ctx.WebSockets.IsWebSocketRequest && path == "/rtmp" && Node.Rtmp != null) { await Ingest.RtmpOverWs(await ctx.WebSockets.AcceptWebSocketAsync(), Node.Rtmp.Port); return; }   // OBS through a tunnel (opentube --obs-via)
+            if (path?.StartsWith("/ingest/", StringComparison.Ordinal) == true && ctx.Request.Method is "POST" or "PUT") { await Ingest.Post(ctx, Node, path[8..]); return; }   // OBS's WebM stream for a browser's live
             if (ctx.WebSockets.IsWebSocketRequest && path is "/ot" or "/tracker" or "/live")
             {
                 var ws = await ctx.WebSockets.AcceptWebSocketAsync();

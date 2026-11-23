@@ -21,6 +21,8 @@ public static class Program
         if (args.Contains("--uninstall-service")) return ServiceInstaller.Uninstall();
         if (args.Contains("--service-help")) { Console.WriteLine(ServiceInstaller.Instructions()); return 0; }
         if (args.Length > 0 && args[0] == "torrent") return TorrentTool.Run(args[1..]);
+        if (args.FirstOrDefault(a => a.StartsWith("--obs-via=")) is { } via)   // only a bridge for OBS to a computer behind a tunnel
+            return Ingest.Bridge(via[10..], int.TryParse(args.FirstOrDefault(a => a.StartsWith("--obs-port="))?[11..], out var op) ? op : 1935).GetAwaiter().GetResult();
         if (args.Contains("--service")) return RunService(args);
         if (Console.IsInputRedirected && !HasDisplay())
         {   // no keyboard to read (input is a pipe or a file): menus would show but no key would reach them
@@ -72,6 +74,8 @@ public static class Program
                                  public IP, or ports 80/443 forwarded): https://<ip>.sslip.io with a Let's
                                  Encrypt certificate. --public=your.domain for your own name, --public=off
         --email=YOU@…            for Let's Encrypt's expiry notices (optional)
+        --obs-via=https://…      only a bridge on the OBS computer: OBS → rtmp://127.0.0.1/live → that computer
+                                 (through its tunnel or a firewall that blocks port 1935)
         --tunnel / --no-tunnel   a Cloudflare tunnel (cloudflared, downloaded if needed) is used when this
                                  computer can't be reached directly or ports 80/443 are taken by another
                                  program; --tunnel: always as well, --no-tunnel: never

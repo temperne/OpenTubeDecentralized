@@ -124,7 +124,7 @@ public sealed class ObsLive
             }
             var payload = new JsonObject { ["type"] = "live", ["title"] = title[..Math.Min(140, title.Length)], ["stream"] = stream, ["mime"] = mime };
             if (hubNode != null) payload["hub"] = hubNode;
-            try { Block = (string?)node.Engine.Append(chain, payload)["hash"]; }
+            try { Block = (string?)node.Engine.Append(chain, payload)["hash"]; node.MyLive[stream] = true; }
             catch (Exception e) { node.Log("[obs] couldn’t go live: " + e.Message); return; }
             var name = node.Engine.Read(e => e.Store.Chains.TryGetValue(chain, out var c) ? (string?)Derived.Of(c).Profile["name"] : null) ?? chain[..8];
             node.Log($"[obs] live on {name}: “{title}”" + (hubUrl != null ? $" (viewers through {hubUrl.Replace("wss://", "").Replace("ws://", "").Replace("/live", "")})" : " (viewers through this computer)"));
