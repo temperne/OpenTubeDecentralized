@@ -1,0 +1,16 @@
+@inject OpenTube.Client.ClientSession S
+@if (show)
+{
+    <div class="terms-banner">By using OpenTube you agree that disputes about transactions made through it are resolved by the network’s arbitration, as described in the <a href="terms">terms</a>. <button class="primary" @onclick="Agree">I agree</button></div>
+}
+@code {
+    public static Action? Agreed;
+    bool show;
+    protected override async Task OnInitializedAsync()
+    {
+        Agreed = () => InvokeAsync(() => { show = false; StateHasChanged(); });
+        for (int i = 0; i < 100 && !S.Ready; i++) await Task.Delay(200);
+        if (S.Ready) show = await S.Social.Pref("termsAgreed") == null;
+    }
+    async Task Agree() { await S.Social.SetPref("termsAgreed", DateTimeOffset.UtcNow.ToString("o")); show = false; }
+}

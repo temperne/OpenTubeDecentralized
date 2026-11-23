@@ -1,20 +1,84 @@
 @page "/explore"
+@page "/explore/{Tab}"
 @inherits Live
-<h2>Explore</h2>
-<input class="search" placeholder="Search channels and lists" @bind="q" @bind:event="oninput" />
+<div class="toolbar">
+    <input class="search" type="search" placeholder="Search videos, channels and lists…" @bind="q" @bind:event="oninput" />
+    @if (tab is "trending" or "new" && S.Ready)
+    {
+        var rankers = S.Rankers();
+        <select value="@(ranker ?? "")" @onchange="SetRanker" title="Who ranks the videos you see">
+            <option value="">Ranked by: this device</option>
+            @foreach (var (l, n) in rankers) { <option value="@l">Ranked by: @n</option> }
+        </select>
+    }
+</div>
+<div class="tabs">@foreach (var (t, l) in tabs) { <a href="explore/@t" class="@(t == tab ? "active" : "")">@l</a> }</div>
 @if (!S.Ready) { <p class="sub">Starting…</p> }
+else if (tab is "trending" or "new")
+{
+    var r = S.Rank(ranker);
+    var items = r.Items.Where(i => Match(i.Title + " " + i.Channel) && !MutedVideo(i)).ToList();
+    items = tab == "new" ? items.OrderByDescending(i => i.Ts).ToList() : items.Select((x, n) => (x, n)).OrderByDescending(p => Feeds.ViewKey(p.x, view)).ThenByDescending(p => p.x.Ts).Select(p => p.x).ToList();
+    if (tab == "trending")
+    {
+        <div class="row-actions small-actions">@foreach (var (k, l) in Feeds.Views) { <button class="@(view == k ? "on" : "")" @onclick="() => SetView(k)">@l</button> }</div>
+    }
+    var live = S.LiveEverywhere().Where(x => Match((string?)x.Block["payload"]?["title"] + " " + x.Name)).ToList();
+    if (live.Count > 0)
+    {
+        <h3>Live now</h3>
+        @foreach (var (c, cn, lb) in live) { <a class="live-banner" href="live/@c/@lb["payload"]!["stream"]">🔴 @((string?)lb["payload"]?["title"]) · @cn</a> }
+    }
+    <p class="sub">@(r.Local ? $"No ranking list chosen, so this device ranked the {S.Directory().Count(c => c.Kind == "channel")} registered channels itself." : $"Ranking published {Ago(r.At)} by {r.ListName}, signed by its key.")</p>
+    if (items.Count == 0) { <p class="sub">@(q.Length > 0 ? "No videos match." : "No videos yet.")</p> }
+    <div class="grid">
+        @{ int n = 0; }
+        @foreach (var i in items.Take(60))
+        {
+            n++;
+            var v = S.Chain(i.Chain)?.Videos.FirstOrDefault(x => (string?)x["hash"] == i.Video);
+            <div class="ranked">
+                @if (tab == "trending") { <span class="rank-n">#@n</span> }
+                @if (v != null) { <VideoCard Chain="@i.Chain" Block="(JsonObject)v.DeepClone()" ChannelName="@i.Channel" /> }
+                else { <a class="card" href="v/@i.Chain/@i.Video"><div class="thumb-empty">▶</div><div class="title">@i.Title</div><div class="sub">@i.Channel · @Ago(i.Ts) · 👍 @i.Up</div></a> }
+            </div>
+        }
+    </div>
+}
 else
 {
-    var list = S.Directory().Where(c => string.IsNullOrWhiteSpace(q) || c.Name.Contains(q, StringComparison.OrdinalIgnoreCase) || c.About.Contains(q, StringComparison.OrdinalIgnoreCase)).OrderBy(c => c.Name).ToList();
-    <p class="sub">@list.Count registered channels and lists</p>
-    <div class="list">
+    var kind = tab == "channels" ? "channel" : tab == "groups" ? "group" : "list";
+    var score = new Dictionary<string, double>(); foreach (var i in S.Rank(ranker).Items) score[i.Chain] = score.GetValueOrDefault(i.Chain) + i.Score;
+    var list = S.Directory().Where(c => c.Kind == kind && Match(c.Name + " " + c.About + " " + (S.NameOfChain(c.Id) ?? ""))).OrderByDescending(c => score.GetValueOrDefault(c.Id)).ThenBy(c => c.Name).ToList();
+    if (list.Count == 0) { <p class="sub">@(q.Length > 0 ? "Nothing matches." : $"No {kind}s registered yet. Create one under You → Channels.")</p> }
+    <div class="grid">
         @foreach (var c in list)
         {
-            <a class="row-item" href="c/@c.Id">
-                @if (c.Avatar is { Length: > 0 }) { <img class="avatar" src="@c.Avatar" alt="" /> } else { <span class="avatar empty">@c.Name[..1]</span> }
-                <span><b>@c.Name</b> <span class="badge">@c.Kind</span><br /><span class="sub">@c.About</span></span>
+            var sub = S.Notes.Subscription(c.Id); var ranking = kind == "list" && S.Genesis(c.Id)?["payload"]?["ranking"] != null;
+            <a class="card ccard" href="c/@c.Id">
+                @if (c.Avatar is { Length: > 0 }) { <img class="avatar big" src="@c.Avatar" alt="" /> } else { <span class="avatar big empty">@(c.Name.Length > 0 ? c.Name[..1].ToUpperInvariant() : "?")</span> }
+                <div class="title">@c.Name</div>
+                @if (S.NameOfChain(c.Id) is { } h) { <div class="sub">@h</div> }
+                <div class="sub clamp">@(c.About.Length > 0 ? c.About : kind == "list" ? (ranking ? "Ranking list" : "Curated list") : kind == "group" ? "Group" : $"{c.Videos} videos")</div>
+                <div>@if (ranking) { <span class="badge">ranking</span> }@if (sub != null) { <span class="badge ok">@(sub == "join" ? "joined" : "subscribed")</span> }</div>
             </a>
         }
     </div>
 }
-@code { string q = ""; }
+@code {
+    [Parameter] public string? Tab { get; set; }
+    static readonly (string, string)[] tabs = [("trending", "Trending"), ("new", "New"), ("channels", "Channels"), ("lists", "Lists"), ("groups", "Groups")];
+    string tab => Tab is "new" or "channels" or "lists" or "groups" ? Tab : "trending";
+    string q = "", view = "hot"; string? ranker; HashSet<string> muted = [];
+    protected override async Task OnInitializedAsync()
+    {
+        base.OnInitialized();
+        if (!S.Ready) return;
+        view = await S.Social.Pref("view") ?? "hot"; ranker = await S.Social.Pref("ranker"); muted = (await S.Social.Muted()).Tags;
+        if (ranker != null && !S.Rankers().Any(r => r.List == ranker)) ranker = null;
+    }
+    bool Match(string text) => q.Trim().Length == 0 || text.Contains(q.Trim(), StringComparison.OrdinalIgnoreCase);
+    bool MutedVideo(Feeds.Item i) => muted.Count > 0 && (S.Chain(i.Chain)?.Videos.FirstOrDefault(x => (string?)x["hash"] == i.Video)?["payload"]?["tags"] as JsonArray ?? []).Any(t => muted.Contains((string?)t ?? ""));
+    async Task SetView(string k) { view = k; await S.Social.SetPref("view", k); }
+    async Task SetRanker(ChangeEventArgs e) { ranker = (string?)e.Value is { Length: > 0 } v ? v : null; await S.Social.SetPref("ranker", ranker); }
+}

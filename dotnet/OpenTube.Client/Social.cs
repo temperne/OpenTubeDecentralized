@@ -52,6 +52,10 @@ public sealed class Social
         m[kind] = new JsonArray(list.Select(x => (JsonNode?)x).ToArray());
         await SaveSettings(st);
     }
+    /// <summary>A page setting kept on this device (settings.&lt;name&gt;, the same object the JavaScript page uses).</summary>
+    public async Task<string?> Pref(string name) => (string?)(await Settings())[name];
+    public async Task SetPref(string name, string? value) { var st = await Settings(); st[name] = value; await SaveSettings(st); }
+    public async Task<List<string>> FollowingList() => ((await Settings())["following"] as JsonArray ?? []).Select(x => (string?)x).OfType<string>().ToList();
     public async Task<bool> IsFollowing(string key) => ((await Settings())["following"] as JsonArray ?? []).Any(x => (string?)x == key);
     /// <summary>Follow someone's public posts (a notification for each; kept on this device).</summary>
     public async Task SetFollowing(string key, bool on)
