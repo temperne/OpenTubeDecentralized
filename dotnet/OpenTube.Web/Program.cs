@@ -21,6 +21,7 @@ builder.Services.AddSingleton(sp =>
 });
 builder.Services.AddSingleton<IVideoPlayer, BrowserTorrents>();
 builder.Services.AddSingleton(new UiPlatform("C# · WebAssembly"));
+builder.Services.AddSingleton<IDeviceFiles, BrowserFiles>();
 var host = builder.Build();
 await host.Services.GetRequiredService<ClientSession>().Start();
 await host.RunAsync();
@@ -36,4 +37,11 @@ sealed class BrowserStore(IJSRuntime js) : IClientStore
         return (JsonNode.Parse(json)?.AsArray() ?? []).Where(r => r?["chainId"] != null && r["block"] is JsonObject).Select(r => ((string)r!["chainId"]!, (JsonObject)r["block"]!.DeepClone())).ToList();
     }
     public void SaveBlock(string chain, JsonObject block) => _ = js.InvokeVoidAsync("otStore.put", chain, block.ToJsonString()).AsTask();
+}
+
+/// <summary>Keys in the browser: a backup downloads; another identity reloads the page.</summary>
+sealed class BrowserFiles(IJSRuntime js, Microsoft.AspNetCore.Components.NavigationManager nav) : IDeviceFiles
+{
+    public Task Save(string name, string text) => js.InvokeVoidAsync("otUi.download", name, text).AsTask();
+    public Task Restart() { nav.NavigateTo(nav.BaseUri, forceLoad: true); return Task.CompletedTask; }
 }

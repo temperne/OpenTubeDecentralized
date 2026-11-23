@@ -55,6 +55,9 @@ a.primary-link { background: var(--accent); color: #fff; border: none; }
 .cmd { background: var(--bg); padding: 8px; border-radius: 8px; margin: 4px 0 10px; user-select: all; }
 pre.log { white-space: pre-wrap; font-size: 11px; max-height: 360px; overflow: auto; background: var(--bg); padding: 8px; border-radius: 8px; }
 a.button.on { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.panel.warn { border-color: #d97706; } .badge.warnb { background: #d97706; color: #fff; }
+.file-button { position: relative; overflow: hidden; display: inline-block; margin: 0; font-weight: 400; cursor: pointer; padding: 8px 10px; }
+.file-button input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
 /* phones: a compact header, the sections as a bar at the bottom (big enough to tap), nothing wider than the screen */
 @media (max-width: 640px) {
   html, body { overflow-x: hidden; }

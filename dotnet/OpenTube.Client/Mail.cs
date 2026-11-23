@@ -72,6 +72,30 @@ public sealed class Mail
             try { await s.Engine.SubmitTx(new JsonObject { ["msgkey"] = new JsonObject { ["key"] = k.Pub, ["on"] = true } }, s.Me); }
             catch (Exception e) { s.Log?.Invoke("msgkey: " + e.Message); }
     }
+    /// <summary>Your messaging keys: (key, published on the network, retired).</summary>
+    public async Task<List<(string Pub, bool Published, bool Retired)>> KeyList()
+    {
+        await Keys(); var on = s.Engine.Read(e => e.Store.Ledger.MsgKeys.TryGetValue(s.Me.pub, out var l) ? l.ToList() : []);
+        return keys.Select(k => (k.Pub, on.Contains(k.Pub), k.Retired)).ToList();
+    }
+    /// <summary>Retire a messaging key that may have leaked: new messages use your others.</summary>
+    public async Task RetireKey(string pub)
+    {
+        await s.Engine.SubmitTx(new JsonObject { ["msgkey"] = new JsonObject { ["key"] = pub, ["on"] = false } }, s.Me);
+        var id = JsonNode.Parse((await store.Get("identity"))!) as JsonObject ?? []; foreach (var k in (id["msg"] as JsonArray ?? []).OfType<JsonObject>()) if ((string?)k["pub"] == pub) k["retired"] = true;
+        await store.Set("identity", id.ToJsonString()); await Keys(); Changed?.Invoke();
+    }
+    /// <summary>A new messaging key (published; messages to you use the newest).</summary>
+    public async Task NewKey()
+    {
+        var id = JsonNode.Parse((await store.Get("identity"))!) as JsonObject ?? [];
+        var g = new ECKeyPairGenerator(); g.Init(new ECKeyGenerationParameters(Domain, new SecureRandom()));
+        var kp = g.GenerateKeyPair(); var pub = (ECPublicKeyParameters)kp.Public; var pr = (ECPrivateKeyParameters)kp.Private;
+        byte[] X = Pad(pub.Q.Normalize().AffineXCoord.GetEncoded()), Y = Pad(pub.Q.Normalize().AffineYCoord.GetEncoded());
+        var list = id["msg"] as JsonArray ?? (JsonArray)(id["msg"] = new JsonArray());
+        list.Add(new JsonObject { ["pub"] = B64u.Encode([0x04, .. X, .. Y]), ["at"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), ["priv"] = new JsonObject { ["kty"] = "EC", ["crv"] = "P-256", ["x"] = B64u.Encode(X), ["y"] = B64u.Encode(Y), ["d"] = B64u.Encode(Pad(pr.D.ToByteArrayUnsigned())), ["ext"] = true, ["key_ops"] = new JsonArray("deriveBits") } });
+        await store.Set("identity", id.ToJsonString()); await Publish(); Changed?.Invoke();
+    }
     public bool CanReceive(string who) => s.Engine.Read(e => e.Store.Ledger.MsgKeys.TryGetValue(e.Store.Ledger.Resolve(who), out var l) && l.Count > 0);
 
     // ---- the elliptic curve and the cipher

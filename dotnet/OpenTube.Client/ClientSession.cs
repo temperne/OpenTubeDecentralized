@@ -51,6 +51,8 @@ public sealed class ClientSession : IAsyncDisposable
     public Publish Publish { get; private set; } = null!;
     /// <summary>The market, the exchange, organizations.</summary>
     public Trade Trade { get; private set; } = null!;
+    /// <summary>Your keys: backup, import, binding, retiring and replacing them.</summary>
+    public Keys Keys { get; private set; } = null!;
     /// <summary>The key for one of your keys (your identity or a channel's), or null.</summary>
     public Identity? KeyOf(string pub) => KeyFor(pub);
     static readonly HttpClient http = new() { Timeout = TimeSpan.FromSeconds(10) };
@@ -78,6 +80,8 @@ public sealed class ClientSession : IAsyncDisposable
         Notes = new Notifications(this, store); await Notes.Load(); Notes.Start();
         Mail = new Mail(this, store); Mail.Start();
         Publish = new Publish(this); Trade = new Trade(this, store);
+        try { if (await store.Get("retiredIdentities") is { } ri && JsonNode.Parse(ri) is JsonArray ra) foreach (var r in ra.OfType<JsonObject>()) if ((string?)r["pub"] is { } rp && (string?)r["priv"] is { } rk) Retired[rp] = new Identity(rp, rk); } catch { }
+        Keys = new Keys(this, store); Keys.Start();
         Social = new Social(this, store); _ = Task.Run(async () => { await Task.Delay(5000); try { await Social.Refresh(); } catch { } });
         Ready = true; Changed?.Invoke();
         online = CancellationTokenSource.CreateLinkedTokenSource(stop.Token);
@@ -216,10 +220,15 @@ public sealed class ClientSession : IAsyncDisposable
         .OrderByDescending(x => Js.Num(x.Item3["ts"])).ToList());
 
     JsonObject channelKeys = new();
-    Identity? KeyFor(string pub) { lock (channelKeys) return pub == Me.pub ? Me : channelKeys[pub] is JsonObject k ? new Identity((string)k["pub"]!, (string)k["priv"]!) : null; }
+    /// <summary>Your older personal keys (retired: they still sign for what they owned until it's handed over).</summary>
+    internal readonly Dictionary<string, Identity> Retired = [];
+    Identity? KeyFor(string pub) { lock (channelKeys) return pub == Me.pub ? Me : channelKeys[pub] is JsonObject k ? new Identity((string)k["pub"]!, (string)k["priv"]!) : Retired.GetValueOrDefault(pub); }
+    /// <summary>Your channel and list keys as kept (pub -> {pub, priv, chain, name, exported}).</summary>
+    internal JsonObject ChannelKeys { get { lock (channelKeys) return (JsonObject)channelKeys.DeepClone(); } }
+    internal async Task SaveChannelKeys(JsonObject keys) { lock (channelKeys) channelKeys = (JsonObject)keys.DeepClone(); await store.Set("channelKeys", keys.ToJsonString()); }
     /// <summary>Your key, or one of your channels' keys.</summary>
-    public bool IsMine(string? pub) { if (pub == null) return false; lock (channelKeys) return pub == Me.pub || channelKeys.ContainsKey(pub); }
-    async Task AddChannelKey(Identity key, string name, string? chain)
+    public bool IsMine(string? pub) { if (pub == null) return false; lock (channelKeys) return pub == Me.pub || channelKeys.ContainsKey(pub) || Retired.ContainsKey(pub); }
+    internal async Task AddChannelKey(Identity key, string name, string? chain)
     {
         string json;
         lock (channelKeys)

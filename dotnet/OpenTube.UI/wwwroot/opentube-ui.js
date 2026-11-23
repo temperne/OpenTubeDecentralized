@@ -11,6 +11,8 @@ window.otUi = {
     v.onseeked = () => { try { const c = document.createElement('canvas'), w = 320, h = Math.round(w * (v.videoHeight || 180) / (v.videoWidth || 320)); c.width = w; c.height = h; c.getContext('2d').drawImage(v, 0, 0, w, h); done(c.toDataURL('image/jpeg', 0.7)); } catch { done(''); } };
     v.onerror = () => done(''); setTimeout(() => done(''), 15000);
   }),
+  // a file to keep (a key backup): downloaded by the browser
+  download: (name, text) => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' })); a.download = name; document.body.append(a); a.click(); a.remove(); },
   camStart: async (hub, videoId) => {
     const mime = ['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9,opus', 'video/webm'].find(m => window.MediaRecorder?.isTypeSupported?.(m));
     if (!mime) return { error: 'This device can’t record video here.' };

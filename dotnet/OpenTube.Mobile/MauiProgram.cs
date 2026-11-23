@@ -24,6 +24,7 @@ public static class MauiProgram
         builder.Services.AddSingleton(sp => new ClientSession(sp.GetRequiredService<IClientStore>(), Site) { Log = m => System.Diagnostics.Debug.WriteLine("[opentube] " + m) });
         builder.Services.AddSingleton<IVideoPlayer>(sp => new NativeVideoPlayer(sp.GetRequiredService<ClientSession>(), Path.Combine(FileSystem.CacheDirectory, "videos")));
         builder.Services.AddSingleton(new UiPlatform("C# · " + DeviceInfo.Platform));
+        builder.Services.AddSingleton<IDeviceFiles, DeviceFiles>();
         builder.Services.AddSingleton(sp => new PushLink(sp.GetRequiredService<ClientSession>(), sp.GetRequiredService<IClientStore>(), $"{DeviceInfo.Manufacturer} {DeviceInfo.Model}".Trim()));
 #if ANDROID
         builder.Services.AddSingleton<IPushSetup>(sp => new AndroidPushSetup(sp.GetRequiredService<PushLink>()));
