@@ -33,6 +33,13 @@ video { max-width: 100%; display: block; }
 .row-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0; } select { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); }
 .check { display: flex; gap: 8px; align-items: center; padding: 4px 0; } .check input { width: auto; margin: 0; }
 .note .grow { flex: 1; } .note.unread { border-color: var(--accent); }
+.grow-input { flex: 1; width: auto; min-width: 200px; margin: 0; }
+a.button { display: inline-block; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); }
+.convo .grow { flex: 1; min-width: 0; overflow: hidden; }
+.thread { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; }
+.bubble { max-width: 80%; padding: 8px 12px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line); white-space: pre-wrap; word-break: break-word; }
+.bubble.out { align-self: flex-end; background: var(--accent); color: #fff; border: none; } .bubble.out .sub { color: #ffe; }
+.compose { display: flex; gap: 8px; align-items: flex-end; } .compose textarea { flex: 1; font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); resize: vertical; }
 /* phones: a compact header, the sections as a bar at the bottom (big enough to tap), nothing wider than the screen */
 @media (max-width: 640px) {
   html, body { overflow-x: hidden; }

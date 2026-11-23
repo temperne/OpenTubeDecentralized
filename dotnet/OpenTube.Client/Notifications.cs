@@ -102,6 +102,8 @@ public sealed class Notifications
     public async Task Subscribe(string chain, bool on) { if (on) subs[chain] = subs[chain]?.DeepClone() ?? "sub"; else subs.Remove(chain); await store.Set("subs", subs.ToJsonString()); Changed?.Invoke(); }
 
     // ---- making them
+    /// <summary>A notification made elsewhere (a private message this device found for you).</summary>
+    public void Add(string type, string text, string href, string? obj, double ts, string? id = null) => Notify(type, text, href, obj, ts, id);
     void Notify(string type, string text, string href, string? obj, double ts, string? id = null)
     {
         id ??= type + ":" + href + ":" + text[..Math.Min(40, text.Length)];

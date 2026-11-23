@@ -1,0 +1,76 @@
+@page "/messages"
+@page "/messages/{Who}"
+@inherits Live
+@implements IDisposable
+@* Private messages: encrypted end to end; whom they're for and who sent them aren't visible on the network *@
+@if (Who == null)
+{
+    <h2>Messages</h2>
+    <div class="panel">
+        <div class="row-actions">
+            <input placeholder="Their user ID (or a channel’s owner key)" @bind="to" class="grow-input" />
+            <button class="primary" @onclick="Start" disabled="@string.IsNullOrWhiteSpace(to)">New message</button>
+        </div>
+        <div class="sub">Messages are encrypted for the other person: on the network nobody can see who wrote to whom. Your messaging key stays on this device.</div>
+    </div>
+    @if (all == null) { <p class="sub">Reading your messages…</p> }
+    else if (all.Count == 0) { <p class="sub">No messages yet. Open someone’s channel and tap Message, or start one above.</p> }
+    else
+    {
+        <div class="list">
+            @foreach (var g in all.GroupBy(m => m.Other).OrderByDescending(g => g.Max(m => m.At)))
+            {
+                var last = g.MaxBy(m => m.At)!;
+                <a class="row-item convo" href="messages/@g.Key">
+                    <span class="avatar empty">@S.NameOf(g.Key)[..1].ToUpperInvariant()</span>
+                    <span class="grow"><b>@S.NameOf(g.Key)</b><br /><span class="sub">@(last.Incoming ? "" : "You: ")@Short(last.Text)</span></span>
+                    <span class="sub">@Ago(last.At)</span>
+                </a>
+            }
+        </div>
+    }
+}
+else
+{
+    <h2><a href="messages">Messages</a> · @S.NameOf(Who)</h2>
+    <div class="thread">
+        @if (all != null)
+        {
+            foreach (var m in all.Where(m => m.Other == Other))
+            {
+                <div class="bubble @(m.Incoming ? "in" : "out")"><div>@m.Text</div><div class="sub">@Ago(m.At)</div></div>
+            }
+            if (!all.Any(m => m.Other == Other)) { <p class="sub">No messages with them yet.</p> }
+        }
+    </div>
+    @if (!S.Mail.CanReceive(Who)) { <p class="sub">They haven’t published a messaging key yet (they need to open Messages once, on the site or in the app). You can write once they have.</p> }
+    <div class="compose">
+        <textarea placeholder="Write a message…" @bind="text" @bind:event="oninput" rows="2"></textarea>
+        <button class="primary" @onclick="Send" disabled="@(busy || string.IsNullOrWhiteSpace(text) || !S.Mail.CanReceive(Who))">Send</button>
+    </div>
+    @if (msg != null) { <div class="sub" id="msg-status">@msg</div> }
+}
+@code {
+    [Parameter] public string? Who { get; set; }
+    List<Mail.Message>? all; string to = "", text = ""; string? msg; bool busy;
+    string Other => S.Engine.Read(e => e.Store.Ledger.Resolve(Who!));
+    static string Short(string t) => t.Length > 80 ? t[..80] + "…" : t;
+    protected override async Task OnInitializedAsync()
+    {
+        base.OnInitialized();
+        S.Mail.Changed += Reload;
+        _ = S.Mail.Publish();
+        await Load();
+    }
+    async Task Load() { all = await S.Mail.All(); }
+    void Reload() => InvokeAsync(async () => { await Load(); StateHasChanged(); });
+    void Start() { var k = to.Trim(); if (k.Length > 0) Nav.NavigateTo("messages/" + k); }
+    async Task Send()
+    {
+        busy = true; msg = "Sending (encrypting, then a little proof of work)…"; StateHasChanged();
+        try { await S.Mail.Send(Who!, text); text = ""; msg = null; await Load(); }
+        catch (Exception e) { msg = "Couldn’t send: " + e.Message; }
+        busy = false;
+    }
+    public override void Dispose() { base.Dispose(); S.Mail.Changed -= Reload; }
+}

@@ -43,6 +43,8 @@ public sealed class ClientSession : IAsyncDisposable
     public bool Ready { get; private set; }
     /// <summary>Notifications (shared with the JavaScript page in the browser; system notifications on the phone).</summary>
     public Notifications Notes { get; private set; } = null!;
+    /// <summary>Private messages.</summary>
+    public Mail Mail { get; private set; } = null!;
     static readonly HttpClient http = new() { Timeout = TimeSpan.FromSeconds(10) };
 
     public ClientSession(IClientStore store, string site) { this.store = store; Site = site.TrimEnd('/'); }
@@ -66,6 +68,7 @@ public sealed class ClientSession : IAsyncDisposable
         catch (Exception e) { Log?.Invoke("couldn’t load saved chains: " + e.Message); }
         Engine.Persist = (c, b) => { try { store.SaveBlock(c, (JsonObject)b.DeepClone()); } catch { } Changed?.Invoke(); };
         Notes = new Notifications(this, store); await Notes.Load(); Notes.Start();
+        Mail = new Mail(this, store); Mail.Start();
         Ready = true; Changed?.Invoke();
         online = CancellationTokenSource.CreateLinkedTokenSource(stop.Token);
         _ = Task.Run(() => FindNodes(online));
@@ -160,6 +163,15 @@ public sealed class ClientSession : IAsyncDisposable
         if (!Js.IsTrue(r["ok"])) throw new InvalidOperationException((string?)r["error"] ?? "refused");
         return r["data"] as JsonObject ?? [];
     }
+    /// <summary>A person's name: their channel's (by their identity or a key bound to it), else the start of their key.</summary>
+    public string NameOf(string key) => Engine.Read(e =>
+    {
+        var who = e.Store.Ledger.Resolve(key);
+        var page = e.Store.Chains.Values.FirstOrDefault(c => c != e.Store.Main && c.Owner != null && (c.Owner == who || e.Store.Ledger.Resolve(c.Owner) == who) && (string?)c.Genesis["payload"]?["kind"] == "channel");
+        if (page != null) return (string?)Derived.Of(page).Profile["name"] ?? who[..8];
+        var reg = e.Store.Directory.Values.Where(d => (string?)d.Genesis["author"] is { } a && (a == who || e.Store.Ledger.Resolve(a) == who) && (string?)d.Genesis["payload"]?["kind"] == "channel").Select(d => d.Genesis).FirstOrDefault();
+        return (string?)reg?["payload"]?["name"] ?? who[..Math.Min(8, who.Length)];
+    });
     /// <summary>All your keys (your identity and your channels' keys): public, so a node can tell what's yours.</summary>
     public List<string> MyKeys() { lock (channelKeys) return [Me.pub, .. channelKeys.Select(kv => kv.Key)]; }
 
