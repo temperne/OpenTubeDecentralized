@@ -157,7 +157,7 @@ public sealed class NodeControl(OpenTubeNode node)
                     var chan = (string?)p["channel"];
                     data = new JsonObject
                     {
-                        ["key"] = p["key"]?.DeepClone(), ["port"] = node.Rtmp?.Port, ["ips"] = new JsonArray(LocalIps().Select(x => (JsonNode?)x).ToArray()), ["publicIp"] = null,
+                        ["key"] = p["key"]?.DeepClone(), ["port"] = node.Rtmp?.Port, ["portNote"] = node.Rtmp?.Note, ["ips"] = new JsonArray(LocalIps().Select(x => (JsonNode?)x).ToArray()), ["publicIp"] = null,
                         ["channel"] = chan, ["title"] = p["title"]?.DeepClone(),
                         ["linked"] = chan != null && node.Obs.LinkedChannels().Contains(chan),
                         ["youtube"] = new JsonObject { ["on"] = Js.IsTrue(p["youtube"]?["on"]), ["set"] = !string.IsNullOrEmpty((string?)p["youtube"]?["key"]) }, ["tile"] = p["tile"]?.DeepClone(),

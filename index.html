@@ -5688,7 +5688,7 @@ function liveStudio(chainId) {
       const node = usableNodes('o').find(n => n.node === sess.node), name = node?.info?.name || 'your computer';
       return [h('h3', { style: 'margin-top:0' }, h('span', { class: 'badge live' }, 'LIVE'), ' ', sess.title, h('span', { class: 'sub' }, ` · OBS on ${name}`)),
         h('p', { class: 'sub', style: 'margin-top:0' }, `In OBS on ${name}: Settings → Stream:`),
-        row('Service', 'Custom…'), h('div', { class: 'row', style: 'gap:8px' }, h('span', { style: 'min-width:150px' }, 'Server'), h('code', { class: 'mono', style: 'flex:1' }, 'rtmp://127.0.0.1/live'), h('button', { class: 'small', onclick: () => copyText('rtmp://127.0.0.1/live', 'Server') }, 'Copy')),
+        row('Service', 'Custom…'), h('div', { class: 'row', style: 'gap:8px' }, h('span', { style: 'min-width:150px' }, 'Server'), h('code', { class: 'mono', style: 'flex:1' }, obsLocal(node)), h('button', { class: 'small', onclick: () => copyText(obsLocal(node), 'Server') }, 'Copy')),
         row('Stream Key', 'anything, e.g. opentube'),
         h('p', { class: 'sub' }, 'Settings → Output: an H.264 video encoder (x264 or your GPU’s H.264, not HEVC/AV1), keyframe interval 2 s, AAC audio. Then click Start Streaming. Stop Streaming ends it.'),
         video, state];
@@ -7387,6 +7387,8 @@ const openManagers = new Map();   // node key -> its open file manager (kept whi
 // The group stream on a computer: one switch; everyone connected (your OBS keys, guests' OBS, browser streams sent
 // into it) is combined into one picture laid out by how many there are. The host invites people (temporary access with
 // their own stream key), and can disconnect anyone or cancel an invitation (hang up).
+// OBS on the same computer: its receiver's port (1935, or the one it picked when another program had 1935)
+const obsLocal = (n) => { const p = n?.info?.obs?.port; return `rtmp://127.0.0.1${p && p !== 1935 ? ':' + p : ''}/live`; };
 function guestPanel(n) {   // you were invited to someone's group stream on this computer
   const box = h('div', { class: 'panel', style: 'margin-top:8px;background:var(--panel-2)' });
   box.append(h('span', { class: 'sub' }, 'Loading your invitation…'));
@@ -7518,6 +7520,8 @@ function obsPanel(n, { chainId = null } = {}) {
     box.replaceChildren(h('div', { class: 'row', style: 'justify-content:space-between' }, h('span', {}, h('b', {}, `OBS on ${n.info?.name || 'this computer'}`), ' ', versionBadge(data.version)), st),
       h('p', { class: 'sub', style: 'margin:4px 0' }, 'In OBS: Settings → Stream → Service “Custom…”, then paste the server and the stream key. Use an H.264 encoder, AAC audio, keyframe interval 2 s. Start Streaming goes live on the channel below by itself.'),
       row('Server', h('div', { style: 'flex:1' }, servers.map(u => h('div', { class: 'row', style: 'gap:6px' }, h('code', { class: 'mono', style: 'flex:1' }, u), h('button', { class: 'small', onclick: () => copyText(u, 'Server') }, 'Copy'))))),
+      // 1935 was taken on that computer (another program): it picked another port, already in the addresses above
+      data.portNote ? h('div', { class: 'sub', style: 'margin-top:4px' }, `⚠ ${data.portNote[0].toUpperCase() + data.portNote.slice(1)}. The server addresses above already use port ${data.port}.`) : '',
       // through its public https address (a Cloudflare Tunnel carries web traffic only): a small bridge next to OBS
       n.info?.public ? (() => { const cmd = NODE_COMMAND(location.origin + location.pathname.replace(/\/[^/]*$/, ''), ` --obs-via=${n.info.public}`);
         return row('Through its public address', h('div', { style: 'flex:1' },

@@ -89,6 +89,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
     public async Task StartAsync()
     {
         Directory.CreateDirectory(Options.DataDir);
+        await Processes.StopEarlier(Options.DataDir, m => Log("[start] " + m));   // one OpenTube per data folder: an earlier one keeps the ports
         Html = File.ReadAllText(Path.Combine(SiteDir, "index.html"));
         Build = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(Html)))[..12];
         Version = Network.VersionOf(Html);
@@ -158,7 +159,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
             Obs = new ObsLive(this);
             if (OwnerUser != null) { var p = Obs.ProfileOf(OwnerUser); Log($"[obs] stream key for the owner: {(string?)p["key"]}"); }
             Obs.Save();
-            Rtmp = new RtmpServer(Options.ObsPort, Obs.OnPublish, Log); Rtmp.Start();
+            Rtmp = new RtmpServer(Options.ObsPort, Obs.OnPublish, Log, Path.Combine(Options.DataDir, "obs-port.txt")); Rtmp.Start();
         }
 
         // control from the site (Devices): signed commands routed to this node, answered with signed replies
@@ -373,7 +374,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
                     ["registered"] = e.Store.Directory.Count, ["pending"] = e.Store.Mempool.Count, ["chains"] = e.Store.Chains.Count, ["nodes"] = e.Nodes.Count, ["mining"] = e.Mining,
                     ["ranker"] = (string?)rankerGenesis?["hash"], ["memberships"] = e.Memberships.Count, ["rejected"] = new JsonObject(e.Store.Rejected.Select(kv => new KeyValuePair<string, JsonNode?>(kv.Key, kv.Value))),
                 });
-                if (Rtmp != null) s["obs"] = new JsonObject { ["linked"] = new JsonArray((Obs?.LinkedChannels() ?? []).Select(c => (JsonNode?)c).ToArray()), ["port"] = Rtmp.Port, ["live"] = Rtmp.Live > 0, ["bytes"] = Rtmp.Bytes, ["stage"] = Rtmp.LastStage, ["keyInterval"] = Rtmp.KeyInterval, ["error"] = Rtmp.Error };
+                if (Rtmp != null) s["obs"] = new JsonObject { ["linked"] = new JsonArray((Obs?.LinkedChannels() ?? []).Select(c => (JsonNode?)c).ToArray()), ["port"] = Rtmp.Port, ["note"] = Rtmp.Note, ["live"] = Rtmp.Live > 0, ["bytes"] = Rtmp.Bytes, ["stage"] = Rtmp.LastStage, ["keyInterval"] = Rtmp.KeyInterval, ["error"] = Rtmp.Error };
                 s["tracker"] = Tracker.Stats(); s["live"] = Hub.Stats();
                 var own = Hub.Live(); foreach (var x in own) if (x is JsonObject xo) xo["hub"] = PublicUrl != null ? NodeKey : null;
                 foreach (var x in Coord?.PadStreams() ?? []) if (!own.Any(y => (string?)y?["stream"] == (string?)x["stream"])) own.Add(x);
@@ -428,7 +429,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
                 // who this computer is shared with: their permissions as letters (o: OBS, h: hosting, m: managing; g: a guest)
                 ["users"] = new JsonObject(((Obs?.Store["users"] as JsonObject) ?? []).Where(kv => !(Js.Num(kv.Value?["until"]) < DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())).Take(20)
                     .Select(kv => new KeyValuePair<string, JsonNode?>(kv.Key, string.Concat((kv.Value?["can"] as JsonArray ?? []).Select(x => ((string?)x ?? " ")[0])) + (kv.Value?["guestOf"] != null ? "g" : "")))),
-                ["obs"] = Rtmp == null ? null : new JsonObject { ["port"] = Rtmp.Port, ["listening"] = Rtmp.Error == null, ["live"] = Rtmp.Live > 0, ["error"] = Rtmp.Error },
+                ["obs"] = Rtmp == null ? null : new JsonObject { ["port"] = Rtmp.Port, ["note"] = Rtmp.Note, ["listening"] = Rtmp.Error == null, ["live"] = Rtmp.Live > 0, ["error"] = Rtmp.Error },
                 ["busy"] = Update?.Busy(), ["enc"] = Flashes?.EncPub, ["publicIp"] = await PublicIpCached(),
                 ["watching"] = new JsonObject(LiveStats.Where(kv => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - (Js.Num(kv.Value["at"]) ?? 0) < 60000).Take(10)
                     .Select(kv => new KeyValuePair<string, JsonNode?>(kv.Key[..12], new JsonArray(Js.Num(kv.Value["viewers"]) ?? 0, Js.Num(kv.Value["quality"]?["poor"]) ?? 0, Js.Num(kv.Value["quality"]?["n"]) ?? 0, Js.Num(kv.Value["quality"]?["kbps"]))))),
