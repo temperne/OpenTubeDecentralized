@@ -439,6 +439,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
             if (Options.FlashParent != null) info["flash"] = new JsonObject { ["parent"] = Options.FlashParent, ["tag"] = Options.FlashTag };
             if (Flashes?.People > 0) info["flashes"] = Flashes.People;
             info["push"] = true;   // it can notify your devices (Web Push)
+            if (Push != null) info["notify"] = Push.NotifyKey;   // senders of private messages make hints with it (MailHints)
             try { Engine.PublishNodeInfo(new JsonObject { ["grant"] = JsonNode.Parse(grantJson), ["roles"] = JsonSerializer.SerializeToNode(roles.Take(8).ToList()), ["addrs"] = JsonSerializer.SerializeToNode(addrs.Take(8).ToList()), ["info"] = info }); }
             catch (Exception e) { Log("announce failed: " + e.Message); }
             var wake = new TaskCompletionSource(); announceWake = wake;

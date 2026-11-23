@@ -11,7 +11,7 @@ const until = async (p, fn, arg, ms = 120000) => { const t0 = Date.now(); while 
 const SITE = W + '/site'; fs.mkdirSync(SITE); for (const f of ['index.html', 'sw.js']) fs.copyFileSync(path.join(REPO, f), path.join(SITE, f)); fs.writeFileSync(SITE + '/seeds.json', '{"entry":[]}');
 let P, lines = []; const start = (grant) => {
   P = spawn('dotnet', [REPO + '/dotnet/OpenTube.App/bin/Debug/net10.0/opentube.dll', '--service', `--port=${N}`, `--data=${W}/node`, `--videos=${W}/videos`, '--mine=all', '--no-tunnel', '--public=off', '--no-ranking', '--no-mesh', `--obs-port=${RT}`, '--site-dir=' + SITE, ...(grant ? ['--grant=' + grant] : [])], { env: { ...process.env, PAY_DEBUG: '1' } });
-  P.stdout.on('data', d => { for (const l of String(d).split('\n')) { lines.push(l); if (/\[host\]|\[obs\]|\[pay|\[live\]|rror|fail/.test(l)) log('[C#]', l.trim().replace(/^\d\d:\d\d:\d\d /, '').slice(0, 170)); } });
+  P.stdout.on('data', d => { for (const l of String(d).split('\n')) { lines.push(l); if (/\[host\]|\[obs\]|\[pay|\[live\]|\[push|rror|fail/.test(l)) log('[C#]', l.trim().replace(/^\d\d:\d\d:\d\d /, '').slice(0, 170)); } });
   for (let i = 0; i < 60; i++) { try { execSync(`curl -sf localhost:${N}/status`); return; } catch { execSync('sleep 0.5'); } } };
 let fail = 0; const check = (ok, what) => { log(ok ? 'ok  ' : 'FAIL', what); if (!ok) fail = 1; };
 (async () => {
@@ -56,5 +56,22 @@ let fail = 0; const check = (ok, what) => { log(ok ? 'ok  ' : 'FAIL', what); if 
   await new Promise(r => ff.on('exit', r)); await new Promise(r => setTimeout(r, 1500));
   check(lines.some(l => /old-phone|push address is gone/.test(l)) || lines.some(l => /test phone’s push address is gone/.test(l)), 'a push address that’s gone (410) is forgotten');
   const again = await reg('phone', PS + '/push/abc'); check(again?.registered, 'registering again (new settings) replaces it');
+  // a private message: someone else writes to you; your computer recognizes it by its hint and pushes, without reading it
+  await A.evaluate(() => opentube.mail.publishKeys());
+  const B = await open('B', Q + '#/');
+  await until(B, (u) => (opentube.engine.ledger.msgkeys.get(u) || []).length > 0 && [...opentube.engine.nodes.values()].some(n => n.grant?.user === u && n.info?.notify), user, 120000).catch(() => log('B never saw the messaging key or the notify key'));
+  const before = got.length;
+  const ts0 = Date.now(); await B.evaluate((u) => opentube.mail.send(u, 'hello, this is private'), user); log('sending took', ((Date.now() - ts0) / 1000).toFixed(1), 's');
+  const tm = Date.now(); for (let i = 0; i < 300 && !got.slice(before).some(g => g.path === '/push/abc'); i++) await new Promise(r => setTimeout(r, 500));
+  log('the message push came after', ((Date.now() - tm) / 1000).toFixed(1), 's');
+  const mp = got.slice(before).find(g => g.path === '/push/abc');
+  let mm = null; try { mm = mp && JSON.parse(ece.decrypt(mp.body, { version: 'aes128gcm', privateKey: dev, authSecret: auth })); } catch {}
+  check(mm?.type === 'message' && mm.text === 'You have a new private message' && mm.href === '#/messages', `a private message to you: your computer pushes “${mm?.text}” (it found its hint; it can’t read the message)`);
+  const blk = await B.evaluate(() => [...opentube.engine.chains.values()].filter(c => c.genesis.payload.kind === 'mail').flatMap(c => [...c.blocks.values()]).find(b => b.payload.type === 'msg')?.payload);
+  check(blk && blk.hints?.length === 3 && !JSON.stringify(blk).includes('hello') && !JSON.stringify(blk).includes(user), 'on the chain: 3 hints (padded), no text and no recipient in the clear');
+  await A.evaluate(() => opentube.mail.inbox());   // (opens the month's message chain: it loads from the network)
+  for (let i = 0; i < 40 && !(await A.evaluate(async () => (await opentube.mail.inbox()).length)); i++) await new Promise(r => setTimeout(r, 500));
+  const inbox = await A.evaluate(async () => (await opentube.mail.inbox()).map(m => m.text));
+  check(inbox.includes('hello, this is private'), 'you can read it (with your messaging key, on your own device)');
   ps.close(); for (const c of ctxs) await c.close(); P.kill(); process.exit(fail);
 })().catch(e => { console.error(e); P?.kill(); process.exit(1); });

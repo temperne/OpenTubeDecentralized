@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using OpenTube.Client;
 using OpenTube.Core;
+using static OpenTube.Core.Js;
 
 namespace OpenTube.Node;
 
@@ -17,7 +18,9 @@ namespace OpenTube.Node;
 public sealed class NodePush
 {
     readonly OpenTubeNode node; readonly string file;
-    readonly byte[] vapidPub, vapidPriv;
+    readonly byte[] vapidPub, vapidPriv, notifyPub, notifyPriv;
+    /// <summary>The notify key senders of private messages make hints with (published in this node's status).</summary>
+    public string NotifyKey => B64u.Encode(notifyPub);
     readonly object gate = new();
     readonly Dictionary<string, Device> devices = [];   // device id -> registration
     public string VapidKey => B64u.Encode(vapidPub);
@@ -54,6 +57,8 @@ public sealed class NodePush
         JsonObject? saved = null; try { if (File.Exists(file)) saved = JsonNode.Parse(File.ReadAllText(file)) as JsonObject; } catch { }
         if ((string?)saved?["vapid"]?["pub"] is { } vp && (string?)saved?["vapid"]?["priv"] is { } vk) { vapidPub = B64u.Decode(vp); vapidPriv = B64u.Decode(vk); }
         else (vapidPub, vapidPriv) = WebPush.NewKeys();
+        if ((string?)saved?["notify"]?["pub"] is { } np && (string?)saved?["notify"]?["priv"] is { } nk) { notifyPub = B64u.Decode(np); notifyPriv = B64u.Decode(nk); }
+        else (notifyPub, notifyPriv) = WebPush.NewKeys();
         foreach (var d in (saved?["devices"] as JsonArray ?? []).OfType<JsonObject>())
             try
             {
@@ -72,7 +77,19 @@ public sealed class NodePush
     public void Start()
     {
         lock (gate) foreach (var d in devices.Values) _ = Attach(d);
+        node.Engine.Store.BlockAdded += (c, b) => { try { OnMail(c, b); } catch { } };
         _ = Task.Run(async () => { while (true) { await Task.Delay(TimeSpan.FromMinutes(10)); Warm(); } });
+        // messages: while there are devices to notify, ask peers for this month's messages often (the node waits, not the phone)
+        _ = Task.Run(async () =>
+        {
+            while (true)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(15));
+                if (Count == 0) continue;
+                foreach (var m in Months().Take(1))
+                    if (Str(ChainStore.SquareGenesis(m, "mail")["hash"]) is { } mid && node.Engine.OpenChain(mid) is { } mc) node.Engine.RequestChain(mc);
+            }
+        });
     }
     async Task Attach(Device d)
     {
@@ -85,9 +102,29 @@ public sealed class NodePush
         notes.Start(); d.Notes = notes;
         Warm(d);
     }
-    /// <summary>The device's subscriptions stay loaded here (asked for from peers when they aren't).</summary>
+    // ---- private messages: the hints (see MailHints) tell this node a message is for its person
+    static IEnumerable<string> Months() { var now = DateTime.UtcNow; return [now.ToString("yyyy-MM"), now.AddMonths(-1).ToString("yyyy-MM")]; }
+    void OnMail(Chain c, JsonObject b)
+    {
+        if ((string?)c.Genesis["payload"]?["kind"] != "mail" || b["payload"] is not JsonObject p || (string?)p["type"] != "msg" || p["hints"] is not JsonArray hints) return;
+        if ((Js.Num(b["ts"]) ?? 0) < DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - 2 * 3600000) return;   // (catching up on old ones: no)
+        if ((string?)p["eph"] is not { } eph || (string?)p["salt"] is not { } salt) return;
+        var secret = WebPush.Ecdh(notifyPriv, notifyPub, B64u.Decode(eph));
+        var want = hints.Select(h => (string?)h).OfType<string>().Take(MailHints.Count).ToHashSet();
+        List<Device> ds; lock (gate) ds = [.. devices.Values];
+        foreach (var user in ds.Select(d => d.User).Distinct())
+        {
+            if (!want.Contains(MailHints.Of(secret, salt, user))) continue;
+            var n = new Notifications.Note("msg:" + (string?)b["hash"], "message", "You have a new private message", "#/messages", null, Js.Num(b["ts"]) ?? 0, false);
+            foreach (var d in ds.Where(d => d.User == user && d.Notes?.TypeOn("message") != false)) _ = Send(d, n);
+        }
+    }
+
+    /// <summary>The device's subscriptions stay loaded here (asked for from peers when they aren't), and this month's messages.</summary>
     void Warm(Device? only = null)
     {
+        foreach (var m in Months())
+            if (Str(ChainStore.SquareGenesis(m, "mail")["hash"]) is { } mid && node.Engine.OpenChain(mid) is { } mc) node.Engine.RequestChain(mc);
         List<Device> ds; lock (gate) ds = only != null ? [only] : [.. devices.Values];
         foreach (var d in ds) foreach (var ch in d.Notes?.Subscribed ?? [])
             if (Js.IsHex(ch, 64) && node.Engine.OpenChain(ch) is { } c) node.Engine.RequestChain(c);

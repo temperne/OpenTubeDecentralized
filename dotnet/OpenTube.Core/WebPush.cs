@@ -24,7 +24,7 @@ public static class WebPush
     {
         Curve = ECCurve.NamedCurves.nistP256, Q = new ECPoint { X = pub[1..33], Y = pub[33..65] }, D = priv,
     };
-    static byte[] Ecdh(byte[] myPriv, byte[] myPub, byte[] theirPub)
+    public static byte[] Ecdh(byte[] myPriv, byte[] myPub, byte[] theirPub)
     {
         using var me = ECDiffieHellman.Create(Params(myPub, myPriv));
         using var them = ECDiffieHellman.Create(Params(theirPub));
@@ -85,5 +85,26 @@ public static class WebPush
         req.Headers.TryAddWithoutValidation("Authorization", Vapid(endpoint, vapidPub, vapidPriv, subject));
         using var r = await http.SendAsync(req);
         return (int)r.StatusCode;
+    }
+}
+
+/// <summary>
+/// Telling a node "this private message is for your person" without telling anyone else. A message's recipient is
+/// hidden (only their messaging key recognizes its tag, and that key also reads it, so it never leaves their devices).
+/// Each node publishes a NOTIFY key (P-256) in its signed status; a sender adds, for each of the recipient's nodes, a
+/// hint: sha256("opentube-mail-hint:" + hex(ECDH(one-time key, notify key)) + ":" + salt + ":" + recipient)[..32 hex].
+/// Only that node (holding the notify key's private half) can recompute it: it learns the message is for its person,
+/// and can push them a notification; it can't read the message, and nobody else can tell whom it's for. Senders pad
+/// the hints to three with random ones, so their number says nothing.
+/// </summary>
+public static class MailHints
+{
+    public const int Count = 3;
+    public static string Of(byte[] ecdhSecret, string salt, string recipient) =>
+        Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes("opentube-mail-hint:" + Convert.ToHexStringLower(ecdhSecret) + ":" + salt + ":" + recipient)))[..32];
+    /// <summary>On a node: the hint this message would carry for <paramref name="recipient"/>, from its one-time key.</summary>
+    public static string? For(string ephB64u, string salt, string recipient, byte[] notifyPub, byte[] notifyPriv)
+    {
+        try { return Of(WebPush.Ecdh(notifyPriv, notifyPub, B64u.Decode(ephB64u)), salt, recipient); } catch { return null; }
     }
 }

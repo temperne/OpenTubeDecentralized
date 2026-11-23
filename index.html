@@ -4766,7 +4766,14 @@ async function sendMessage(to, text) {
   const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, ck, new TextEncoder().encode(JSON.stringify(body)));
   const chain = mailChain(monthKey(at));
   const throwaway = await makeSigner(await newIdentity());   // the block is signed by a key used once, not by you
-  await append(chain.id, { type: 'msg', tag: await tagFor(secret, salt), salt, eph: ephPub, iv: b64u.enc(iv), ct: b64u.enc(ct) }, undefined, throwaway);
+  // hints for the recipient's computers (MailHints): each can tell the message is for its person and push them a
+  // notification, without being able to read it; nobody else can tell whom it's for. Padded to 3.
+  const rid = E.ledger.resolve(to), hints = [];
+  for (const n of [...E.nodes.values()].filter(n => (n.grant?.user === rid || typeof n.info?.users?.[rid] === 'string') && typeof n.info?.notify === 'string').sort((a, b) => b.at - a.at).slice(0, 3))
+    try { hints.push((await sha256hex('opentube-mail-hint:' + hexOfBuf(await secretFor(eph.privateKey, n.info.notify)) + ':' + salt + ':' + rid)).slice(0, 32)); } catch {}
+  while (hints.length < 3) hints.push(hexOfBuf(crypto.getRandomValues(new Uint8Array(16))));
+  hints.sort();
+  await append(chain.id, { type: 'msg', tag: await tagFor(secret, salt), salt, eph: ephPub, iv: b64u.enc(iv), ct: b64u.enc(ct), hints }, undefined, throwaway);
   const sent = (await kv.get('sentMessages')) || []; sent.push(body); await kv.set('sentMessages', sent.slice(-2000));   // your own copy stays in this browser
 }
 const mailChain = (m) => { const id = E.squareId(m, 'mail'); if (!id) return null; const fresh = !chains.has(id); const c = openChain(id); if (fresh) E.requestChain(c); return c; };
@@ -7955,7 +7962,7 @@ $('#terms-ok').onclick = () => { try { localStorage.setItem('opentube-terms', '1
 render(true);
 window.addEventListener('beforeunload', (e) => { if (E.miner || hosting.size) { e.preventDefault(); e.returnValue = ''; } });
 // Exposed for debugging in the console.
-window.opentube = { me, signerFor, engine: E, net, wt, meet: { seen: meetSeen, check: checkMeetPlaces, places: meetPlaces }, live: { broadcasts, viewing, hub: liveNet, liveStale, liveWhy }, nodeCtl, trackers: TRACKERS, diag, stale: { videoGone, checkVideos, scrape, vidSeen, vidChecked }, update: { check: checkPageUpdate, busy: pageBusy } };
+window.opentube = { me, signerFor, engine: E, net, wt, mail: { send: sendMessage, publishKeys: publishMsgKeys, inbox: readInbox }, meet: { seen: meetSeen, check: checkMeetPlaces, places: meetPlaces }, live: { broadcasts, viewing, hub: liveNet, liveStale, liveWhy }, nodeCtl, trackers: TRACKERS, diag, stale: { videoGone, checkVideos, scrape, vidSeen, vidChecked }, update: { check: checkPageUpdate, busy: pageBusy } };
 
 // ---------------------------------------------------------------- connect
 if (params.get('net') === 'local') startLocal();
