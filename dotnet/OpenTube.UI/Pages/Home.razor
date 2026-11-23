@@ -1,0 +1,18 @@
+@page "/"
+@inherits Live
+<h2>Newest videos</h2>
+@if (!S.Ready) { <p class="sub">Starting…</p> }
+else
+{
+    var vids = Videos();
+    if (vids.Count == 0) { <p class="sub">No videos loaded yet. Open a channel from <a href="explore">Explore</a>, or wait while this page connects to the network (@S.Peers node@(S.Peers == 1 ? "" : "s") so far).</p> }
+    <div class="grid">
+        @foreach (var (chain, name, b) in vids) { <VideoCard Chain="@chain" Block="b" ChannelName="@name" /> }
+    </div>
+}
+@code {
+    List<(string Chain, string Name, JsonObject Block)> Videos() => S.Engine.Read(e => e.Store.Chains.Values
+        .Where(c => c != e.Store.Main && (string?)c.Genesis["payload"]?["kind"] == "channel")
+        .SelectMany(c => { var d = Derived.Of(c); return d.Videos.Select(v => (c.Id, (string?)d.Profile["name"] ?? c.Id[..8], (JsonObject)v.DeepClone())); })
+        .OrderByDescending(x => Js.Num(x.Item3["ts"])).Take(60).ToList());
+}

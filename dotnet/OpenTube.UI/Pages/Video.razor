@@ -1,0 +1,29 @@
+@page "/v/{Chain}/{Hash}"
+@inherits Live
+@inject IVideoPlayer Player
+@{ var d = S.Chain(Chain); var v = d?.Videos.FirstOrDefault(x => (string?)x["hash"] == Hash); }
+@if (v == null) { <p class="sub">Loading this video from the network…</p> }
+else
+{
+    var p = v["payload"]!;
+    <div class="player" id="player-@Hash"></div>
+    <h2>@((string?)p["title"])</h2>
+    <div class="sub"><a href="c/@Chain">@((string?)d!.Profile["name"])</a> · @Bytes(Js.Num(p["size"]) ?? 0) · @Ago(Js.Num(v["ts"]) ?? 0)</div>
+    <p class="desc">@((string?)p["desc"])</p>
+    <div class="sub mono">infohash @((string?)p["infohash"])</div>
+    @if (status != null) { <div class="sub">@status</div> }
+}
+@code {
+    [Parameter] public string Chain { get; set; } = ""; [Parameter] public string Hash { get; set; } = "";
+    string? status; string? started;
+    protected override async Task OnAfterRenderAsync(bool first)
+    {
+        var v = S.Chain(Chain)?.Videos.FirstOrDefault(x => (string?)x["hash"] == Hash);
+        if (v == null || started == Hash) return;
+        started = Hash;
+        var p = v["payload"]!;
+        status = "Finding peers for this video…"; StateHasChanged();
+        status = await Player.Play("player-" + Hash, (string)p["infohash"]!, (string?)p["file"] ?? "video.mp4", Js.Num(p["size"]) ?? 0, s => { status = s; InvokeAsync(StateHasChanged); });
+        StateHasChanged();
+    }
+}

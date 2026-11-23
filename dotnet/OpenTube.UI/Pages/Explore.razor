@@ -1,0 +1,20 @@
+@page "/explore"
+@inherits Live
+<h2>Explore</h2>
+<input class="search" placeholder="Search channels and lists" @bind="q" @bind:event="oninput" />
+@if (!S.Ready) { <p class="sub">Starting…</p> }
+else
+{
+    var list = S.Directory().Where(c => string.IsNullOrWhiteSpace(q) || c.Name.Contains(q, StringComparison.OrdinalIgnoreCase) || c.About.Contains(q, StringComparison.OrdinalIgnoreCase)).OrderBy(c => c.Name).ToList();
+    <p class="sub">@list.Count registered channels and lists</p>
+    <div class="list">
+        @foreach (var c in list)
+        {
+            <a class="row-item" href="c/@c.Id">
+                @if (c.Avatar is { Length: > 0 }) { <img class="avatar" src="@c.Avatar" alt="" /> } else { <span class="avatar empty">@c.Name[..1]</span> }
+                <span><b>@c.Name</b> <span class="badge">@c.Kind</span><br /><span class="sub">@c.About</span></span>
+            </a>
+        }
+    </div>
+}
+@code { string q = ""; }

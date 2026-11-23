@@ -1,0 +1,23 @@
+@inherits LayoutComponentBase
+@implements IDisposable
+@inject ClientSession S
+<header class="top">
+    <a class="logo" href="">Open<span>Tube</span></a>
+    <nav>
+        <NavLink href="" Match="NavLinkMatch.All">Home</NavLink>
+        <NavLink href="explore">Explore</NavLink>
+        <NavLink href="you">You</NavLink>
+    </nav>
+    <div class="net">
+        <span class="dot @(S.Peers > 0 ? "on" : "")"></span>@(S.Peers) node@(S.Peers == 1 ? "" : "s")
+        @if (S.Ready) { <span class="sub"> · main #@S.MainBest["height"]</span> }
+        <span class="badge">C# · WebAssembly</span>
+    </div>
+</header>
+<main>@Body</main>
+@code {
+    protected override void OnInitialized() => S.Changed += Poke;
+    bool pending;
+    void Poke() { if (pending) return; pending = true; _ = InvokeAsync(async () => { await Task.Delay(500); pending = false; StateHasChanged(); }); }
+    public void Dispose() => S.Changed -= Poke;
+}

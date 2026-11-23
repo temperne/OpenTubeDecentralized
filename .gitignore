@@ -9,3 +9,6 @@ dotnet/OpenTube.Tests/torrent-interop/node_modules/
 dotnet/OpenTube.Tests/torrent-interop/files/
 dotnet/OpenTube.Tests/torrent-interop/out/
 dotnet/OpenTube.Tests/torrent-interop/*.out
+cloudflare/web-out/
+dotnet/app-web/
+app-web/

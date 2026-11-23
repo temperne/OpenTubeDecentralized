@@ -1,0 +1,6 @@
+<Router AppAssembly="@typeof(OpenTube.UI.Layout.MainLayout).Assembly">
+    <Found Context="routeData">
+        <RouteView RouteData="@routeData" DefaultLayout="@typeof(MainLayout)" />
+    </Found>
+    <NotFound><LayoutView Layout="@typeof(MainLayout)"><p>Nothing here.</p></LayoutView></NotFound>
+</Router>

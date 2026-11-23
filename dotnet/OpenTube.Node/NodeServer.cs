@@ -144,6 +144,22 @@ public sealed partial class NodeServer : IAsyncDisposable
             }
             await next();
         });
+        // the C# website (WebAssembly), next to the JavaScript page until it replaces it: /app/ (WebApp finds or builds it)
+        var types = new Microsoft.AspNetCore.StaticFiles.FileExtensionContentTypeProvider();
+        types.Mappings[".wasm"] = "application/wasm"; types.Mappings[".dat"] = "application/octet-stream"; types.Mappings[".blat"] = "application/octet-stream"; types.Mappings[".webcil"] = "application/octet-stream";
+        app.Use(async (ctx, next) =>
+        {
+            var p = ctx.Request.Path.Value ?? "";
+            if (p != "/app" && !p.StartsWith("/app/") || Node.Web.Root is not { } root || !HttpMethods.IsGet(ctx.Request.Method) && !HttpMethods.IsHead(ctx.Request.Method)) { await next(); return; }
+            if (p == "/app") { ctx.Response.Redirect("/app/"); return; }
+            var file = Path.GetFullPath(Path.Combine(root, Uri.UnescapeDataString(p[5..])));
+            if (!file.StartsWith(root) || !File.Exists(file)) file = root + "index.html";   // its pages are routes of index.html
+            if (!types.TryGetContentType(file, out var type)) type = "application/octet-stream";
+            if (type.StartsWith("text/") || type.EndsWith("javascript")) type += "; charset=utf-8";
+            ctx.Response.ContentType = type;
+            ctx.Response.Headers.CacheControl = file.EndsWith("index.html") ? "no-cache" : "max-age=300";
+            await ctx.Response.SendFileAsync(file);
+        });
         app.MapGet("/status", () => Results.Text(Node.Status.ToJsonString(), "application/json"));
         app.MapGet("/entries.json", async (HttpContext c) => { c.Response.Headers.CacheControl = "max-age=60"; return Results.Text(await Node.EntriesJsonAsync() ?? "{}", "application/json"); });
         // the website, exactly what the site serves: the page (also for /@channel and /~list links), the service worker,

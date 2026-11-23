@@ -1,0 +1,38 @@
+@page "/you"
+@inherits Live
+<h2>You</h2>
+@if (S.Ready)
+{
+    <div class="panel">
+        <div><b>Your user ID</b></div>
+        <div class="mono">@S.Me.pub</div>
+        <div class="sub">Coins: @((S.Balance(S.Me.pub) / 100).ToString("0.00")) · this key lives in this browser (the same one the JavaScript page used here)</div>
+    </div>
+    <div class="panel">
+        <h3>Create a channel</h3>
+        <input placeholder="Name" @bind="name" maxlength="60" />
+        <input placeholder="About (optional)" @bind="about" maxlength="500" />
+        <button class="primary" disabled="@busy" @onclick="Create">Create &amp; register</button>
+        @if (msg != null) { <div class="sub">@msg</div> }
+    </div>
+    <div class="panel">
+        <h3>Your channels</h3>
+        @foreach (var c in S.Directory().Where(c => S.IsMine(c.Owner))) { <div><a href="c/@c.Id">@c.Name</a> <span class="badge">@c.Kind</span></div> }
+    </div>
+}
+@code {
+    string name = "", about = ""; string? msg; bool busy;
+    async Task Create()
+    {
+        if (string.IsNullOrWhiteSpace(name)) { msg = "Give it a name"; return; }
+        busy = true; msg = "Registering: proof of work on the main chain (a few seconds to a minute)…"; StateHasChanged();
+        try
+        {
+            var payload = new JsonObject { ["type"] = "genesis", ["kind"] = "channel", ["name"] = name.Trim(), ["about"] = about.Trim(), ["avatar"] = "", ["comments"] = "anyone" };
+            var g = await S.CreateChannel(payload);
+            msg = "Registered. Opening it…"; Nav.NavigateTo("c/" + (string)g["hash"]!);
+        }
+        catch (Exception e) { msg = "Couldn’t create it: " + e.Message; }
+        busy = false;
+    }
+}

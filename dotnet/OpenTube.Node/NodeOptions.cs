@@ -9,6 +9,8 @@ public sealed class NodeOptions
     public string DataDir { get; set; } = DefaultDataDir();
     /// <summary>The website it serves (index.html and its files). Default: the folder above, or next to the program.</summary>
     public string? SiteDir { get; set; }
+    /// <summary>The C# website (the published OpenTube.Web, its wwwroot), served at /app/: --app-dir=DIR, default SITE/app.</summary>
+    public string? AppDir { get; set; }
     /// <summary>Other nodes to connect to (ws://host:port/ot), e.g. an entry node or a friend's IP address.</summary>
     public List<string> Peers { get; set; } = [];
     /// <summary>Proof of work for registrations: "own" (this node's own), "all" (everyone's, like a home node), "off".</summary>
@@ -73,6 +75,7 @@ public sealed class NodeOptions
         if (int.TryParse(Get("port", "PORT"), out var port)) o.Port = port;
         o.DataDir = Get("data", "DATA_DIR") ?? o.DataDir;
         o.SiteDir = Get("site-dir", "SITE_DIR");
+        o.AppDir = Get("app-dir", "APP_DIR");
         o.Peers = (Get("peers", "PEERS") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(NormalizePeer).ToList();
         o.Mine = Get("mine", "MINE") ?? o.Mine;
         o.Grant = Get("grant", "NODE_GRANT");

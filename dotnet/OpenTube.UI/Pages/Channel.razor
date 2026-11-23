@@ -1,0 +1,24 @@
+@page "/c/{Id}"
+@inherits Live
+@{ var d = S.Chain(Id); var g = S.Genesis(Id); }
+@if (d == null)
+{
+    <h2>@((string?)g?["payload"]?["name"] ?? "Channel")</h2>
+    <p class="sub">Loading this channel from the network…</p>
+}
+else
+{
+    <div class="channel-head">
+        @if ((string?)d.Profile["avatar"] is { Length: > 0 } av) { <img class="avatar big" src="@av" alt="" /> }
+        <div>
+            <h2>@((string?)d.Profile["name"])</h2>
+            <div class="sub">@d.Kind · @d.Videos.Count videos @(d.LiveNow.Count > 0 ? " · LIVE now" : "")</div>
+            <p>@((string?)d.Profile["about"])</p>
+        </div>
+    </div>
+    @if (d.LiveNow.Count > 0) { <div class="live-banner">🔴 Live: @((string?)d.LiveNow[0]["payload"]?["title"])</div> }
+    <div class="grid">
+        @foreach (var v in d.Videos.OrderByDescending(v => Js.Num(v["ts"]))) { <VideoCard Chain="@Id" Block="(JsonObject)v.DeepClone()" ChannelName="@((string?)d.Profile["name"])" /> }
+    </div>
+}
+@code { [Parameter] public string Id { get; set; } = ""; }

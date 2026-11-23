@@ -42,6 +42,12 @@ export default {
     }
     // Username links (/@channel, /~list) open the page, which looks the name up on the main chain.
     if (/^\/[@~][A-Za-z0-9._-]{3,30}\/?$/.test(url.pathname)) return env.ASSETS.fetch(new Request(new URL('/', url), request));
+    // the C# website (WebAssembly) at /app/: its pages are routes of app/index.html
+    if (url.pathname === '/app') return Response.redirect(url.origin + '/app/', 302);
+    if (url.pathname.startsWith('/app/')) {
+      const r = await env.ASSETS.fetch(request);
+      return r.status === 404 ? env.ASSETS.fetch(new Request(new URL('/app/index.html', url), request)) : r;
+    }
     return env.ASSETS.fetch(request);
   }
 };

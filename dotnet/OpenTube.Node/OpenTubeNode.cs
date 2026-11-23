@@ -182,6 +182,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
         _ = Task.Run(CloseLeftOpen);
         Coord = new Coordination(this); _ = Task.Run(() => Coord.Run(stop.Token));
         Update = new Updater(this); _ = Task.Run(() => Update.Run(stop.Token));
+        Web = new WebApp(this); _ = Task.Run(Web.EnsureBuilt);
         Earn = new Earnings(this) { PendingTabs = Hosting != null ? Hosting.Tabs.Pending : null }; _ = Task.Run(() => Earn.Run(stop.Token));
         if (Hosting != null) _ = Task.Run(async () =>
         {
@@ -469,6 +470,8 @@ public sealed class OpenTubeNode : IAsyncDisposable
     public Host? Hosting { get; private set; }
     public Earnings? Earn { get; private set; }
     public Updater? Update { get; private set; }
+    /// <summary>The C# website (WebAssembly) this node serves at /app/.</summary>
+    public WebApp Web { get; private set; } = null!;
     public Coordination? Coord { get; private set; }
     public Flash? Flashes { get; private set; }
     /// <summary>The hubs' latest viewer counts for streams this computer sends or relays (stream -> message), for "watching" in its status.</summary>
