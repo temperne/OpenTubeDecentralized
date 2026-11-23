@@ -163,3 +163,41 @@ public class ChainStoreTests
     }
     static string? Str(JsonNode? n) => Js.Str(n);
 }
+
+// derive(): chain state from the same blocks, summarised identically, compared with the JavaScript's
+public class DeriveTests
+{
+    static JsonArray Arr(IEnumerable<string> s) => new(s.Select(x => (JsonNode?)x).ToArray());
+    static JsonArray Sorted(IEnumerable<string> s) => Arr(s.Order(StringComparer.Ordinal));
+    static JsonArray Hashes(IEnumerable<JsonObject> bs) => Arr(bs.Select(b => (string)b["hash"]!));
+    static JsonObject O<T>(IEnumerable<KeyValuePair<string, T>> kv, Func<T, JsonNode?> f) { var o = new JsonObject(); foreach (var (k, v) in kv) o[k] = f(v); return o; }
+
+    [Fact]
+    public void Derive_agrees_with_javascript()
+    {
+        var P = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "../../../data/payload.json")))!;
+        foreach (var x in JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "../../../data/derive.json")))!.AsArray())
+        {
+            var spec = P["chains"]![(int)x!["chain"]!]!; var g = spec["genesis"]!.AsObject();
+            var ch = new Chain((string)g["hash"]!, g);
+            foreach (var b in x["blocks"]!.AsArray()) ch.Add(b!.AsObject());
+            var d = Derived.Of(ch, (double)x["now"]!);
+            var keys = x["keys"]!.AsArray().Select(k => (string)k!).ToList(); var targets = x["targets"]!.AsArray().Select(t => (string)t!).ToList();
+            var s = new JsonObject
+            {
+                ["kind"] = d.Kind, ["owner"] = d.Owner, ["byOwner"] = Sorted(d.ByOwner), ["relays"] = Sorted(d.Relays), ["profile"] = d.Profile.DeepClone(), ["allowed"] = Sorted(d.Allowed), ["revoked"] = Sorted(d.Revoked), ["hidden"] = Sorted(d.Hidden),
+                ["videos"] = Hashes(d.Videos), ["posts"] = Hashes(d.Posts), ["sealed"] = Hashes(d.Sealed), ["adds"] = Hashes(d.Adds), ["ads"] = Hashes(d.Ads), ["sponsors"] = Hashes(d.Sponsors),
+                ["streams"] = Hashes(d.Streams), ["liveNow"] = Hashes(d.LiveNow),
+                ["liveEnds"] = O(d.LiveEnds, v => v), ["liveNext"] = O(d.LiveNext, v => v?.DeepClone()), ["liveStats"] = O(d.LiveStats, v => v?.DeepClone()), ["recordings"] = O(d.Recordings, b => (string)b["hash"]!), ["nodeRecs"] = O(d.NodeRecs, v => v.DeepClone()),
+                ["votes"] = O(d.Votes, v => new JsonObject { ["up"] = v.Up, ["down"] = v.Down, ["by"] = O(v.By, n => n), ["recent"] = new JsonArray(v.Recent.Select(r => (JsonNode?)new JsonArray(r.Ts, r.V)).ToArray()), ["blocks"] = Hashes(v.Blocks) }),
+                ["policy"] = O(targets.Select(t => new KeyValuePair<string, JsonNode?>(t, d.PolicyFor(t)?.DeepClone())), v => v),
+                ["canComment"] = O(keys.SelectMany(k => targets.Select(t => new KeyValuePair<string, bool>(k + "|" + t, d.CanComment(k, t)))), v => v),
+                ["canPost"] = O(keys.Select(k => new KeyValuePair<string, bool>(k, d.CanPost(k))), v => v),
+                ["comments"] = O(targets.Select(t => new KeyValuePair<string, IEnumerable<JsonObject>>(t, d.CommentsFor(t))), Hashes), ["blockCount"] = d.BlockCount,
+            };
+            var want = JsonNode.Parse((string)x["summary"]!)!.AsObject(); var got = JsonNode.Parse(Blocks.Canon(s))!.AsObject();
+            var diff = want.Select(kv => kv.Key).Where(k => Blocks.Canon(want[k]) != Blocks.Canon(got[k])).ToList();
+            Assert.True(diff.Count == 0, $"{d.Kind}: differs in " + string.Join("; ", diff.Take(4).Select(k => $"{k}\n  JS {Blocks.Canon(want[k])[..Math.Min(300, Blocks.Canon(want[k]).Length)]}\n  C# {Blocks.Canon(got[k])[..Math.Min(300, Blocks.Canon(got[k]).Length)]}")));
+        }
+    }
+}
