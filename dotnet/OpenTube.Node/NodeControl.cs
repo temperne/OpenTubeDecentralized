@@ -36,6 +36,8 @@ public sealed class NodeControl(OpenTubeNode node)
     /// <summary>A routed message for this node: a control command gets a signed answer.</summary>
     public async Task<JsonObject?> OnRoute(JsonNode? body)
     {
+        if (body is JsonObject rq && (string?)rq["kind"] == "reach") return node.Coord != null ? await node.Coord.ReachProbe(rq) : null;   // can the internet reach that computer?
+        if (body is JsonObject pq && (string?)pq["kind"] == "pad") return node.Coord?.PadTake(pq);   // another entry node's live streams
         if (body is JsonObject q && (string?)q["kind"] == "pchal") return node.Earn?.Answer(q) ?? new JsonObject { ["kind"] = "pproof", ["has"] = false };   // a storage proof challenge
         if (body is not JsonObject c || (string?)c["kind"] != "nodectl") return null;
         JsonObject Fail(string why) => Reply(c, false, null, why);
@@ -124,6 +126,7 @@ public sealed class NodeControl(OpenTubeNode node)
                 {
                     if (node.Obs == null) return Fail("OBS is off on this computer (started with --no-obs)");
                     if (!May(user, "obs")) return Fail("you may not stream through this computer");
+                    if (cmd == "obs" && Js.IsTrue(a["test"]) && node.Coord != null) return Reply(c, true, await node.Coord.ObsTest());   // can OBS reach this computer from the internet?
                     var p = node.Obs.ProfileOf(user);
                     if (cmd == "obs.rotate") p["key"] = "ot-" + B64u.Encode(System.Security.Cryptography.RandomNumberGenerator.GetBytes(12));
                     if (cmd == "obs.set")

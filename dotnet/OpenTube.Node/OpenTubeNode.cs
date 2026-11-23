@@ -177,6 +177,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
         if (Options.Host && OwnerUser != null)
             try { Hosting = new Host(this, Options.VideoDir, Options.CapGB); _ = Task.Run(Hosting.Run); }
             catch (Exception e) { Log("video hosting unavailable: " + e.Message); }
+        Coord = new Coordination(this); _ = Task.Run(() => Coord.Run(stop.Token));
         Update = new Updater(this); _ = Task.Run(() => Update.Run(stop.Token));
         Earn = new Earnings(this) { PendingTabs = Hosting != null ? Hosting.Tabs.Pending : null }; _ = Task.Run(() => Earn.Run(stop.Token));
         if (Hosting != null) _ = Task.Run(async () =>
@@ -369,7 +370,11 @@ public sealed class OpenTubeNode : IAsyncDisposable
                     ["ranker"] = (string?)rankerGenesis?["hash"], ["memberships"] = e.Memberships.Count, ["rejected"] = new JsonObject(e.Store.Rejected.Select(kv => new KeyValuePair<string, JsonNode?>(kv.Key, kv.Value))),
                 });
                 if (Rtmp != null) s["obs"] = new JsonObject { ["linked"] = new JsonArray((Obs?.LinkedChannels() ?? []).Select(c => (JsonNode?)c).ToArray()), ["port"] = Rtmp.Port, ["live"] = Rtmp.Live > 0, ["bytes"] = Rtmp.Bytes, ["stage"] = Rtmp.LastStage, ["keyInterval"] = Rtmp.KeyInterval, ["error"] = Rtmp.Error };
-                s["tracker"] = Tracker.Stats(); s["live"] = Hub.Stats(); s["liveStreams"] = Hub.Live();
+                s["tracker"] = Tracker.Stats(); s["live"] = Hub.Stats();
+                var own = Hub.Live(); foreach (var x in own) if (x is JsonObject xo) xo["hub"] = PublicUrl != null ? NodeKey : null;
+                foreach (var x in Coord?.PadStreams() ?? []) if (!own.Any(y => (string?)y?["stream"] == (string?)x["stream"])) own.Add(x);
+                s["liveStreams"] = new JsonArray(own.Take(100).Select(x => x?.DeepClone()).ToArray());
+                if (Coord != null) { s["meet"] = new JsonArray(Coord.MeetPlaces().Select(x => (JsonNode?)x).ToArray()); s["meetOffline"] = new JsonArray(Coord.MeetOffline().Select(x => (JsonNode?)x).ToArray()); }
                 s["peers"] = peers.Values.Count(p => p.Role is "node-in" or "node-out");
                 s["trackerClients"] = peers.Values.Count(p => p.Role == "tracker");
                 s["liveClients"] = peers.Values.Count(p => p.Role == "live");
@@ -438,6 +443,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
     public Host? Hosting { get; private set; }
     public Earnings? Earn { get; private set; }
     public Updater? Update { get; private set; }
+    public Coordination? Coord { get; private set; }
     async Task JoinMesh()
     {
         await Task.Delay(1500, stop.Token).ContinueWith(_ => { });
@@ -467,12 +473,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
     public List<string> MeshTrackerUrls()
     {
         if (Options.MeshTrackers != null) return Options.MeshTrackers;
-        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); var urls = new List<string>();
-        foreach (var n in Engine.Read(e => e.Nodes.Values.Select(x => (JsonObject)x.DeepClone()).ToList()))
-            if ((string?)n["node"] != NodeKey && now - (Js.Num(n["at"]) ?? 0) < 5 * 60000)
-                foreach (var a in (n["addrs"] as JsonArray ?? []).Select(x => (string?)x).Where(x => x?.StartsWith("https://", StringComparison.Ordinal) == true))
-                    urls.Add(a!.TrimEnd('/').Replace("https://", "wss://") + "/tracker");
-        urls = urls.Distinct().Take(12).ToList();
+        var urls = Coord?.MeetPlaces().Where(u => !u.StartsWith("ws://127.0.0.1")).ToList() ?? [];   // entry nodes' trackers that answer
         foreach (var t in Network.MainGenesis()["payload"]?["trackers"]?.AsArray() ?? []) if ((string?)t is { } tu) urls.Add(tu);
         if (Options.Site != null) urls.Add(Options.Site.TrimEnd('/').Replace("https://", "wss://").Replace("http://", "ws://") + "/tracker");
         urls.Add($"ws://127.0.0.1:{Options.Port}/tracker");
