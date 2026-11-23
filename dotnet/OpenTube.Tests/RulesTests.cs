@@ -201,3 +201,13 @@ public class DeriveTests
         }
     }
 }
+
+public class NetworkTests
+{
+    [Fact]
+    public void The_built_in_genesis_is_the_javascript_network()
+    {
+        var V = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "../../../data/vectors.json")))!;
+        Assert.Equal((string)V["main"]!, Network.MainId);
+    }
+}

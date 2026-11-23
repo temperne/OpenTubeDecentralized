@@ -4,8 +4,6 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
-using Engine = OpenTube.Core.Engine;
-using Jint;
 using OpenTube.Core;
 
 namespace OpenTube.Node;
@@ -18,7 +16,9 @@ namespace OpenTube.Node;
 public sealed class OpenTubeNode : IAsyncDisposable
 {
     public NodeOptions Options { get; }
-    public JsCore Core { get; } = new();
+    public Tracker Tracker { get; } = new();
+    public LiveHub Hub { get; } = new();
+    public string Version { get; private set; } = "";
     public string SiteDir { get; }
     public string Html { get; private set; } = "";
     public string Build { get; private set; } = "";
@@ -50,7 +50,6 @@ public sealed class OpenTubeNode : IAsyncDisposable
     {
         Options = options;
         SiteDir = options.SiteDir ?? FindSite() ?? throw new DirectoryNotFoundException("Can't find the website (index.html). Pass --site-dir=<folder with index.html>.");
-        Core.Log = Log;
     }
 
     public void Log(string line)
@@ -83,10 +82,10 @@ public sealed class OpenTubeNode : IAsyncDisposable
         Directory.CreateDirectory(Options.DataDir);
         Html = File.ReadAllText(Path.Combine(SiteDir, "index.html"));
         Build = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(Html)))[..12];
-        Core.LoadFromPage(Html);   // (only the tracker and the live hub still run as script; everything else is C#)
+        Version = Network.VersionOf(Html);
         var id = Identity.LoadOrCreate(Path.Combine(Options.DataDir, "key.json"));
         NodeKey = id.pub;
-        var mainGenesis = JsonNode.Parse((await Core.RunAsync("Promise.resolve(OpenTubeCore.MAIN_GENESIS)"))!)!.AsObject();
+        var mainGenesis = Network.MainGenesis();
 
         // this node's ranking list key ("Trending on …"), in the JavaScript node's ranker.json format
         var rankerFile = Path.Combine(Options.DataDir, "ranker.json");
@@ -131,25 +130,17 @@ public sealed class OpenTubeNode : IAsyncDisposable
             _ = Task.Run(RankLoop);
         }
 
-        // the tracker and the live hub (script, for now), told about the C# engine's state
-        Core.Post(e => e.SetValue("__n", e.Intrinsics.Object.Construct(Jint.Runtime.Arguments.Empty)));
-        Core.Post(e =>
+        // the live hub needs to know channels' owners, linked computers and members (from the engine)
+        Hub.OwnerOf = c => Engine.Read(x => x.Store.Directory.TryGetValue(c, out var d) ? (string?)d.Genesis["author"] : x.Store.Chains.TryGetValue(c, out var ch) ? ch.Owner : null);
+        Hub.SignerOf = (c, st) => Engine.Read(x =>
         {
-            var n = e.GetValue("__n").AsObject();
-            n.Set("sock", Jint.Native.JsValue.FromObject(e, new Action<string, string>((to, text) => Send(text, to))));
-            n.Set("ownerOf", Jint.Native.JsValue.FromObject(e, new Func<string, string?>(c => Engine.Read(x => x.Store.Directory.TryGetValue(c, out var d) ? (string?)d.Genesis["author"] : x.Store.Chains.TryGetValue(c, out var ch) ? ch.Owner : null))));
-            n.Set("signerOf", Jint.Native.JsValue.FromObject(e, new Func<string, string, string?>((c, st) => Engine.Read(x =>
-            {
-                if (!x.Store.Chains.TryGetValue(c, out var ch)) return null;
-                var d = Derived.Of(ch); var b = d.Streams.FirstOrDefault(s => (string?)s["payload"]!["stream"] == st);
-                return b == null ? null : (string?)b["payload"]!["relay"] ?? ((string?)b["author"] != d.Owner ? (string?)b["author"] : null);
-            }))));
-            n.Set("isJoined", Jint.Native.JsValue.FromObject(e, new Func<string, string, bool>((k, c) => Engine.Read(x => x.Memberships.TryGetValue(k, out var m) && m["joined"] is JsonArray j && j.Any(v => (string?)v == c)))));
-            n.Set("userOf", Jint.Native.JsValue.FromObject(e, new Func<string, string?>(k => Engine.Read(x => x.Nodes.TryGetValue(k, out var nd) ? (string?)nd["grant"]?["user"] : null))));
+            if (!x.Store.Chains.TryGetValue(c, out var ch)) return null;
+            var d = Derived.Of(ch); var b = d.Streams.FirstOrDefault(s => (string?)s["payload"]!["stream"] == st);
+            return b == null ? null : (string?)b["payload"]!["relay"] ?? ((string?)b["author"] != d.Owner ? (string?)b["author"] : null);
         });
-        Core.Post(e => e.Execute(Boot));
-        await Core.RunAsync("__boot()");
-        Log($"OpenTube {Core.Version} on .NET {Environment.Version} (engine in C#) · build {Build} · network {NetworkId[..16]}… · node {NodeKey[..8]}… · website from {SiteDir}");
+        Hub.IsJoined = (k, c) => Engine.Read(x => x.Memberships.TryGetValue(k, out var m) && m["joined"] is JsonArray j && j.Any(v => (string?)v == c));
+        Hub.UserOf = k => Engine.Read(x => x.Nodes.TryGetValue(k, out var nd) ? (string?)nd["grant"]?["user"] : null);
+        Log($"OpenTube {Version} on .NET {Environment.Version} (all C#) · build {Build} · network {NetworkId[..16]}… · node {NodeKey[..8]}… · website from {SiteDir}");
 
         foreach (var p in Options.Peers) _ = DialAsync(p);
         _ = Task.Run(FindEntryNodes);
@@ -251,7 +242,8 @@ public sealed class OpenTubeNode : IAsyncDisposable
     {
         var peer = new Peer(id, role, label, Channel.CreateBounded<string>(new BoundedChannelOptions(4096) { FullMode = BoundedChannelFullMode.DropOldest }));
         peers[id] = peer;
-        if (role is "tracker" or "live") Core.Call("__open", role, id);
+        if (role == "tracker") Tracker.Attach(id, text => Send(text, id));
+        else if (role == "live") Hub.Attach(id, text => Send(text, id));
         else { Engine.PeerJoined(id); if (role == "node-in") Send(new JsonObject { ["t"] = "nodehi", ["node"] = NodeKey }.ToJsonString(), id); }
         if (role == "node-in") Log($"+ browser {id} ({peers.Count(p => p.Value.Role is "node-in" or "node-out")} connected)");
         var writer = Task.Run(async () =>
@@ -273,15 +265,16 @@ public sealed class OpenTubeNode : IAsyncDisposable
                 if (msg.Length > 16 << 20) break;   // too big: drop the peer
                 if (!r.EndOfMessage) continue;
                 var text = Encoding.UTF8.GetString(msg.GetBuffer(), 0, (int)msg.Length); msg.SetLength(0);
-                if (role is "tracker" or "live") Core.Call("__in", role, id, text);
-                else { JsonObject? m = null; try { m = JsonNode.Parse(text) as JsonObject; } catch { } if (m != null) Engine.Handle(m, id); }
+                JsonObject? m = null; try { m = JsonNode.Parse(text) as JsonObject; } catch { }
+                if (m == null) continue;
+                if (role == "tracker") Tracker.Message(id, m); else if (role == "live") Hub.Message(id, m); else Engine.Handle(m, id);
             }
         }
         catch { }
         finally
         {
             peers.TryRemove(id, out _); peer.Out.Writer.TryComplete();
-            if (role is "tracker" or "live") Core.Call("__close", role, id);
+            if (role == "tracker") Tracker.Detach(id); else if (role == "live") Hub.Detach(id);
             if (role == "node-in") Log($"- browser {id} ({peers.Count(p => p.Value.Role is "node-in" or "node-out")} connected)");
             if (role == "node-out") Log($"lost {label}; reconnecting");
             try { if (ws.State == WebSocketState.Open) await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None); } catch { }
@@ -298,11 +291,11 @@ public sealed class OpenTubeNode : IAsyncDisposable
             {
                 var s = Engine.Read(e => new JsonObject
                 {
-                    ["version"] = Core.Version, ["network"] = e.MainId, ["node"] = NodeKey, ["height"] = e.Store.MainBest["height"]?.DeepClone(), ["tip"] = e.Store.MainBest["hash"]?.DeepClone(),
+                    ["version"] = Version, ["network"] = e.MainId, ["node"] = NodeKey, ["height"] = e.Store.MainBest["height"]?.DeepClone(), ["tip"] = e.Store.MainBest["hash"]?.DeepClone(),
                     ["registered"] = e.Store.Directory.Count, ["pending"] = e.Store.Mempool.Count, ["chains"] = e.Store.Chains.Count, ["nodes"] = e.Nodes.Count, ["mining"] = e.Mining,
                     ["ranker"] = (string?)rankerGenesis?["hash"], ["memberships"] = e.Memberships.Count, ["rejected"] = new JsonObject(e.Store.Rejected.Select(kv => new KeyValuePair<string, JsonNode?>(kv.Key, kv.Value))),
                 });
-                s["tracker"] = JsonNode.Parse((await Core.RunAsync("Promise.resolve(__trackerStats())")) ?? "null");
+                s["tracker"] = Tracker.Stats(); s["live"] = Hub.Stats(); s["liveStreams"] = Hub.Live();
                 s["peers"] = peers.Values.Count(p => p.Role is "node-in" or "node-out");
                 s["trackerClients"] = peers.Values.Count(p => p.Role == "tracker");
                 s["liveClients"] = peers.Values.Count(p => p.Role == "live");
@@ -344,7 +337,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
             addrs.Add($"http://localhost:{Options.Port}");
             var info = new JsonObject
             {
-                ["version"] = new JsonObject { ["name"] = Core.Version, ["build"] = Build, ["impl"] = "dotnet" }, ["height"] = Engine.Read(e => e.Store.MainBest["height"]?.DeepClone()), ["chains"] = Engine.Read(e => e.Store.Chains.Count),
+                ["version"] = new JsonObject { ["name"] = Version, ["build"] = Build, ["impl"] = "dotnet" }, ["height"] = Engine.Read(e => e.Store.MainBest["height"]?.DeepClone()), ["chains"] = Engine.Read(e => e.Store.Chains.Count),
                 ["name"] = (Options.Label ?? Environment.MachineName)[..Math.Min(60, (Options.Label ?? Environment.MachineName).Length)],
                 ["os"] = $"{System.Runtime.InteropServices.RuntimeInformation.OSDescription} {System.Runtime.InteropServices.RuntimeInformation.OSArchitecture}",
                 ["node"] = $".NET {Environment.Version}", ["peers"] = peers.Values.Count(p => p.Role is "node-in" or "node-out"),
@@ -360,22 +353,8 @@ public sealed class OpenTubeNode : IAsyncDisposable
         stop.Cancel();
         foreach (var p in peers.Values) p.Out.Writer.TryComplete();
         await Task.Delay(100);
-        Core.Dispose();
         lock (this) { blockLog?.Dispose(); blockLog = null; }
     }
 
     // The node's side of the rules, in the same script language as the rules themselves (it mirrors server.mjs).
-    // The tracker and the live hub, still as the shared script for now (their engine state comes from C#, see __n).
-    const string Boot = """
-      globalThis.__boot = async () => {
-        const core = OpenTubeCore;
-        const tracker = core.createTracker();
-        const live = core.createLiveHub({ ownerOf: (c) => __n.ownerOf(c), signerOf: (c, s) => __n.signerOf(c, s), isJoined: (k, c) => __n.isJoined(k, c), userOf: (k) => __n.userOf(k), ingest: { ticket: () => '' } });
-        globalThis.__in = (role, id, text) => { let m; try { m = JSON.parse(text); } catch { return; } if (role === 'tracker') tracker.message(id, m); else Promise.resolve(live.message(id, m)).catch(() => {}); };
-        globalThis.__open = (role, id) => { const out = (t) => __n.sock(id, t); if (role === 'tracker') tracker.attach(id, out); else live.attach(id, out); };
-        globalThis.__close = (role, id) => { if (role === 'tracker') tracker.detach(id); else live.detach(id); };
-        globalThis.__trackerStats = () => tracker.stats?.() || null;
-        return true;
-      };
-    """;
 }

@@ -52,17 +52,16 @@ Copy the website (`index.html`, `sw.js`, `seeds.json`) next to it, or pass `--si
 
 ## What's native and what isn't yet
 
-**Native C#:**
-- networking, HTTP and WebSockets;
-- the website;
-- crypto: SHA-256, Ed25519 and random numbers;
-- proof of work, on every core;
-- storage: keys and the block log, which uses the JavaScript node's format, so data carries over;
-- the UIs and the service.
+**All of the network runs in C#:**
+- the rules: blocks, chains, every block type, the coin ledger, the main chain, inserting blocks, each chain's state;
+- the engine: peer messages, catching up and gossip, the transaction pool, mining on every core, memberships, node
+  statuses, rankings, routed messages and the live-segment mesh;
+- the tracker and the live hub;
+- networking, the website, crypto, storage, the UIs and the service.
 
-**The rules themselves** (what makes a block or transaction valid) still run as the shared JavaScript core inside
-.NET, through the Jint interpreter. That keeps a .NET node in exact agreement with browsers while the rules are
-ported. `docs/PROTOCOL.md` describes them; the tests compare both.
+Each part is checked against the JavaScript core on generated cases (`OpenTube.Tests`, data made by the `gen-*.mjs`
+scripts from `index.html`). `compare-hub.cjs` runs the same live-hub and tracker script against a JavaScript node and
+the C# node. `JsCore` (the core running in Jint) is kept only for tests.
 
 **Not in the .NET node yet** (the JavaScript node has them):
 - video hosting (BitTorrent seeding);
