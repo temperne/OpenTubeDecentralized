@@ -1,8 +1,8 @@
 {
   "note": "Entry nodes: public OpenTube computers (started with --public) that browsers use first as their way into the network, trackers and live hubs. The site's own node is only a fallback. Add yours: its https address.",
   "entry": [
-    "https://everyone-for-wind-tank.trycloudflare.com"
+    "https://singles-forum-mlb-norfolk.trycloudflare.com"
   ],
   "network": "abdcfc1c8f660f01f103f93ead8f0a6b66be3f9136ebb7190e77ea6944c5e00c",
-  "updated": "2026-11-23T14:23:00.969Z"
+  "updated": "2026-11-23T14:43:36.512Z"
 }
