@@ -82,7 +82,7 @@ else
                 var pv = S.Votes(d, ph); var replies = d.CommentsFor(ph).Where(c => !d.Hidden.Contains((string)c["hash"]!)).OrderBy(c => Js.Num(c["ts"]) ?? 0).ToList();
                 <div class="panel post">
                     <div><a class="person" href="@a.Href"><b>@a.Name</b></a>@if (a.Owner) { <span class="badge ok">owner</span> }<span class="sub"> · @Ago(Js.Num(p["ts"]) ?? 0)</span></div>
-                    <Rich Text="@((string?)p["payload"]?["text"])" />
+                    <Rich Text="@((string?)p["payload"]?["text"])" Author="@pa" />
                     @if ((string?)p["payload"]?["image"] is { Length: > 0 } img) { <img class="post-img" src="@img" alt="" /> }
                     <div class="row-actions small-actions">
                         @if (d.Kind == "group") { <button disabled="@(S.IsMine(pa) || pv.Mine > 0)" title="Like (pays the author)" @onclick="() => Like(ph, pa)">👍 @pv.Up</button> }

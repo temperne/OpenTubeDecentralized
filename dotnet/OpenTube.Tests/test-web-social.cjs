@@ -45,6 +45,12 @@ const waitText = async (p, sel, re, ms = 120000, reload = null) => { const t0 = 
   await C.waitForTimeout(4000); log('C# like status:', (await C.textContent('#post-status').catch(() => 'none')), '| C# shows', await C.textContent('.post:has-text("A public post from JavaScript") button:has-text("👍")'));
   await A.goto(BASE + '/?folder=browser#/square');
   check(await waitText(A, 'main', /👍 1/, 120000, () => A.evaluate(() => views.square?.refresh?.()).catch(() => {})), 'a like from the C# side counts on the JavaScript page (paid)');
+  // a link in a post: its domain's reputation, and a paid good-link vote from the C# side
+  await A.evaluate(async () => { const id = opentube.engine.squareId(OpenTubeCore.monthKey(Date.now())); await opentube.engine.append(id, { type: 'post', text: 'Read https://example.org/news today', name: 'Ay' }); });
+  await C.goto(BASE + '/app/posts'); await C.waitForSelector('.linkchip a[href="https://example.org/news"]', { timeout: 90000 }).catch(() => {});
+  check(await C.isVisible('.linkchip:has-text("example.org")'), 'the C# side shows the link with its domain');
+  await C.click('.linkchip button[title^="Good link"]');
+  check(await A.evaluate(async () => { for (let i = 0; i < 120; i++) { if ((opentube.engine.ledger.domains.get('example.org')?.up || 0) >= 1) return true; await new Promise(r => setTimeout(r, 1000)); } return false; }), 'a good-link vote from C# raises example.org’s reputation on the network');
 
   // ---- friends
   await A.goto(BASE + '/?folder=browser#/friends'); await A.click('text=Start my friends page', { timeout: 60000 });

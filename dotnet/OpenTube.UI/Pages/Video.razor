@@ -76,7 +76,7 @@ else
                     <span class="tagbox"><a class="tag" href="tag/@t">#@t</a>@if (!mineCh) { <button class="tagx" title="Not interested in #@t: hide videos and ads with this tag (kept on this device only)" @onclick="() => Mute(t)">✕</button> }</span>
                 }</div>
             }
-            <div class="panel">@if ((string?)p["desc"] is { Length: > 0 } desc) { <Rich Text="@desc" /> } else { <span class="sub">No description.</span> }</div>
+            <div class="panel">@if ((string?)p["desc"] is { Length: > 0 } desc) { <Rich Text="@desc" Author="@d.Owner" /> } else { <span class="sub">No description.</span> }</div>
             <div class="sub">@(Js.Num(v["ts"]) < Coin.Epoch || mineCh ? "Free for you." : $"Watching pays {ChainActions.Coins(S.Engine.Read(e => e.Store.Ledger.Prices.GetValueOrDefault("piece")))} coins per piece to whoever sends it (half goes to the creator).")</div>
 
             <div class="head-row"><h3>Comments</h3>
@@ -107,7 +107,7 @@ else
                     var cv = S.Votes(d, ch);
                     <div class="comment @(hidden ? "hidden-item" : "")">
                         <div><a class="person" href="@a.Href"><b>@a.Name</b></a>@if (a.Owner) { <span class="badge ok">owner</span> }<span class="sub"> · @Ago(Js.Num(c["ts"]) ?? 0)</span>@if (hidden) { <span class="badge">hidden</span> }</div>
-                        <Rich Text="@((string?)c["payload"]?["text"])" />
+                        <Rich Text="@((string?)c["payload"]?["text"])" Author="@author" />
                         <div class="row-actions small-actions">
                             <button disabled="@(S.IsMine(author) || cv.Mine > 0)" title="Like this comment (pays its author)" @onclick="() => LikeComment(ch, author)">👍 @cv.Up</button>
                             @if (!hidden && (mineCh || S.IsMine(author))) { <button @onclick="() => Do(() => S.Hide(Chain, ch))">Hide</button> }
