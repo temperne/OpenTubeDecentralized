@@ -46,7 +46,7 @@ let fail = 0; const check = (ok, what) => { log(ok ? 'ok  ' : 'FAIL', what); if 
   await M.goto(BASE + 'app/'); await M.waitForSelector('text=Live now', { timeout: 60000 }).catch(() => {});
   check(await M.isVisible('text=Live now'), 'Home lists it under Live now');
   await M.screenshot({ path: W + '/phone-home.png' }); log('screenshot', W + '/phone-home.png');
-  await M.click('a.card[href^="live/"]');
+  await M.click('a.live-banner[href^="live/"]');
   await M.waitForSelector('#live-status', { timeout: 30000 });
   if (/Reload/.test(await M.textContent('main'))) { log('reloading once for the service worker'); await M.reload(); }
   const t0 = Date.now();
@@ -56,6 +56,14 @@ let fail = 0; const check = (ok, what) => { log(ok ? 'ok  ' : 'FAIL', what); if 
   const t2 = await M.evaluate(() => document.querySelector('video')?.currentTime || 0);
   check(t2 - t1 > 2.5, `it keeps playing (${t1.toFixed(1)} s → ${t2.toFixed(1)} s)`);
   await M.screenshot({ path: W + '/phone-live.png' }); log('screenshot', W + '/phone-live.png');
+  // the chat and who's watching
+  const lbHash = await A.evaluate((c) => [...opentube.engine.chains.get(c).blocks.values()].find(b => b.payload.type === 'live').hash, chain);
+  await M.fill('#chat-box', 'Hello from the C# chat'); await M.click('.chat button:has-text("Send")');
+  check(await A.evaluate(async ({ c, h }) => { for (let i = 0; i < 90; i++) { if (opentube.engine.derive(c).commentsFor(h).some(b => b.payload.text === 'Hello from the C# chat')) return true; await new Promise(r => setTimeout(r, 1000)); } return false; }, { c: chain, h: lbHash }), 'a chat message from the C# page reaches the JavaScript page');
+  await A.evaluate(async ({ c, h }) => opentube.engine.append(c, { type: 'comment', target: h, text: 'Welcome, chat!', name: 'Host' }), { c: chain, h: lbHash });
+  check(await M.waitForSelector('.chat-msg:has-text("Welcome, chat!")', { timeout: 60000 }).then(() => true, () => false), 'the host’s chat message shows in C#, marked as the host: ' + await M.isVisible('.chat-msg:has-text("Welcome") .badge:has-text("host")'));
+  check(await M.waitForSelector('#viewer-count', { timeout: 60000 }).then(() => true, () => false), 'the viewer count from the hub: ' + (await M.textContent('#viewer-count').catch(() => '-')));
+  check(await M.waitForSelector('#people-here:has-text("unique")', { timeout: 30000 }).then(() => true, () => false), 'People here lists who’s watching');
   await M.goto(BASE + 'app/notifications'); await M.waitForSelector('a.note', { timeout: 30000 }).catch(() => {});
   const note = await M.textContent('main');
   check(/Host Channel is live: Hosted show/.test(note) && await M.isVisible('.bell-n'), 'a notification: “🔴 Host Channel is live”, with the unread count on the bell');

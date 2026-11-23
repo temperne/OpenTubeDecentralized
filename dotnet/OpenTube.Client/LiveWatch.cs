@@ -23,6 +23,8 @@ public sealed class LiveWatch : IAsyncDisposable
     public string Status { get; private set; } = "Joining the stream…";
     public bool Ended { get; private set; }
     public long Bytes { get; private set; }
+    /// <summary>The hub's latest count: {viewers, peak, now: [keys], seen: [{k, first, secs}], seenCount, watchSecs, quality}.</summary>
+    public JsonObject? Viewers { get; private set; }
     public event Action? Changed;
     readonly ClientSession s; readonly string author;
     readonly CancellationTokenSource cts = new();
@@ -91,6 +93,7 @@ public sealed class LiveWatch : IAsyncDisposable
                             _ = Task.Delay(3000).ContinueWith(_ => Send(new JsonObject { ["t"] = "watch", ["stream"] = Stream, ["segOnly"] = true, ["media"] = false, ["slots"] = 0, ["dcSlots"] = 0 }));
                             break;
                         case "ended" when (string?)o["stream"] == Stream: End("The stream has ended."); break;
+                        case "viewers" when (string?)o["stream"] == Stream: Viewers = o; Changed?.Invoke(); break;
                     }
                 }
             }
