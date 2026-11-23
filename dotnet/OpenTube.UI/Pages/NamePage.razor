@@ -1,0 +1,21 @@
+@page "/n/{Full}"
+@inherits Live
+@{ var full = Uri.UnescapeDataString(Full ?? "").ToLowerInvariant(); var chain = S.NameHolder(full); }
+@if (chain != null)
+{
+    var g = S.Genesis(chain);
+    if (full.StartsWith("@@")) { Go("u/" + S.Engine.Read(e => e.Store.Ledger.Resolve((string?)g?["author"] ?? ""))); }
+    else { Go("c/" + chain); }
+    <p class="sub">Opening @full…</p>
+}
+else
+{
+    <h2>@full</h2>
+    <p>No @(full.StartsWith("@@") ? "person" : full.StartsWith("@") ? "channel" : "list") is called @full (or the network hasn’t synced yet).</p>
+    <p><a href="explore">Explore</a> or <a href="you">create one</a>.</p>
+}
+@code {
+    [Parameter] public string? Full { get; set; }
+    bool went;
+    void Go(string to) { if (went) return; went = true; _ = InvokeAsync(() => Nav.NavigateTo(to, replace: true)); }
+}

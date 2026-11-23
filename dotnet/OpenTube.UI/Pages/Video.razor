@@ -17,7 +17,11 @@ else
             <h2 class="watch-title">@((string?)p["title"])</h2>
             <div class="row-actions">
                 <a href="c/@Chain" class="chan-link">@if ((string?)d.Profile["avatar"] is { Length: > 0 } av) { <img class="avatar sm" src="@av" alt="" /> }<b>@((string?)d.Profile["name"])</b></a>
-                @if (!mineCh && !by.Owner && by.Key != S.Me.pub) { <span class="sub">by <a href="@by.Href">@by.Name</a></span> }
+                @if (!mineCh && !by.Owner && by.Key != S.Me.pub)
+                {
+                    <span class="sub">by <a class="person" href="@by.Href">@by.Name</a></span>
+                    @if (friends != null && !friends.Contains(by.Key)) { <button class="small-btn" @onclick="() => AddFriend(by.Key, by.Name)">＋ Friend</button> }
+                }
                 <span class="sub">@Views(S.Views(Hash)) · @Ago(Js.Num(v["ts"]) ?? 0) · @Bytes(Js.Num(p["size"]) ?? 0)</span>
             </div>
             <div class="row-actions small-actions">
@@ -40,7 +44,13 @@ else
                 </div>
             }
             @if (msg != null) { <div class="sub" id="watch-msg">@msg</div> }
-            @if (tags.Count > 0) { <div class="row-actions">@foreach (var t in tags) { <a class="tag" href="tag/@t">#@t</a> }</div> }
+            @if (tags.Count > 0)
+            {
+                <div class="row-actions">@foreach (var t in tags)
+                {
+                    <span class="tagbox"><a class="tag" href="tag/@t">#@t</a>@if (!mineCh) { <button class="tagx" title="Not interested in #@t: hide videos and ads with this tag (kept on this device only)" @onclick="() => Mute(t)">✕</button> }</span>
+                }</div>
+            }
             <div class="panel">@if ((string?)p["desc"] is { Length: > 0 } desc) { <Rich Text="@desc" /> } else { <span class="sub">No description.</span> }</div>
             <div class="sub">@(Js.Num(v["ts"]) < Coin.Epoch || mineCh ? "Free for you." : $"Watching pays {ChainActions.Coins(S.Engine.Read(e => e.Store.Ledger.Prices.GetValueOrDefault("piece")))} coins per piece to whoever sends it (half goes to the creator).")</div>
 
@@ -95,6 +105,10 @@ else
 @code {
     [Parameter] public string Chain { get; set; } = ""; [Parameter] public string Hash { get; set; } = "";
     string? status, src, started, msg, blockAsk; string comment = ""; bool posting, busy, tipOpen; double tipAmt = 1;
+    HashSet<string>? friends;
+    protected override async Task OnInitializedAsync() { base.OnInitialized(); friends = (await S.Social.Friends()).Select(f => f.Key).ToHashSet(); }
+    Task AddFriend(string key, string name) => Do(async () => { await S.Social.AddFriend(key, name); friends?.Add(key); }, "Adding…", () => msg = $"{name} is now a friend: they see your friends-only posts once they add you back.");
+    Task Mute(string tag) => Do(() => S.Social.SetMuted("tags", tag, true), null, () => msg = $"You won’t see videos or ads tagged #{tag}. Undo under You → Settings → Not interested.");
     static string Views(double n) => n == 1 ? "1 view" : (n >= 1e6 ? $"{n / 1e6:0.#}M" : n >= 1e4 ? $"{Math.Round(n / 1e3)}K" : n.ToString("N0")) + " views";
     protected override async Task OnParametersSetAsync() { if (started != null && started != Hash) { src = null; msg = null; } await Task.CompletedTask; }
     protected override async Task OnAfterRenderAsync(bool first)

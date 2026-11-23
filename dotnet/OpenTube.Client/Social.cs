@@ -38,6 +38,20 @@ public sealed class Social
         s.Notes.Following = [.. fr.Select(f => f.Key), .. (st["following"] as JsonArray ?? []).Select(x => (string?)x).OfType<string>()];
         s.Notes.FriendPages = [.. fr.Select(f => CircleOf(f.Key)).OfType<string>()];
     }
+    /// <summary>Tags and ad categories you're not interested in (settings.muted, kept only on this device).</summary>
+    public async Task<(HashSet<string> Tags, HashSet<string> Cats)> Muted()
+    {
+        var m = (await Settings())["muted"] as JsonObject;
+        HashSet<string> Of(string k) => (m?[k] as JsonArray ?? []).Select(x => (string?)x).OfType<string>().ToHashSet();
+        return (Of("tags"), Of("cats"));
+    }
+    public async Task SetMuted(string kind, string value, bool on)
+    {
+        var st = await Settings(); var m = st["muted"] as JsonObject ?? new JsonObject { ["tags"] = new JsonArray(), ["cats"] = new JsonArray() }; st["muted"] = m;
+        var list = (m[kind] as JsonArray ?? []).Select(x => (string?)x).OfType<string>().ToList(); list.Remove(value); if (on) list.Add(value);
+        m[kind] = new JsonArray(list.Select(x => (JsonNode?)x).ToArray());
+        await SaveSettings(st);
+    }
     public async Task<string> MyName() => (string?)(await Settings())["name"] is { Length: > 0 } n ? n : "viewer-" + s.Me.pub[..6];
 
     // ---------------------------------------------------------------- posts (the monthly public chains)
