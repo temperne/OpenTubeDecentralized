@@ -22,6 +22,11 @@ public static class Program
         if (args.Contains("--service-help")) { Console.WriteLine(ServiceInstaller.Instructions()); return 0; }
         if (args.Length > 0 && args[0] == "torrent") return TorrentTool.Run(args[1..]);
         if (args.Contains("--service")) return RunService(args);
+        if (Console.IsInputRedirected && !HasDisplay())
+        {   // no keyboard to read (input is a pipe or a file): menus would show but no key would reach them
+            Console.WriteLine("OpenTube: no terminal to read keys from, so running without the menus (Ctrl+C stops it).");
+            return RunService(args);
+        }
         if (args.Contains("--tui") || !HasDisplay()) return TerminalUi.Run(args);
         return Gui.Run(args);
     }

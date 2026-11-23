@@ -75,6 +75,8 @@ public static class TerminalUi
             }
             return true;
         });
+        // Ctrl+C stops it, as in any terminal program (the menus put the terminal in raw mode, so it arrives as a key)
+        Application.RootKeyEvent += k => { if (k.Key == (Key.CtrlMask | Key.C) || k.Key == (Key.CtrlMask | Key.c)) { Application.RequestStop(); return true; } return false; };
         Application.Run();
         Application.Shutdown();
         server.DisposeAsync().AsTask().Wait(3000);
