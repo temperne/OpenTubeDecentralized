@@ -120,9 +120,17 @@ public sealed class ObsLive
         readonly OpenTubeNode node; readonly string url, stream, chain, mime;
         readonly System.Threading.Channels.Channel<string> outbox = System.Threading.Channels.Channel.CreateUnbounded<string>();
         readonly List<string> pending = []; bool on, closed; ClientWebSocket? ws;
-        public RemoteBroadcast(OpenTubeNode node, string url, string stream, string chain, string mime) { this.node = node; this.url = url; this.stream = stream; this.chain = chain; this.mime = mime; _ = Task.Run(Run); }
-        public void Seg(JsonObject g) { var m = new JsonObject { ["t"] = "seg", ["seg"] = g.DeepClone() }.ToJsonString(); lock (pending) { if (on) outbox.Writer.TryWrite(m); else { pending.Add(m); if (pending.Count > 120) pending.RemoveAt(0); } } }
-        public void Close() { closed = true; outbox.Writer.TryWrite(new JsonObject { ["t"] = "leave", ["stream"] = stream }.ToJsonString()); _ = Task.Delay(1000).ContinueWith(_ => { try { ws?.Abort(); } catch { } }); }
+        // viewers the hub hangs under this computer get the segments over WebRTC data channels (the segment tree)
+        readonly LiveKids kids;
+        public RemoteBroadcast(OpenTubeNode node, string url, string stream, string chain, string mime)
+        {
+            this.node = node; this.url = url; this.stream = stream; this.chain = chain; this.mime = mime;
+            kids = new LiveKids(stream, m => outbox.Writer.TryWrite(m.ToJsonString()), node.Log);
+            _ = Task.Run(Run);
+        }
+        public int Children => kids.OpenCount;
+        public void Seg(JsonObject g) { var m = new JsonObject { ["t"] = "seg", ["seg"] = g.DeepClone() }.ToJsonString(); lock (pending) { if (on) outbox.Writer.TryWrite(m); else { pending.Add(m); if (pending.Count > 120) pending.RemoveAt(0); } } kids.Seg(g); }
+        public void Close() { closed = true; outbox.Writer.TryWrite(new JsonObject { ["t"] = "leave", ["stream"] = stream }.ToJsonString()); _ = Task.Delay(1000).ContinueWith(_ => { kids.Close(); try { ws?.Abort(); } catch { } }); }
         async Task Run()
         {
             int refused = 0;
@@ -146,6 +154,9 @@ public sealed class ObsLive
                             outbox.Writer.TryWrite(Hello());
                         }
                         else if (t == "broadcasting") { lock (pending) { on = true; refused = 0; foreach (var p in pending) outbox.Writer.TryWrite(p); pending.Clear(); } node.Log("[obs] streaming through " + url.Replace("wss://", "").Replace("ws://", "").Replace("/live", "")); }
+                        else if (t == "child" && Core.Js.IsTrue(m["dc"]) && (string?)m["peer"] is { } kp) kids.Child(kp);
+                        else if (t == "unchild" && (string?)m["peer"] is { } up) kids.Unchild(up);
+                        else if (t == "signal" && (string?)m["from"] is { } sp) kids.Signal(sp, m["data"]);
                         else if (t == "error")
                         {   // usually: that hub hasn't received our live block yet. Ask again.
                             if (++refused == 1 || refused % 15 == 0) node.Log($"[obs] the hub refused the stream: {(string?)m["error"]}{(refused < 60 ? " (asking again)" : "")}");
@@ -154,10 +165,10 @@ public sealed class ObsLive
                     }
                 }
                 catch { }
-                lock (pending) on = false;
+                lock (pending) on = false; kids.Close();
                 if (!closed) await Task.Delay(3000);
             }
         }
-        string Hello() => new JsonObject { ["t"] = "broadcast", ["stream"] = stream, ["chain"] = chain, ["mime"] = mime, ["rtc"] = false, ["dcSlots"] = 0 }.ToJsonString();
+        string Hello() => new JsonObject { ["t"] = "broadcast", ["stream"] = stream, ["chain"] = chain, ["mime"] = mime, ["rtc"] = false, ["dcSlots"] = 8 }.ToJsonString();
     }
 }
