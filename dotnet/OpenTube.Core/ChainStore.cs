@@ -152,6 +152,18 @@ public sealed class ChainStore
         if (bh > besth || (bh == besth && string.CompareOrdinal(Str(b["hash"]), Str(MainBest["hash"])) < 0)) { MainBest = b; RebuildDirectory(); }
     }
 
+    /// <summary>addToMempool(g): a registration waiting to be mined.</summary>
+    public bool AddToMempool(JsonNode? node)
+    {
+        if (node is not JsonObject g || Str(Get(g, "hash")) is not { } h || Mempool.ContainsKey(h) || Directory.ContainsKey(h) || !Rules.ValidGenesis(g) || !Undef((JsonObject)Get(g, "payload")!, "parent") || !Rules.CheckSigned(g)) return false;
+        Mempool[h] = g; return true;
+    }
+    public Ledger? LedgerAfter(string hash) => StateAfter(hash);
+    public bool IsChildGenesis(string id) => childGenesis.ContainsKey(id);
+    public bool IsSquare(string id) => squares.ContainsKey(id);
+    public IEnumerable<JsonObject> Squares => squares.Values;
+    public bool NameAllowedPublic(JsonObject t) => NameAllowed(t);
+
     void Reject(Chain c, JsonObject b, string why) => Rejected[why] = Rejected.GetValueOrDefault(why) + 1;
 
     /// <summary>
@@ -159,8 +171,10 @@ public sealed class ChainStore
     /// they arrive, rejects the rest. trusted: blocks this computer verified before (signatures aren't checked again).
     /// Returns the blocks added.
     /// </summary>
-    public List<JsonObject> Insert(string chainId, IEnumerable<JsonNode?> blocks, bool trusted = false)
+    public List<JsonObject> Insert(string chainId, IEnumerable<JsonNode?> blocks, bool trusted = false) => Insert(chainId, blocks, trusted, out _);
+    public List<JsonObject> Insert(string chainId, IEnumerable<JsonNode?> blocks, bool trusted, out List<string> stillMissing)
     {
+        stillMissing = [];
         var added = new List<JsonObject>();
         if (!Chains.TryGetValue(chainId, out var chain)) return added;
         var todo = blocks.OfType<JsonObject>().Select((b, i) => (b, i)).OrderBy(x => Num(Get(x.b, "height")) ?? 0).ThenBy(x => x.i).Select(x => x.b).ToList();
@@ -192,6 +206,7 @@ public sealed class ChainStore
             BlockAdded?.Invoke(chain, b);
         }
         var still = missing.Items.Where(m => !chain.Has(m)).ToList();
+        stillMissing = still;
         if (still.Count > 0) Missing?.Invoke(chainId, still);
         return added;
     }

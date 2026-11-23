@@ -15,7 +15,7 @@ namespace OpenTube.Core;
 /// </summary>
 public sealed partial class JsCore : IDisposable
 {
-    readonly Engine js;
+    readonly Jint.Engine js;
     readonly BlockingCollection<Action> queue = new();
     readonly Thread thread;
     readonly ConcurrentDictionary<int, Timer> timers = new();
@@ -27,7 +27,7 @@ public sealed partial class JsCore : IDisposable
 
     public JsCore()
     {
-        js = new Engine(o => o.LimitRecursion(2000).Strict(false));
+        js = new Jint.Engine(o => o.LimitRecursion(2000).Strict(false));
         thread = new Thread(Loop) { IsBackground = true, Name = "opentube-core" };
         Install();
         thread.Start();
@@ -42,7 +42,7 @@ public sealed partial class JsCore : IDisposable
         }
     }
     /// <summary>Run on the script's thread (fire and forget).</summary>
-    public void Post(Action<Engine> a) { if (!queue.IsAddingCompleted) queue.Add(() => a(js)); }
+    public void Post(Action<Jint.Engine> a) { if (!queue.IsAddingCompleted) queue.Add(() => a(js)); }
 
     /// <summary>Evaluate an async JavaScript expression (e.g. "(async () => ...)()") and get its JSON-serialized result.</summary>
     public Task<string?> RunAsync(string code)
@@ -157,7 +157,7 @@ public sealed partial class JsCore : IDisposable
 }
 
 /// <summary>Builds a plain JavaScript object of host functions.</summary>
-sealed class JsObjectBuilder(Engine js)
+sealed class JsObjectBuilder(Jint.Engine js)
 {
     readonly Dictionary<string, Delegate> fns = [];
     public void Fn(string name, Delegate d) => fns[name] = d;
