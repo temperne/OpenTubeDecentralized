@@ -35,6 +35,10 @@ public sealed class NodeOptions
     public string? AcmeDirectory { get; set; }
     /// <summary>Publish this node's own ranking list ("Trending on …"), like every node. --no-ranking turns it off.</summary>
     public bool Ranks { get; set; } = true;
+    /// <summary>Join the network's WebRTC room (the peer mesh) like every browser. --no-mesh (or MESH=0) turns it off.</summary>
+    public bool Mesh { get; set; } = true;
+    /// <summary>Only these trackers for the peer mesh (comma-separated, for tests).</summary>
+    public List<string>? MeshTrackers { get; set; }
     /// <summary>The site this node came from (--site=https://…): its /entries.json lists entry nodes to connect to.</summary>
     public string? Site { get; set; }
     /// <summary>The port OBS streams to (rtmp://this-computer:PORT/live); 0: no OBS receiver. --obs-port=1935, --no-obs.</summary>
@@ -60,6 +64,8 @@ public sealed class NodeOptions
         o.Grant = Get("grant", "NODE_GRANT");
         o.Label = Get("name", "NODE_LABEL");
         if (args.Contains("--no-ranking") || Environment.GetEnvironmentVariable("RANKER") == "0") o.Ranks = false;
+        if (args.Contains("--no-mesh") || Environment.GetEnvironmentVariable("MESH") == "0") o.Mesh = false;
+        if (Get("mesh-trackers", "MESH_TRACKERS") is { Length: > 0 } mt) o.MeshTrackers = mt.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
         o.RankName = Get("ranking-name", "NODE_NAME");
         o.Site = Get("site", "NODE_SITE")?.TrimEnd('/');
         if (int.TryParse(Get("obs-port", "RTMP_PORT"), out var op)) o.ObsPort = op;

@@ -172,6 +172,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
 
         foreach (var p in Options.Peers) _ = DialAsync(p);
         _ = Task.Run(FindEntryNodes);
+        if (Options.Mesh) _ = Task.Run(JoinMesh);
         _ = Task.Run(StatusLoop);
         _ = Task.Run(async () => { while (!stop.IsCancellationRequested) { await Task.Delay(60000, stop.Token).ContinueWith(_ => { }); Engine.Gossip(); } });
         _ = Task.Run(Engine.MaybeMine);
@@ -419,9 +420,52 @@ public sealed class OpenTubeNode : IAsyncDisposable
     /// <summary>Tell the owner's Devices page now (after a change), not at the next half-minute.</summary>
     public void AnnounceSoon() => _ = Task.Delay(1500).ContinueWith(_ => announceWake?.TrySetResult());
 
+    // ---- the peer mesh: the network's WebRTC room, as every browser joins it (see Mesh)
+    public Mesh? MeshRoom { get; private set; }
+    async Task JoinMesh()
+    {
+        await Task.Delay(1500, stop.Token).ContinueWith(_ => { });
+        var main = Network.MainId;
+        MeshRoom = new Mesh("opentube-" + main[..16], "opentube/" + main[..32], Log,
+            onJoin: (pid, label, send) =>
+            {
+                var id = "rtc:" + pid;
+                var peer = new Peer(id, "node-in", label, Channel.CreateBounded<string>(new BoundedChannelOptions(4096) { FullMode = BoundedChannelFullMode.DropOldest }));
+                peers[id] = peer;
+                _ = Task.Run(async () => { await foreach (var text in peer.Out.Reader.ReadAllAsync()) { try { await send(text); } catch { } } });
+                Log($"+ peer {pid[..8]} over WebRTC ({peers.Count(p => p.Value.Role is "node-in" or "node-out")} connected)");
+                Engine.PeerJoined(id); Send(new JsonObject { ["t"] = "nodehi", ["node"] = NodeKey }.ToJsonString(), id);
+            },
+            onMessage: (pid, text) => { try { if (JsonNode.Parse(text) is JsonObject m) Engine.Handle(m, "rtc:" + pid); } catch { } },
+            onLeave: pid => { if (peers.TryRemove("rtc:" + pid, out var p)) { p.Out.Writer.TryComplete(); Log($"- peer {pid[..8]} ({peers.Count(x => x.Value.Role is "node-in" or "node-out")} connected)"); } });
+        var logged = false;
+        while (!stop.IsCancellationRequested)
+        {
+            var urls = MeshTrackerUrls();
+            MeshRoom.SetTrackers(urls);
+            if (!logged) { logged = true; Log($"peer mesh: joining the network's room via {urls.Count} tracker(s)"); }
+            await Task.Delay(60000, stop.Token).ContinueWith(_ => { });
+        }
+    }
+    /// <summary>The trackers the room is found through: entry nodes' own (fresh), the network's public ones, the site's, and this node's own.</summary>
+    List<string> MeshTrackerUrls()
+    {
+        if (Options.MeshTrackers != null) return Options.MeshTrackers;
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); var urls = new List<string>();
+        foreach (var n in Engine.Read(e => e.Nodes.Values.Select(x => (JsonObject)x.DeepClone()).ToList()))
+            if ((string?)n["node"] != NodeKey && now - (Js.Num(n["at"]) ?? 0) < 5 * 60000)
+                foreach (var a in (n["addrs"] as JsonArray ?? []).Select(x => (string?)x).Where(x => x?.StartsWith("https://", StringComparison.Ordinal) == true))
+                    urls.Add(a!.TrimEnd('/').Replace("https://", "wss://") + "/tracker");
+        urls = urls.Distinct().Take(12).ToList();
+        foreach (var t in Network.MainGenesis()["payload"]?["trackers"]?.AsArray() ?? []) if ((string?)t is { } tu) urls.Add(tu);
+        if (Options.Site != null) urls.Add(Options.Site.TrimEnd('/').Replace("https://", "wss://").Replace("http://", "ws://") + "/tracker");
+        urls.Add($"ws://127.0.0.1:{Options.Port}/tracker");
+        return urls.Distinct().ToList();
+    }
+
     public async ValueTask DisposeAsync()
     {
-        stop.Cancel(); Rtmp?.Stop();
+        stop.Cancel(); Rtmp?.Stop(); if (MeshRoom != null) await MeshRoom.DisposeAsync();
         foreach (var p in peers.Values) p.Out.Writer.TryComplete();
         await Task.Delay(100);
         lock (this) { blockLog?.Dispose(); blockLog = null; }

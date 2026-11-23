@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\OpenTube.Core\OpenTube.Core.csproj" />
+    <ProjectReference Include="..\OpenTube.Node\OpenTube.Node.csproj" />
   </ItemGroup>
 
 </Project>
