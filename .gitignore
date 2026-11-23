@@ -12,3 +12,5 @@ dotnet/OpenTube.Tests/torrent-interop/*.out
 cloudflare/web-out/
 dotnet/app-web/
 app-web/
+dotnet/OpenTube.Tests/torrent-interop/*.err
+dotnet/OpenTube.Tests/torrent-interop/out-dht/

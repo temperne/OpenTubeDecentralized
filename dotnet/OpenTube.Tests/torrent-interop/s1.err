@@ -1,4 +1,0 @@
-dht on UDP port 40118
-[dht] joined: 1 nodes known
-[dht] 20adb310: 0 peers, announced to 1 of 1 nodes
-peer 127.0.0.1:38796 (encrypted): Unable to read beyond the end of the stream.
