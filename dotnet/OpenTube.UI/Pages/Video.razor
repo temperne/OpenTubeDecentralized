@@ -1,21 +1,102 @@
 @page "/v/{Chain}/{Hash}"
 @inherits Live
 @inject IVideoPlayer Player
+@inject IJSRuntime JS
 @{ var d = S.Chain(Chain); var v = d?.Videos.FirstOrDefault(x => (string?)x["hash"] == Hash); }
 @if (v == null) { <p class="sub">Loading this video from the network…</p> }
 else
 {
-    var p = v["payload"]!;
-    <div class="player" id="player-@Hash">@if (src != null) { <video controls autoplay playsinline src="@src" style="width:100%"></video> }</div>
-    <h2>@((string?)p["title"])</h2>
-    <div class="sub"><a href="c/@Chain">@((string?)d!.Profile["name"])</a> · @Bytes(Js.Num(p["size"]) ?? 0) · @Ago(Js.Num(v["ts"]) ?? 0)</div>
-    <p class="desc">@((string?)p["desc"])</p>
-    <div class="sub mono">infohash @((string?)p["infohash"])</div>
-    @if (status != null) { <div class="sub">@status</div> }
+    var p = v["payload"]!; var mineCh = S.IsMine(d!.Owner); var votes = S.Votes(d, Hash);
+    var by = S.AuthorOf(S.Genesis(Chain)?["author"]?.GetValue<string>() ?? d.Owner ?? "", null);
+    var tags = (p["tags"] as JsonArray ?? []).Select(t => (string?)t).OfType<string>().ToList();
+    var lists = S.MyLists();
+    <div class="watch">
+        <div class="watch-main">
+            <div class="player" id="player-@Hash">@if (src != null) { <video controls autoplay playsinline src="@src" style="width:100%"></video> }</div>
+            @if (status != null) { <div class="sub">@status</div> }
+            <h2 class="watch-title">@((string?)p["title"])</h2>
+            <div class="row-actions">
+                <a href="c/@Chain" class="chan-link">@if ((string?)d.Profile["avatar"] is { Length: > 0 } av) { <img class="avatar sm" src="@av" alt="" /> }<b>@((string?)d.Profile["name"])</b></a>
+                @if (!mineCh && !by.Owner && by.Key != S.Me.pub) { <span class="sub">by <a href="@by.Href">@by.Name</a></span> }
+                <span class="sub">@Views(S.Views(Hash)) · @Ago(Js.Num(v["ts"]) ?? 0) · @Bytes(Js.Num(p["size"]) ?? 0)</span>
+            </div>
+            <div class="row-actions small-actions">
+                <button class="@(votes.Mine > 0 ? "on" : "")" title="I like this (pays the creator)" disabled="@busy" @onclick="() => VoteVideo(1)">👍 @votes.Up</button>
+                <button class="@(votes.Mine < 0 ? "on" : "")" title="I dislike this" disabled="@busy" @onclick="() => VoteVideo(-1)">👎 @votes.Down</button>
+                <button @onclick="Copy">Copy link</button>
+                @if (!mineCh) { <button title="Send this channel some of your coins" @onclick="() => tipOpen = !tipOpen">🪙 Tip</button> }
+                @if (lists.Count > 0)
+                {
+                    <select @onchange="AddToList"><option value="">＋ Add to list…</option>@foreach (var (id, name) in lists) { <option value="@id">@name</option> }</select>
+                }
+                @if (mineCh) { <button @onclick="HideVideo">Hide video</button> }
+            </div>
+            @if (tipOpen)
+            {
+                <div class="panel row-actions">
+                    <span>Tip @((string?)d.Profile["name"])</span><input type="number" min="0.01" step="0.01" @bind="tipAmt" style="width:110px" />
+                    <span class="sub">coins (you have @ChainActions.Coins(S.Balance(S.Me.pub)))</span>
+                    <button class="primary" @onclick="Tip">Send</button>
+                </div>
+            }
+            @if (msg != null) { <div class="sub" id="watch-msg">@msg</div> }
+            @if (tags.Count > 0) { <div class="row-actions">@foreach (var t in tags) { <a class="tag" href="tag/@t">#@t</a> }</div> }
+            <div class="panel">@if ((string?)p["desc"] is { Length: > 0 } desc) { <Rich Text="@desc" /> } else { <span class="sub">No description.</span> }</div>
+            <div class="sub">@(Js.Num(v["ts"]) < Coin.Epoch || mineCh ? "Free for you." : $"Watching pays {ChainActions.Coins(S.Engine.Read(e => e.Store.Ledger.Prices.GetValueOrDefault("piece")))} coins per piece to whoever sends it (half goes to the creator).")</div>
+
+            <div class="head-row"><h3>Comments</h3>
+                @if (mineCh)
+                {
+                    var cur = d.VideoPolicy.TryGetValue(Hash, out var pol) && pol != null ? (string?)pol ?? "default" : "default";
+                    <select value="@cur" @onchange="SetPolicy" title="Who can comment on this video">
+                        <option value="default">Channel default (@((string?)d.Profile["comments"] ?? "anyone"))</option>
+                        <option value="anyone">Anyone can comment</option><option value="approved">Approved users only</option><option value="off">Comments off</option>
+                    </select>
+                }
+            </div>
+            @{ var can = mineCh || d.CanComment(S.Me.pub, Hash); var policy = (string?)d.PolicyFor(Hash); }
+            <div class="row-actions">
+                <input class="grow-input" id="comment-box" @bind="comment" @bind:event="oninput" @onkeydown="CommentKey" maxlength="2000" disabled="@(!can || posting)"
+                       placeholder="@(can ? "Add a comment…" : policy == "off" ? "Comments are off for this video" : policy == "approved" ? "Only approved users can comment on this video" : "You can no longer comment on this channel")" />
+                <button class="primary" disabled="@(!can || posting)" @onclick="Post">Comment</button>
+                @if (posting) { <span class="sub">@(mineCh ? "Posting…" : "Doing anti-spam work…")</span> }
+            </div>
+            @{ var list = d.CommentsFor(Hash).OrderByDescending(c => Js.Num(c["ts"]) ?? 0).ToList(); }
+            @if (list.Count == 0) { <p class="sub">No comments yet.</p> }
+            <div class="comments">
+                @foreach (var c in list)
+                {
+                    var ch = (string)c["hash"]!; var author = (string)c["author"]!; var hidden = d.Hidden.Contains(ch);
+                    if (hidden && !S.IsMine(author) && !mineCh) continue;
+                    var a = S.AuthorOf(author, d, (string?)c["payload"]?["name"] ?? "");
+                    var cv = S.Votes(d, ch);
+                    <div class="comment @(hidden ? "hidden-item" : "")">
+                        <div><a class="person" href="@a.Href"><b>@a.Name</b></a>@if (a.Owner) { <span class="badge ok">owner</span> }<span class="sub"> · @Ago(Js.Num(c["ts"]) ?? 0)</span>@if (hidden) { <span class="badge">hidden</span> }</div>
+                        <Rich Text="@((string?)c["payload"]?["text"])" />
+                        <div class="row-actions small-actions">
+                            <button disabled="@(S.IsMine(author) || cv.Mine > 0)" title="Like this comment (pays its author)" @onclick="() => LikeComment(ch, author)">👍 @cv.Up</button>
+                            @if (!hidden && (mineCh || S.IsMine(author))) { <button @onclick="() => Do(() => S.Hide(Chain, ch))">Hide</button> }
+                            @if (mineCh && !S.IsMine(author)) { <button title="Block this person: hides everything they write on your channel" @onclick="() => blockAsk = author">Block</button> }
+                        </div>
+                        @if (blockAsk == author)
+                        {
+                            <div class="row-actions"><span>Block @a.Name on your channel?</span><button class="primary" @onclick="() => Do(() => S.Block(Chain, author), done: () => blockAsk = null)">Block</button><button @onclick="() => blockAsk = null">Cancel</button></div>
+                        }
+                    </div>
+                }
+            </div>
+        </div>
+        <aside class="watch-side">
+            <h3>More from this channel</h3>
+            <div class="side-list">@foreach (var o in d.Videos.Where(x => (string?)x["hash"] != Hash).OrderByDescending(x => Js.Num(x["ts"]) ?? 0).Take(12)) { <VideoCard Chain="@Chain" Block="o" ChannelName="@((string?)d.Profile["name"])" /> }</div>
+        </aside>
+    </div>
 }
 @code {
     [Parameter] public string Chain { get; set; } = ""; [Parameter] public string Hash { get; set; } = "";
-    string? status, src; string? started;
+    string? status, src, started, msg, blockAsk; string comment = ""; bool posting, busy, tipOpen; double tipAmt = 1;
+    static string Views(double n) => n == 1 ? "1 view" : (n >= 1e6 ? $"{n / 1e6:0.#}M" : n >= 1e4 ? $"{Math.Round(n / 1e3)}K" : n.ToString("N0")) + " views";
+    protected override async Task OnParametersSetAsync() { if (started != null && started != Hash) { src = null; msg = null; } await Task.CompletedTask; }
     protected override async Task OnAfterRenderAsync(bool first)
     {
         var v = S.Chain(Chain)?.Videos.FirstOrDefault(x => (string?)x["hash"] == Hash);
@@ -26,5 +107,33 @@ else
         var r = await Player.Play("player-" + Hash, (string)p["infohash"]!, (string?)p["file"] ?? "video.mp4", Js.Num(p["size"]) ?? 0, s => { status = s; InvokeAsync(StateHasChanged); });
         src = r.Src; status = r.Status;
         StateHasChanged();
+    }
+    async Task Do(Func<Task> f, string? doing = null, Action? done = null)
+    {
+        msg = doing; StateHasChanged();
+        try { await f(); msg = null; done?.Invoke(); } catch (Exception e) { msg = e.Message; }
+    }
+    async Task VoteVideo(int dir) { busy = true; await Do(() => S.Vote(Chain, Hash, dir, S.Chain(Chain)!.Owner!), "Signing and paying…"); busy = false; }
+    Task LikeComment(string target, string author) => Do(() => S.Vote(Chain, target, 1, author), "Liking (pays the author)…");
+    async Task Post()
+    {
+        if (comment.Trim().Length == 0) return;
+        posting = true;
+        await Do(async () => { await S.Comment(Chain, Hash, comment); comment = ""; });
+        posting = false;
+    }
+    Task CommentKey(KeyboardEventArgs e) => e.Key == "Enter" ? Post() : Task.CompletedTask;
+    Task SetPolicy(ChangeEventArgs e) => Do(() => S.CommentPolicy(Chain, Hash, (string?)e.Value ?? "default"), "Recording the comment setting…", () => msg = "Comment setting recorded on the chain.");
+    async Task AddToList(ChangeEventArgs e)
+    {
+        var list = (string?)e.Value; if (string.IsNullOrEmpty(list)) return;
+        await Do(() => S.AddToList(list, Chain, Hash), "Adding…", () => msg = "Added to " + S.MyLists().FirstOrDefault(l => l.Id == list).Name);
+    }
+    async Task HideVideo() { await Do(() => S.Hide(Chain, Hash)); if (msg == null) Nav.NavigateTo("c/" + Chain); }
+    Task Tip() => Do(() => S.Tip(S.Chain(Chain)!.Owner!, Math.Round(tipAmt * 100), "tip for " + (string?)S.Chain(Chain)!.Profile["name"]), "Sending…",
+        () => { tipOpen = false; msg = $"Tipped {tipAmt:0.##} coins. It confirms in the next main-chain block."; });
+    async Task Copy()
+    {
+        try { await JS.InvokeVoidAsync("navigator.clipboard.writeText", Nav.Uri); msg = "Link copied."; } catch { msg = Nav.Uri; }
     }
 }
