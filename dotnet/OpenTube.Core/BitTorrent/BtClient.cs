@@ -21,6 +21,9 @@ public sealed class BtClient : IAsyncDisposable
     public int Port { get; private set; }
     public Action<string>? Log;
     public int PeerCount => peers.Count;
+    /// <summary>Each new connection, before it starts (add extensions, a serving policy).</summary>
+    public Action<PeerSession>? OnSession;
+    public IEnumerable<PeerSession> Sessions => peers.Keys;
     public int PeersOf(string infoHash) => peers.Count(p => p.Key.Torrent?.InfoHashHex == infoHash);
 
     public TorrentData Add(TorrentData t) => Torrents.GetOrAdd(t.InfoHashHex, t);
@@ -77,6 +80,7 @@ public sealed class BtClient : IAsyncDisposable
     public async Task AddPeer(Stream stream, TorrentData? t, string label)
     {
         var p = new PeerSession(stream, PeerId) { Label = label, Log = Log };
+        OnSession?.Invoke(p);
         peers[p] = t;
         try { await p.Run(t, ih => Torrents.GetValueOrDefault(Convert.ToHexStringLower(ih))); }
         finally { peers.TryRemove(p, out _); await p.DisposeAsync(); }

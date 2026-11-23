@@ -144,6 +144,14 @@ public sealed class TorrentData
 /// browser running WebTorrent. Speaks the extension protocol (BEP 10) with ut_metadata (BEP 9), so a peer with only the
 /// magnet link gets the torrent from us. Seeds what we have, downloads what we don't.
 /// </summary>
+/// <summary>A BitTorrent extension (BEP 10) on one connection, as WebTorrent's wire.use(Ext): e.g. ot_pay (pay per piece).</summary>
+public interface IWireExtension
+{
+    string Name { get; }
+    void OnExtendedHandshake(Dictionary<string, object?> handshake);
+    void OnMessage(byte[] payload);
+}
+
 public sealed class PeerSession : IAsyncDisposable
 {
     static readonly byte[] Proto = [19, .. Encoding.ASCII.GetBytes("BitTorrent protocol")];   // (not "\x13B…": C# reads \x13B as one character)
@@ -157,6 +165,20 @@ public sealed class PeerSession : IAsyncDisposable
     int outstanding;
     const int Pipeline = 16;
     public Action<string>? Log;
+    /// <summary>Piece bytes received from / sent to this peer (wire.downloaded / wire.uploaded in WebTorrent).</summary>
+    public long Downloaded, Uploaded;
+    public bool AmChoking { get; private set; } = true;
+    public bool PeerChoking => peerChokingUs;
+    public bool Open { get; private set; }
+    readonly List<IWireExtension> exts = []; readonly Dictionary<string, int> peerExt = [];
+    public IReadOnlyList<IWireExtension> Extensions => exts;
+    public void Use(IWireExtension e) => exts.Add(e);
+    /// <summary>Send one message of an extension the peer also speaks (dropped if it doesn't).</summary>
+    public void SendExtended(string name, byte[] payload) { if (peerExt.TryGetValue(name, out var id)) _ = SendExt(id, payload); }
+    public void Choke() { if (AmChoking) return; AmChoking = true; _ = Msg(0, []); }
+    public void Unchoke() { if (!AmChoking) return; AmChoking = false; _ = Msg(1, []); }
+    /// <summary>Whether to unchoke a peer that says it's interested (a payment policy may hold it back).</summary>
+    public Func<PeerSession, bool>? MayServe;
 
     public PeerSession(Stream stream, byte[] myPeerId) { s = stream; peerId = myPeerId; }
 
@@ -191,7 +213,9 @@ public sealed class PeerSession : IAsyncDisposable
     }
     async Task SendExtHandshake()
     {
-        var d = new Dictionary<string, object?> { ["m"] = new Dictionary<string, object?> { ["ut_metadata"] = (int)UtMetadataId } };
+        var m = new Dictionary<string, object?> { ["ut_metadata"] = (int)UtMetadataId };
+        for (int i = 0; i < exts.Count; i++) m[exts[i].Name] = UtMetadataId + 1 + i;
+        var d = new Dictionary<string, object?> { ["m"] = m };
         if (Torrent!.Meta != null) d["metadata_size"] = Torrent.Meta.InfoBytes.Length;
         await SendExt(0, Bencode.Encode(d));
     }
@@ -225,7 +249,7 @@ public sealed class PeerSession : IAsyncDisposable
         {
             case 0: peerChokingUs = true; t.Release(this); outstanding = 0; break;
             case 1: peerChokingUs = false; await Fill(); break;
-            case 2: await Msg(1, []); break;          // interested: we unchoke everyone (seeding is the point)
+            case 2: if (MayServe?.Invoke(this) != false) { AmChoking = false; await Msg(1, []); } break;   // interested: unchoke (seeding is the point), unless payment holds it back
             case 3: break;
             case 4:
             {
@@ -242,7 +266,9 @@ public sealed class PeerSession : IAsyncDisposable
             case 6:
             {
                 int pi = BinaryPrimitives.ReadInt32BigEndian(p.Span), off = BinaryPrimitives.ReadInt32BigEndian(p.Span[4..]), l = BinaryPrimitives.ReadInt32BigEndian(p.Span[8..]);
+                if (AmChoking) break;
                 var b = t.ReadBlock(pi, off, l); if (b == null) break;
+                Uploaded += b.Length;
                 var msg = new byte[8 + b.Length]; p.Span[..8].CopyTo(msg); b.CopyTo(msg, 8);
                 await Msg(7, msg); break;
             }
@@ -250,6 +276,7 @@ public sealed class PeerSession : IAsyncDisposable
             {
                 int pi = BinaryPrimitives.ReadInt32BigEndian(p.Span), off = BinaryPrimitives.ReadInt32BigEndian(p.Span[4..]);
                 outstanding = Math.Max(0, outstanding - 1);
+                Downloaded += p.Length - 8;
                 t.WriteBlock(pi, off, p.Span[8..]);
                 if (t.Complete) { if (weInterested) { weInterested = false; await Msg(3, []); } }
                 else await Fill();
@@ -267,9 +294,12 @@ public sealed class PeerSession : IAsyncDisposable
             if (Bencode.Decode(p.Span) is not Dictionary<string, object?> d) return;
             if (d.GetValueOrDefault("m") is Dictionary<string, object?> m && m.GetValueOrDefault("ut_metadata") is long um) peerUtMetadata = (int)um;
             if (d.GetValueOrDefault("metadata_size") is long ms) peerMetaSize = (int)ms;
+            if (d.GetValueOrDefault("m") is Dictionary<string, object?> mm) foreach (var (k, v) in mm) if (v is long id && id > 0) peerExt[k] = (int)id;
+            foreach (var e in exts) try { e.OnExtendedHandshake(d); } catch { }
             await AskMeta();
             return;
         }
+        if (ext > UtMetadataId && ext - UtMetadataId - 1 < exts.Count) { try { exts[ext - UtMetadataId - 1].OnMessage(p.ToArray()); } catch { } return; }
         if (ext != UtMetadataId) return;
         var msg = (Dictionary<string, object?>)Bencode.Decode(p.Span, out int end);
         long type = msg.GetValueOrDefault("msg_type") as long? ?? -1, piece = msg.GetValueOrDefault("piece") as long? ?? -1;

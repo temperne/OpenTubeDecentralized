@@ -36,6 +36,7 @@ public sealed class NodeControl(OpenTubeNode node)
     /// <summary>A routed message for this node: a control command gets a signed answer.</summary>
     public async Task<JsonObject?> OnRoute(JsonNode? body)
     {
+        if (body is JsonObject q && (string?)q["kind"] == "pchal") return node.Earn?.Answer(q) ?? new JsonObject { ["kind"] = "pproof", ["has"] = false };   // a storage proof challenge
         if (body is not JsonObject c || (string?)c["kind"] != "nodectl") return null;
         JsonObject Fail(string why) => Reply(c, false, null, why);
         if (!Js.NumIs(c["v"], 1) || (string?)c["node"] != node.NodeKey || Js.Str(c["nonce"]) is not { Length: <= 40 } nonce || Js.Str(c["cmd"]) is not { } cmd) return Fail("bad command");

@@ -177,6 +177,12 @@ public sealed class OpenTubeNode : IAsyncDisposable
         if (Options.Host && OwnerUser != null)
             try { Hosting = new Host(this, Options.VideoDir, Options.CapGB); _ = Task.Run(Hosting.Run); }
             catch (Exception e) { Log("video hosting unavailable: " + e.Message); }
+        Earn = new Earnings(this) { PendingTabs = Hosting != null ? Hosting.Tabs.Pending : null }; _ = Task.Run(() => Earn.Run(stop.Token));
+        if (Hosting != null) _ = Task.Run(async () =>
+        {
+            var every = int.TryParse(Environment.GetEnvironmentVariable("PROOF_EVERY_MS"), out var ms) ? ms : 2 * 60000;
+            while (!stop.IsCancellationRequested) { await Task.Delay(every, stop.Token).ContinueWith(_ => { }); try { await Earn.ChallengeRound(); } catch (Exception e) { Log("[proof] " + e.Message); } }
+        });
         _ = Task.Run(StatusLoop);
         _ = Task.Run(async () => { while (!stop.IsCancellationRequested) { await Task.Delay(60000, stop.Token).ContinueWith(_ => { }); Engine.Gossip(); } });
         _ = Task.Run(Engine.MaybeMine);
@@ -394,7 +400,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
         await Task.Delay(4000);
         while (!stop.IsCancellationRequested)
         {
-            var roles = new List<string> { "node" }; if (Rtmp != null) roles.Add("obs"); if (PublicUrl != null) roles.Add("entry");
+            var roles = new List<string> { "node" }; if (Rtmp != null) roles.Add("obs"); if (Hosting != null) roles.Add("host"); if (PublicUrl != null) roles.Add("entry");
             var addrs = new List<string>(); if (PublicUrl != null) addrs.Add(PublicUrl);
             addrs.AddRange(System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
                 .Where(i => i.OperationalStatus == System.Net.NetworkInformation.OperationalStatus.Up)
@@ -429,6 +435,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
     public Mesh? MeshRoom { get; private set; }
     public LiveRelays? Relays { get; private set; }
     public Host? Hosting { get; private set; }
+    public Earnings? Earn { get; private set; }
     async Task JoinMesh()
     {
         await Task.Delay(1500, stop.Token).ContinueWith(_ => { });

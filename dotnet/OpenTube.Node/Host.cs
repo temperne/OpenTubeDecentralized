@@ -21,7 +21,7 @@ public sealed class Host : IAsyncDisposable
 {
     const int MinCopies = 2;
     readonly OpenTubeNode node; readonly string videoDir; readonly double capGB; readonly Action<string> log;
-    public readonly BtClient Bt; public readonly WebTorrentPeers Web;
+    public readonly BtClient Bt; public readonly WebTorrentPeers Web; public readonly PieceTabs Tabs;
     sealed class Folder { public required string Dir, Name; public required JsonObject Meta; public bool OverCap; }
     readonly Dictionary<string, Folder> folders = [];
     readonly Dictionary<string, (string Chain, TorrentData T)> torrents = [];
@@ -36,6 +36,7 @@ public sealed class Host : IAsyncDisposable
         this.node = node; this.videoDir = Path.GetFullPath(videoDir); this.capGB = capGB; log = node.Log;
         Bt = new BtClient(SHA1.HashData(Encoding.UTF8.GetBytes("opentube-node:" + node.NodeKey))) { Log = _ => { } };   // browsers recognize this node's bytes
         Web = new WebTorrentPeers(Bt, log);
+        Tabs = new PieceTabs(node); Bt.OnSession = Tabs.Attach;   // pay per piece on every connection
         Directory.CreateDirectory(this.videoDir);
         ovFile = Path.Combine(this.videoDir, ".opentube-node.json");
         ov = (File.Exists(ovFile) ? Try(() => JsonNode.Parse(File.ReadAllText(ovFile)) as JsonObject) : null) ?? [];
@@ -68,6 +69,7 @@ public sealed class Host : IAsyncDisposable
         Bt.Listen(0);
         trackers = node.MeshTrackerUrls();
         log($"[host] hosting for {node.OwnerUser?[..8]}… in {videoDir} ({trackers.Count} trackers, BitTorrent on TCP port {Bt.Port})");
+        _ = Task.Run(async () => { while (!stop.IsCancellationRequested) { await Task.Delay(4000, stop.Token).ContinueWith(_ => { }); try { Tabs.Tick(Bt.Sessions); } catch (Exception e) { log("[pay] tabs: " + e.Message); } } });
         await Task.Delay(3000, stop.Token).ContinueWith(_ => { });
         int tick = 0;
         while (!stop.IsCancellationRequested)
@@ -381,6 +383,7 @@ public sealed class Host : IAsyncDisposable
         _ = Task.Delay(TimeSpan.FromHours(6)).ContinueWith(_ => { Bt.Remove(t.InfoHashHex); Web.Forget(t.InfoHashHex); Try(() => { File.Delete(file); return 0; }); });
         return t.InfoHashHex;
     }
+    public int? PieceLengthOf(string ih) { lock (gate) return torrents.TryGetValue(ih, out var x) ? x.T.Meta?.PieceLength : null; }
     public bool HasComplete(string ih) { lock (gate) return torrents.TryGetValue(ih, out var x) && x.T.Complete; }
     /// <summary>Storage proofs: one piece of a video this node has completely.</summary>
     public byte[]? Piece(string ih, int index)

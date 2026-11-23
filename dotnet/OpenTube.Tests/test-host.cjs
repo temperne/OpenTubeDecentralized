@@ -9,8 +9,8 @@ const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 const until = async (p, fn, arg, ms = 120000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (await p.evaluate(fn, arg).catch(() => false)) return ((Date.now() - t0) / 1000).toFixed(1); await new Promise(r => setTimeout(r, 300)); } throw new Error('timeout'); };
 const SITE = W + '/site'; fs.mkdirSync(SITE); for (const f of ['index.html', 'sw.js']) fs.copyFileSync(path.join(REPO, f), path.join(SITE, f)); fs.writeFileSync(SITE + '/seeds.json', '{"entry":[]}');
 let P, lines = []; const start = (grant) => {
-  P = spawn('dotnet', [REPO + '/dotnet/OpenTube.App/bin/Debug/net10.0/opentube.dll', '--service', `--port=${N}`, `--data=${W}/node`, `--videos=${W}/videos`, '--mine=all', '--no-tunnel', '--public=off', '--no-ranking', '--no-mesh', `--obs-port=${RT}`, '--site-dir=' + SITE, ...(grant ? ['--grant=' + grant] : [])]);
-  P.stdout.on('data', d => { for (const l of String(d).split('\n')) { lines.push(l); if (/\[host\]|\[obs\]|rror|fail/.test(l)) log('[C#]', l.trim().replace(/^\d\d:\d\d:\d\d /, '').slice(0, 170)); } });
+  P = spawn('dotnet', [REPO + '/dotnet/OpenTube.App/bin/Debug/net10.0/opentube.dll', '--service', `--port=${N}`, `--data=${W}/node`, `--videos=${W}/videos`, '--mine=all', '--no-tunnel', '--public=off', '--no-ranking', '--no-mesh', `--obs-port=${RT}`, '--site-dir=' + SITE, ...(grant ? ['--grant=' + grant] : [])], { env: { ...process.env, PAY_DEBUG: '1' } });
+  P.stdout.on('data', d => { for (const l of String(d).split('\n')) { lines.push(l); if (/\[host\]|\[obs\]|\[pay|rror|fail/.test(l)) log('[C#]', l.trim().replace(/^\d\d:\d\d:\d\d /, '').slice(0, 170)); } });
   for (let i = 0; i < 60; i++) { try { execSync(`curl -sf localhost:${N}/status`); return; } catch { execSync('sleep 0.5'); } } };
 let fail = 0; const check = (ok, what) => { log(ok ? 'ok  ' : 'FAIL', what); if (!ok) fail = 1; };
 (async () => {
@@ -62,5 +62,17 @@ let fail = 0; const check = (ok, what) => { log(ok ? 'ok  ' : 'FAIL', what); if 
   let prog = null; for (let i = 0; i < 90 && !prog?.done; i++) { prog = await ctl('store.status', { ih: vih }); if (!prog?.done) await new Promise(r => setTimeout(r, 1000)); }
   const kept = fs.readdirSync(folder).find(f => f.endsWith('.mp4') && f !== rec.file);
   check(prog?.done && kept && crypto.createHash('sha256').update(fs.readFileSync(folder + '/' + kept)).digest('hex') === crypto.createHash('sha256').update(fs.readFileSync('/tmp/claude-0/-home-user-OpenTubeDecentralized/a82132eb-7c72-5513-9bf1-91c1c8d3383e/scratchpad/work/small.mp4')).digest('hex'), `store: the node downloaded the upload from the browser and keeps it: ${kept || 'none'} ${JSON.stringify(prog)}`);
-  for (const c of ctxs) await c.close(); P.kill(); process.exit(fail);
+  // 5. pay per piece (ot_pay): a viewer with no coins downloads that video from the node alone; the node gets its
+  //    signed tabs and stops sending once it can't pay (as the JavaScript node does)
+  await ctxs[0].close();   // the uploader's browser is gone: only the node has it
+  const V2 = await open('V2', Q + '#/c/' + chain);
+  await until(V2, ({ c, ih }) => [...(opentube.engine.chains.get(c)?.blocks.values() || [])].some(b => b.payload.infohash === ih), { c: chain, ih: vih }, 60000).catch(() => log('V2 never got the video block'));
+  const r2 = await V2.evaluate(async ({ ih, tr }) => new Promise((res) => {
+    const t = opentube.wt.add(`magnet:?xt=urn:btih:${ih}&tr=${encodeURIComponent(tr)}`, { announce: [tr] });
+    setTimeout(() => res({ progress: t.progress, peers: t.numPeers, done: t.done }), 40000);
+  }), { ih: vih, tr: TRACKER });
+  const stopped = lines.find(l => /\[pay\] stopped sending to/.test(l)), gotTab = lines.some(l => /pay-debug\] got \{"tab"/.test(l));
+  check(gotTab, 'the node received the viewer\'s signed tabs over ot_pay');
+  check(!!stopped && !r2.done, `pay per piece: a viewer who can't pay is stopped (${stopped ? stopped.replace(/^.*\[pay\] /, '') : 'never stopped'}; it got ${Math.round(r2.progress * 100)}%)`);
+  for (const c of ctxs.slice(1)) await c.close(); P.kill(); process.exit(fail);
 })().catch(e => { console.error(e); try { P.kill(); } catch {} process.exit(1); });

@@ -64,6 +64,10 @@ public sealed class Engine
         }
     }
     readonly HashSet<string> requested = [];
+    /// <summary>A usage receipt arrived (see SERVE): the node keeps its own and passes others on.</summary>
+    public event Action<JsonObject, string>? OnReceipt;
+    /// <summary>Send a message to every peer except one (null: all).</summary>
+    public void SendAllBut(JsonObject m, string? except) { foreach (var p in peers()) if (p != except) Send(m, p); }
     public bool TrackAll { get => Store.TrackAll; set => Store.TrackAll = value; }
 
     /// <summary>handle(m, from): one message from a peer.</summary>
@@ -99,6 +103,7 @@ public sealed class Engine
                 case "node": AcceptNodeInfo(Get(m, "n")); break;
                 case "memrq" when IsKey(Get(m, "a")): if (Memberships.TryGetValue(Str(Get(m, "a"))!, out var mm)) Send(new JsonObject { ["t"] = "mem", ["m"] = mm.DeepClone() }, from); break;
                 case "rank" when Get(m, "r") is JsonObject r: AcceptRanking(r, true); break;
+                case "rcpt" when Get(m, "r") is JsonObject rc: OnReceipt?.Invoke((JsonObject)rc.DeepClone(), from); break;   // a usage receipt on its way to the node it pays
                 case "mp" when Get(m, "e") is JsonArray e:
                 {
                     bool any = false; foreach (var g in e.Take(64)) if (Store.AddToMempool(g?.DeepClone())) any = true;
@@ -143,6 +148,44 @@ public sealed class Engine
             if (Str(Get(t, "hash")) is not { } h || Store.TxPool.ContainsKey(h) || !Tx.Check(t) || !Store.NameAllowedPublic(t) || Num(Get(t, "seq")) <= Store.Ledger.Seq.GetValueOrDefault(Str(Get(t, "from"))!)) return false;
             Store.TxPool[h] = t; return true;
         }
+    }
+    /// <summary>The ledger with this key's pending transactions applied (for the next sequence number and checks).</summary>
+    public Ledger PendingState(string from)
+    {
+        lock (gate)
+        {
+            var st = new Ledger(Store.Ledger);
+            foreach (var t in Store.TxPool.Values.Where(x => Str(x["from"]) == from).OrderBy(x => Num(x["seq"]))) st.Apply(t);
+            return st;
+        }
+    }
+    readonly SemaphoreSlim txLock = new(1, 1);
+    /// <summary>
+    /// submitTx: a transaction from this node's key (or another signer it holds) with exactly one action (pay, starter,
+    /// serve, tabs, …) and an optional memo; checked against the ledger, proof of work done (10 bits, 20 for starter
+    /// coins), signed, added to the pool and sent. One at a time per key (the sequence number depends on the last).
+    /// </summary>
+    public async Task<JsonObject> SubmitTx(JsonObject fields, Identity? signer = null)
+    {
+        signer ??= Signer;
+        await txLock.WaitAsync();
+        try
+        {
+            var from = signer.pub; var st = PendingState(from);
+            var body = new JsonObject { ["v"] = 2, ["kind"] = "tx", ["from"] = from, ["seq"] = st.Seq.GetValueOrDefault(from) + 1, ["ts"] = Now(), ["nonce"] = 0 };
+            foreach (var (k, v) in fields) if (k != "memo" && v != null && !(v is JsonValue jv && jv.GetValueKind() == System.Text.Json.JsonValueKind.False)) body[k] = v.DeepClone();
+            if (Str(fields["memo"]) is { Length: > 0 } memo) body["memo"] = memo;
+            if (!Tx.Shape(body)) throw new InvalidOperationException("invalid transaction");
+            if (st.Check(body) is { } why) throw new InvalidOperationException(why);
+            var bits = Truthy(Get(body, "starter")) ? (int)Coin.StarterBits : (int)Coin.TxBits;
+            body["nonce"] = await Task.Run(() => Miner.Find(Blocks.Preimage(body), bits, CancellationToken.None) ?? 0);
+            body["hash"] = Blocks.Hash(body); body["sig"] = signer.Sign(Str(body["hash"])!);
+            if (!AddTx(body)) throw new InvalidOperationException("transaction rejected");
+            Send(new JsonObject { ["t"] = "tx", ["x"] = body.DeepClone() }, null);
+            MaybeMineSoon();
+            return body;
+        }
+        finally { txLock.Release(); }
     }
     /// <summary>selectTxs(state): pending transactions that apply, in order, on top of a state.</summary>
     List<JsonObject> SelectTxs(Ledger state)
