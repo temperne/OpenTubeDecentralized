@@ -23,6 +23,8 @@ public sealed class NodeOptions
     public bool Ranks { get; set; } = true;
     /// <summary>The site this node came from (--site=https://…): its /entries.json lists entry nodes to connect to.</summary>
     public string? Site { get; set; }
+    /// <summary>The port OBS streams to (rtmp://this-computer:PORT/live); 0: no OBS receiver. --obs-port=1935, --no-obs.</summary>
+    public int ObsPort { get; set; } = 1935;
     public string? RankName { get; set; }
 
     public static string DefaultDataDir() =>
@@ -46,6 +48,8 @@ public sealed class NodeOptions
         if (args.Contains("--no-ranking") || Environment.GetEnvironmentVariable("RANKER") == "0") o.Ranks = false;
         o.RankName = Get("ranking-name", "NODE_NAME");
         o.Site = Get("site", "NODE_SITE")?.TrimEnd('/');
+        if (int.TryParse(Get("obs-port", "RTMP_PORT"), out var op)) o.ObsPort = op;
+        if (args.Contains("--no-obs")) o.ObsPort = 0;
         if (args.Contains("--no-tunnel") || Environment.GetEnvironmentVariable("TUNNEL") == "0") o.Tunnel = false;
         return o;
     }

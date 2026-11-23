@@ -74,6 +74,11 @@ public sealed class OpenTubeNode : IAsyncDisposable
     /// <summary>Load the rules, this node's key and its saved blocks, then connect to peers.</summary>
     /// <summary>The network's engine, in C#: chains, peers' messages, mining, memberships, node statuses, rankings.</summary>
     public Engine Engine { get; private set; } = null!;
+    public Identity? Identity { get; private set; }
+    /// <summary>The person this computer belongs to (from the grant), if any.</summary>
+    public string? OwnerUser { get; private set; }
+    public ObsLive? Obs { get; private set; }
+    public RtmpServer? Rtmp { get; private set; }
     Identity? rankerKey; JsonObject? rankerGenesis;
 
     /// <summary>Load this node's key and its saved blocks, then connect to peers.</summary>
@@ -84,7 +89,8 @@ public sealed class OpenTubeNode : IAsyncDisposable
         Build = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(Html)))[..12];
         Version = Network.VersionOf(Html);
         var id = Identity.LoadOrCreate(Path.Combine(Options.DataDir, "key.json"));
-        NodeKey = id.pub;
+        NodeKey = id.pub; Identity = id;
+        if (Options.Grant != null) try { OwnerUser = (string?)JsonNode.Parse(Encoding.UTF8.GetString(B64u.Decode(Options.Grant)))?["user"]; } catch { }
         var mainGenesis = Network.MainGenesis();
 
         // this node's ranking list key ("Trending on …"), in the JavaScript node's ranker.json format
@@ -141,6 +147,15 @@ public sealed class OpenTubeNode : IAsyncDisposable
         Hub.IsJoined = (k, c) => Engine.Read(x => x.Memberships.TryGetValue(k, out var m) && m["joined"] is JsonArray j && j.Any(v => (string?)v == c));
         Hub.UserOf = k => Engine.Read(x => x.Nodes.TryGetValue(k, out var nd) ? (string?)nd["grant"]?["user"] : null);
         Log($"OpenTube {Version} on .NET {Environment.Version} (all C#) · build {Build} · network {NetworkId[..16]}… · node {NodeKey[..8]}… · website from {SiteDir}");
+
+        // OBS: each person who may use this computer has a stream key (the owner's is made now and shown here)
+        if (Options.ObsPort > 0)
+        {
+            Obs = new ObsLive(this);
+            if (OwnerUser != null) { var p = Obs.ProfileOf(OwnerUser); Log($"[obs] stream key for the owner: {(string?)p["key"]}"); }
+            Obs.Save();
+            Rtmp = new RtmpServer(Options.ObsPort, Obs.OnPublish, Log); Rtmp.Start();
+        }
 
         foreach (var p in Options.Peers) _ = DialAsync(p);
         _ = Task.Run(FindEntryNodes);
@@ -295,6 +310,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
                     ["registered"] = e.Store.Directory.Count, ["pending"] = e.Store.Mempool.Count, ["chains"] = e.Store.Chains.Count, ["nodes"] = e.Nodes.Count, ["mining"] = e.Mining,
                     ["ranker"] = (string?)rankerGenesis?["hash"], ["memberships"] = e.Memberships.Count, ["rejected"] = new JsonObject(e.Store.Rejected.Select(kv => new KeyValuePair<string, JsonNode?>(kv.Key, kv.Value))),
                 });
+                if (Rtmp != null) s["obs"] = new JsonObject { ["linked"] = new JsonArray((Obs?.LinkedChannels() ?? []).Select(c => (JsonNode?)c).ToArray()), ["port"] = Rtmp.Port, ["live"] = Rtmp.Live > 0, ["bytes"] = Rtmp.Bytes, ["stage"] = Rtmp.LastStage, ["keyInterval"] = Rtmp.KeyInterval, ["error"] = Rtmp.Error };
                 s["tracker"] = Tracker.Stats(); s["live"] = Hub.Stats(); s["liveStreams"] = Hub.Live();
                 s["peers"] = peers.Values.Count(p => p.Role is "node-in" or "node-out");
                 s["trackerClients"] = peers.Values.Count(p => p.Role == "tracker");
@@ -350,7 +366,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        stop.Cancel();
+        stop.Cancel(); Rtmp?.Stop();
         foreach (var p in peers.Values) p.Out.Writer.TryComplete();
         await Task.Delay(100);
         lock (this) { blockLog?.Dispose(); blockLog = null; }

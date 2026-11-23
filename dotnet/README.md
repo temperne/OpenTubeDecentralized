@@ -63,11 +63,14 @@ Each part is checked against the JavaScript core on generated cases (`OpenTube.T
 scripts from `index.html`). `compare-hub.cjs` runs the same live-hub and tracker script against a JavaScript node and
 the C# node. `JsCore` (the core running in Jint) is kept only for tests.
 
+**OBS:** the node receives OBS's Start Streaming (RTMP, port 1935; `--obs-port=`, `--no-obs`). Each person's stream key
+is in `obs.json` (the JavaScript node's format); the owner's is printed at startup. The stream goes live on the channel
+whose owner linked this computer, reaches viewers through this computer's live hub (or an entry node's), is recorded to
+`recordings/`, and ends on the channel when OBS stops. `test-obs.cjs` checks all of it with ffmpeg playing OBS.
+
 **Not in the .NET node yet** (the JavaScript node has them):
-- video hosting (BitTorrent seeding);
-- the OBS receiver;
+- video hosting (BitTorrent seeding), so recordings aren't offered for publishing yet;
 - the group studio;
-- recordings;
 - YouTube forwarding;
 - flash computers;
 - node control from the site (`nodectl`);
