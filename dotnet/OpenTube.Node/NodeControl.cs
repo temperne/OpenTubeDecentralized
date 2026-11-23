@@ -76,6 +76,14 @@ public sealed class NodeControl(OpenTubeNode node)
                     node.Relays?.Ask((string)a["stream"]!, (string)a["chain"]!, Js.IsTrue(a["record"]), Js.Str(a["title"]));
                     return Reply(c, true, new JsonObject { ["relaying"] = true });
                 }
+                case "update":
+                {   // download the newest version and restart with it (the launcher or the service manager starts it again)
+                    if (!owner && !May(user, "manage")) return Fail("only the owner can update this computer");
+                    if (node.Update is not { Enabled: true } up) return Fail("this computer wasn’t started with the OpenTube command, so it can’t update itself: stop it and run the command again");
+                    node.Log($"[control] update from {who}’s console");
+                    try { var restarting = await up.Check(true); return Reply(c, true, new JsonObject { ["restarting"] = restarting, ["commit"] = up.Commit }); }
+                    catch (Exception e) { return Fail(e.Message); }
+                }
                 case "status":
                     data = node.Status.DeepClone(); if (data is JsonObject so) so["host"] = node.Hosting?.Status(); break;
                 case "store": case "store.status":
@@ -175,7 +183,6 @@ public sealed class NodeControl(OpenTubeNode node)
                     data = node.Hosting.Command(cmd, a); break;
                 default:
                     if (cmd.StartsWith("flash", StringComparison.Ordinal)) return Fail("flash computers aren’t in the .NET version of OpenTube yet");
-                    if (cmd == "update") return Fail("restart it yourself: run the same command again (it downloads the current version)");
                     return Fail("this computer doesn’t know that command (it runs the .NET version of OpenTube)");
             }
             node.Log($"[control] {cmd} from {who}’s console");

@@ -177,6 +177,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
         if (Options.Host && OwnerUser != null)
             try { Hosting = new Host(this, Options.VideoDir, Options.CapGB); _ = Task.Run(Hosting.Run); }
             catch (Exception e) { Log("video hosting unavailable: " + e.Message); }
+        Update = new Updater(this); _ = Task.Run(() => Update.Run(stop.Token));
         Earn = new Earnings(this) { PendingTabs = Hosting != null ? Hosting.Tabs.Pending : null }; _ = Task.Run(() => Earn.Run(stop.Token));
         if (Hosting != null) _ = Task.Run(async () =>
         {
@@ -436,6 +437,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
     public LiveRelays? Relays { get; private set; }
     public Host? Hosting { get; private set; }
     public Earnings? Earn { get; private set; }
+    public Updater? Update { get; private set; }
     async Task JoinMesh()
     {
         await Task.Delay(1500, stop.Token).ContinueWith(_ => { });

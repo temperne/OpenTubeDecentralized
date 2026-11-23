@@ -23,12 +23,27 @@ if [ "$(uname)" = "Linux" ] && ! (ldconfig -p 2>/dev/null | grep -q libicu); the
 
 echo "OpenTube: downloading the latest version…"
 mkdir -p "$APP"
+COMMIT=""
 if [ -n "${OPENTUBE_SRC:-}" ]; then cp -R "$OPENTUBE_SRC/." "$APP/"   # a local copy (for testing)
-else curl -fsSL "https://codeload.github.com/$REPO/tar.gz/refs/heads/$REF" | tar -xz -C "$APP" --strip-components=1; fi
+else
+  COMMIT=$(curl -fsSL -H 'Accept: application/vnd.github.sha' "https://api.github.com/repos/$REPO/commits/$REF" 2>/dev/null || true)
+  case "$COMMIT" in [0-9a-f]*) ;; *) COMMIT="";; esac
+  curl -fsSL "https://codeload.github.com/$REPO/tar.gz/${COMMIT:-refs/heads/$REF}" | tar -xz -C "$APP" --strip-components=1
+fi
+printf '%s' "$COMMIT" > "$APP/.commit"
+# the node updates itself: it fetches the new source here and exits with 75; this loop starts it again
+export OPENTUBE_APP_DIR="$APP" OPENTUBE_REPO="$REPO" OPENTUBE_REF="$REF"
 cd "$APP/dotnet"
 echo "OpenTube: building and starting (the first time takes a minute)…"
 # Started as "curl … | bash", this script's input is the download, not the keyboard: give the program the terminal,
 # so its menus and Ctrl+C work. With no terminal at all (cron, a pipe), run it with no UI.
-if [ -t 0 ]; then exec dotnet run -c Release --project OpenTube.App -- "$@"
-elif (exec </dev/tty) 2>/dev/null; then exec dotnet run -c Release --project OpenTube.App -- "$@" </dev/tty
-else exec dotnet run -c Release --project OpenTube.App -- --service "$@"; fi
+run() {
+  if [ -t 0 ]; then dotnet run -c Release --project OpenTube.App -- "$@"
+  elif (exec </dev/tty) 2>/dev/null; then dotnet run -c Release --project OpenTube.App -- "$@" </dev/tty
+  else dotnet run -c Release --project OpenTube.App -- --service "$@"; fi
+}
+while true; do
+  code=0; run "$@" || code=$?
+  [ "$code" -eq 75 ] || exit "$code"
+  echo "OpenTube: starting the new version…"
+done

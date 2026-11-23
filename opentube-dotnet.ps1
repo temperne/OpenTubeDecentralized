@@ -24,11 +24,22 @@ if (-not (Test-Dotnet10)) {
 
 Write-Host 'OpenTube: downloading the latest version...'
 $zip = Join-Path $env:TEMP 'opentube.zip'; $tmp = Join-Path $env:TEMP 'opentube-src'
-Invoke-WebRequest -UseBasicParsing "https://codeload.github.com/$repo/zip/refs/heads/$ref" -OutFile $zip
+$commit = ''
+try { $commit = (Invoke-WebRequest -UseBasicParsing -Headers @{ Accept = 'application/vnd.github.sha' } "https://api.github.com/repos/$repo/commits/$ref").Content.Trim() } catch { }
+if ($commit -notmatch '^[0-9a-f]{40}$') { $commit = '' }
+$what = if ($commit) { $commit } else { "refs/heads/$ref" }
+Invoke-WebRequest -UseBasicParsing "https://codeload.github.com/$repo/zip/$what" -OutFile $zip
 if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
 Expand-Archive -Path $zip -DestinationPath $tmp
 New-Item -ItemType Directory -Force -Path $app | Out-Null
 Copy-Item -Recurse -Force (Join-Path (Get-ChildItem $tmp | Select-Object -First 1).FullName '*') $app
+Set-Content -NoNewline -Path (Join-Path $app '.commit') -Value $commit
+# the node updates itself: it fetches the new source here and exits with 75; this loop starts it again (rebuilding)
+$env:OPENTUBE_APP_DIR = $app; $env:OPENTUBE_REPO = $repo; $env:OPENTUBE_REF = $ref
 Set-Location (Join-Path $app 'dotnet')
 Write-Host 'OpenTube: building and starting (the first time takes a minute)...'
-& dotnet run -c Release --project OpenTube.App -- @args
+while ($true) {
+  & dotnet run -c Release --project OpenTube.App -- @args
+  if ($LASTEXITCODE -ne 75) { exit $LASTEXITCODE }
+  Write-Host 'OpenTube: starting the new version...'
+}

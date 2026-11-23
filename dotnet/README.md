@@ -114,4 +114,4 @@ passed to the owner. The C# engine makes its own transactions (proof of work, si
 - the DHT (finding ordinary BitTorrent apps without a tracker);
 
 - flash computers;
-- self-update and public/tunnel switching from the site.
+- flash computers, the scratch pad between entry nodes, the reachability check.
