@@ -390,6 +390,8 @@ function relayAllowed(chain, b) {   // did the owner link b's author to the chan
 }
 const rekeyPreimage = (chainId, key) => `opentube-rekey:${chainId}:${key}`;   // the NEW key signs this: it agrees to take over
 async function checkSigned(b) {
+  const native = globalThis.OpenTubeNative?.checkSigned;   // a host with the same rule built in (the .NET node) checks natively
+  if (native) return native(b);
   if (!b || typeof b !== 'object' || !isHex(b.hash, 64) || typeof b.sig !== 'string' || !Number.isSafeInteger(b.nonce) || !Number.isSafeInteger(b.ts) || !Number.isSafeInteger(b.height)) return false;
   if (canon(b).length > LIMITS.blockBytes) return false;
   if (b.ts > Date.now() + 10 * 60000) return false;
@@ -7330,15 +7332,19 @@ function nodesPanel() {
     const cmd = NODE_LOADER(site) + ` -- --site=${site} --grant=${g}` + (videos.value.trim() ? ' ' + q('--videos=' + videos.value.trim()) : '') + (label.value.trim() ? ' ' + q('--name=' + label.value.trim()) : '')
       + (checks.host.checked ? '' : ' --no-host') + (checks.obs.checked ? '' : ' --no-obs') + (checks.mine.checked ? ' --mine' : '') + (checks.tunnel.checked ? ' --tunnel' : checks.public.checked ? ' --public' : '') + (Number(obsPort.value) > 0 && Number(obsPort.value) !== 1935 ? ' --obs-port=' + Number(obsPort.value) : '');
     const dotnet = prog.value === 'dotnet';
+    if (dotnet && (checks.obs.checked || checks.host.checked)) toast('The .NET program doesn’t receive OBS or host videos yet: those options are ignored. Pick the Node.js program for OBS.');
     // the .NET node: from the source (no downloads to trust but the repository), built and run by the .NET SDK
-    const dcmd = `git clone --depth 1 https://github.com/temperne/OpenTubeDecentralized opentube && cd opentube/dotnet && dotnet run -c Release --project OpenTube.App -- --site=${site} --grant=${g}`
-      + (label.value.trim() ? ' ' + q('--name=' + label.value.trim()) : '') + (checks.tunnel.checked ? '' : ' --no-tunnel') + (checks.mine.checked ? ' --mine=all' : '');
+    // it installs .NET 10 first if the computer doesn't have it, then downloads and starts OpenTube (no git needed)
+    const dargs = ` --site=${site} --grant=${g}` + (label.value.trim() ? ' ' + q('--name=' + label.value.trim()) : '') + (checks.tunnel.checked ? '' : ' --no-tunnel') + (checks.mine.checked ? ' --mine=all' : '');
+    const win = /Win/.test(navigator.platform || navigator.userAgent);
+    const dcmd = win ? `powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm ${site}/opentube-dotnet.ps1)))${dargs.replace(/"/g, "'")}"`
+      : `curl -fsSL ${site}/opentube-dotnet.sh | bash -s --${dargs}`;
     const shown = dotnet ? dcmd : cmd;
     const ta = h('textarea', { readOnly: true, rows: 5, class: 'mono', style: 'width:100%;font-size:12px' }, shown); ta.value = shown;
     out.replaceChildren(h('label', {}, 'Paste this into a terminal on that computer (Windows: Command Prompt or PowerShell; Mac: Terminal):'), ta,
       h('div', { class: 'row', style: 'margin-top:6px' }, h('button', { onclick: () => copyText(shown, 'Command') }, 'Copy command'),
         h('span', { class: 'sub' }, dotnet
-          ? 'Needs git and the .NET 10 SDK (dot.net). It opens a window (or a terminal UI over SSH); its Service menu sets it to run at startup. Preview: it keeps the chains, serves the website and is a tracker and live hub, but doesn’t host videos or take OBS yet — use the Node.js program for those. The command carries a grant signed by your key, so don’t share it.'
+          ? (win ? 'For Windows (Command Prompt or PowerShell). ' : 'For Linux and macOS (on Windows, open this page there for its command). ') + 'It installs .NET 10 first if this computer doesn’t have it (for your user only, no admin needed), then downloads OpenTube; running it again updates. It opens a window (or a terminal UI over SSH); its Service menu sets it to run at startup. Preview: it keeps the chains, serves the website and is a tracker and live hub, but doesn’t host videos or take OBS yet — use the Node.js program for those. The command carries a grant signed by your key, so don’t share it.'
           : 'Needs Node.js 22 or newer (nodejs.org). The command carries a grant signed by your key: whoever runs it runs a node that is yours, so don’t share it.')));
   } }, 'Create my command');
   const list = h('div');

@@ -82,7 +82,7 @@ public static class Blocks
                 case JsonValue x:
                     if (x.TryGetValue<string>(out var s)) sb.Append(JsString(s));
                     else if (x.TryGetValue<bool>(out var b)) sb.Append(b ? "true" : "false");
-                    else sb.Append(JsNumber(x.GetValue<double>()));
+                    else sb.Append(Js.NumberToString(x.GetValue<double>()));
                     break;
             }
         }
@@ -113,9 +113,6 @@ public static class Blocks
         }
         return sb.Append('"').ToString();
     }
-    /// <summary>A number as JavaScript prints it (integers without ".0"; the network only uses safe integers in blocks).</summary>
-    public static string JsNumber(double d) =>
-        double.IsFinite(d) ? (d == Math.Floor(d) && Math.Abs(d) < 1e21 ? ((long)d).ToString(System.Globalization.CultureInfo.InvariantCulture) : d.ToString("R", System.Globalization.CultureInfo.InvariantCulture)) : "null";
 
     public static string Preimage(JsonObject block)
     {
@@ -123,7 +120,7 @@ public static class Blocks
         foreach (var (k, v) in block) if (k is not ("hash" or "sig" or "nonce")) rest[k] = v?.DeepClone();
         return Canon(rest) + ":";
     }
-    public static string Hash(JsonObject block) => Sha256Hex(Preimage(block) + Blocks.JsNumber(block["nonce"]!.GetValue<double>()));
+    public static string Hash(JsonObject block) => Sha256Hex(Preimage(block) + Js.NumberToString(block["nonce"]!.GetValue<double>()));
     public static string Sha256Hex(string s) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(s)));
     public static int LeadingZeroBits(ReadOnlySpan<byte> d)
     {

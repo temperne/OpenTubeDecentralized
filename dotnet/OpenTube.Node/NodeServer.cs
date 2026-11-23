@@ -62,6 +62,7 @@ public sealed partial class NodeServer : IAsyncDisposable
         ("sw.js", "text/javascript"), ("seeds.json", "application/json"),
         ("opentube.mjs", "text/javascript"), ("server.mjs", "text/javascript"), ("host.mjs", "text/javascript"),
         ("rtmp.mjs", "text/javascript"), ("tls.mjs", "text/javascript"), ("headless.mjs", "text/javascript"),
+        ("opentube-dotnet.sh", "text/plain; charset=utf-8"), ("opentube-dotnet.ps1", "text/plain; charset=utf-8"),
     ];
 
     // ---- Cloudflare quick tunnel: a public https address, no account needed (it changes if cloudflared restarts)

@@ -108,6 +108,8 @@ public sealed partial class JsCore : IDisposable
             return id;
         });
         h.Fn("unmine", (double id) => { if (mining.TryRemove((int)id, out var c)) c.Cancel(); });
+        // the rules already ported to C# (Rules.cs), used by the core in place of its own (see OpenTubeNative in the core)
+        h.Fn("checkSigned", (string json) => Rules.CheckSigned(System.Text.Json.Nodes.JsonNode.Parse(json)));
         h.Fn("done", (double id, string? json) => { if (pending.TryRemove((int)id, out var t)) t.TrySetResult(json); });
         h.Fn("fail", (double id, string err) => { if (pending.TryRemove((int)id, out var t)) t.TrySetException(new InvalidOperationException(err)); });
         js.SetValue("__h", h.Build());
@@ -142,6 +144,7 @@ public sealed partial class JsCore : IDisposable
       const mineJobs = new Map();
       globalThis.__mined = (id, n) => { const r = mineJobs.get(id); if (r) { mineJobs.delete(id); r(n); } };
       globalThis.__mine = (body, bits) => { const id = __h.mine(OpenTubeCore.preimage(body), bits); return { promise: new Promise(r => mineJobs.set(id, r)), cancel: () => { mineJobs.delete(id); __h.unmine(id); } }; };
+      globalThis.OpenTubeNative = { checkSigned: (b) => __h.checkSigned(JSON.stringify(b) ?? 'null') };
       globalThis.__settle = (v, id) => Promise.resolve(v).then(x => __h.done(id, x === undefined ? null : JSON.stringify(x)), e => __h.fail(id, String(e && e.stack || e)));
     """;
 

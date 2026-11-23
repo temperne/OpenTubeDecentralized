@@ -1,0 +1,69 @@
+using System.Text.Json.Nodes;
+using OpenTube.Core;
+
+namespace OpenTube.Tests;
+
+// The C# port against the JavaScript core's own answers (data/rules.json, made by gen-vectors.mjs from index.html).
+public class RulesTests
+{
+    static readonly JsonObject V = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "../../../data/rules.json")))!.AsObject();
+    static long At => (long)V["generatedAt"]!;
+
+    static void AllAgree(string what, IEnumerable<(bool expected, bool actual, JsonNode? input)> results)
+    {
+        var bad = results.Where(r => r.expected != r.actual).Take(5).ToList();
+        Assert.True(bad.Count == 0, $"{what}: C# disagrees with JavaScript on {bad.Count}+ cases, e.g.\n" + string.Join("\n", bad.Select(b => $"  JS {b.expected}, C# {b.actual}: {b.input?.ToJsonString()[..Math.Min(400, b.input.ToJsonString().Length)]}")));
+    }
+
+    [Fact]
+    public void ValidGenesis_agrees_with_javascript() =>
+        AllAgree("validGenesis", V["genesis"]!.AsArray().Select(c => ((bool)c!["ok"]!, Rules.ValidGenesis(c["g"]), c["g"])));
+
+    [Fact]
+    public void CheckSigned_agrees_with_javascript() =>
+        AllAgree("checkSigned", V["signed"]!.AsArray().Select(c => ((bool)c!["ok"]!, Rules.CheckSigned(c["b"], At), c["b"])));
+
+    [Fact]
+    public void Numbers_print_as_javascript_prints_them()
+    {
+        foreach (var c in V["numbers"]!.AsArray())
+            Assert.Equal((string)c!["s"]!, Blocks.Canon(c["n"]));
+    }
+
+    [Fact]
+    public void Chain_heads_ancestors_and_missing_blocks_agree_with_javascript()
+    {
+        foreach (var c in V["chains"]!.AsArray())
+        {
+            var g = c!["genesis"]!.AsObject();
+            var ch = new Chain((string)g["hash"]!, g);
+            foreach (var b in c["adds"]!.AsArray()) ch.Add(b!.AsObject());
+            Assert.Equal(c["heads"]!.AsArray().Select(x => (string)x!), ch.Heads);
+            Assert.Equal(c["anc"]!.AsArray().Select(x => (string)x!), ch.Ancestors(c["ancQ"]!.AsArray().Select(x => (string)x!)).Items);
+            Assert.Equal(c["missing"]!.AsArray().Select(x => (string)x!),
+                ch.MissingFor(c["want"]!.AsArray().Select(x => (string)x!), c["have"]!.AsArray().Select(x => (string)x!)).Select(b => (string)b["hash"]!));
+        }
+    }
+}
+
+// The core running in .NET with the ported rule plugged in gives the same answers as its own JavaScript version.
+// (Speed comes later, when whole layers leave the interpreter: through it, both take about the same time.)
+public class NativeHookTests
+{
+    [Fact]
+    public async Task Native_checkSigned_plugged_into_the_core_gives_the_same_answers()
+    {
+        var repo = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../.."));
+        // the signed blocks only (not the oversized one: that one is rejected by size before any work)
+        var signed = new JsonArray(JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "../../../data/rules.json")))!["signed"]!.AsArray()
+            .Where(c => c!["b"]!.ToJsonString().Length < 100000).Take(10).Select(c => (JsonNode?)c!.DeepClone()).ToArray());
+        var cases = new JsonObject { ["signed"] = signed }.ToJsonString();
+        using var core = new JsCore(); core.LoadFromPage(File.ReadAllText(Path.Combine(repo, "index.html")));
+        var run = $$"""(async () => { const V = {{cases}}; const t0 = Date.now(); const r = []; for (const c of V.signed) r.push(await OpenTubeCore.checkSigned(JSON.parse(JSON.stringify(c.b)))); return { ms: Date.now() - t0, r: r.slice(0, V.signed.length) }; })()""";
+        var native = JsonNode.Parse((await core.RunAsync(run))!)!;
+        await core.RunAsync("Promise.resolve(delete globalThis.OpenTubeNative)");
+        var js = JsonNode.Parse((await core.RunAsync(run))!)!;
+        Assert.Equal(js["r"]!.ToJsonString(), native["r"]!.ToJsonString());
+        Console.WriteLine($"checkSigned × {js["r"]!.AsArray().Count}: JavaScript in .NET {js["ms"]} ms, native C# {native["ms"]} ms");
+    }
+}
