@@ -20,6 +20,7 @@ public static class Program
         if (args.Contains("--install-service")) return ServiceInstaller.Install(args);
         if (args.Contains("--uninstall-service")) return ServiceInstaller.Uninstall();
         if (args.Contains("--service-help")) { Console.WriteLine(ServiceInstaller.Instructions()); return 0; }
+        if (args.Length > 0 && args[0] == "torrent") return TorrentTool.Run(args[1..]);
         if (args.Contains("--service")) return RunService(args);
         if (args.Contains("--tui") || !HasDisplay()) return TerminalUi.Run(args);
         return Gui.Run(args);
