@@ -1,0 +1,49 @@
+# Builds the Android app (dotnet/OpenTube.Mobile: .NET MAUI, all C#) and publishes it as the "android-latest" release,
+# which the site links to (Devices → Get the app). Signing: the ANDROID_KEYSTORE secret (base64 of a .keystore) with
+# ANDROID_KEYSTORE_PASSWORD and ANDROID_KEY_ALIAS keeps one signature across versions, so phones can update in place;
+# without it, each build is signed with a throwaway debug key (installing a new one means uninstalling the old first).
+name: Android app
+on:
+  push:
+    branches: [ccr-500677da-r1uf50]
+    paths: ['dotnet/**', '.github/workflows/android.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: android
+  cancel-in-progress: true
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet workload install maui-android
+      - name: Signing key
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+          PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          if [ -n "$KEYSTORE" ]; then
+            echo "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/opentube.keystore"
+            echo "SIGN=-p:AndroidKeyStore=true -p:AndroidSigningKeyStore=$RUNNER_TEMP/opentube.keystore -p:AndroidSigningKeyAlias=$ALIAS -p:AndroidSigningKeyPass=env:PASS -p:AndroidSigningStorePass=env:PASS" >> "$GITHUB_ENV"
+            echo "PASS=$PASS" >> "$GITHUB_ENV"
+          fi
+      - name: Build
+        run: dotnet publish dotnet/OpenTube.Mobile -f net10.0-android -c Release -o out -p:AndroidSdkDirectory="$ANDROID_HOME" -p:ApplicationVersion=${{ github.run_number }} $SIGN
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp out/*-Signed.apk opentube.apk
+          gh release view android-latest >/dev/null 2>&1 || gh release create android-latest --title "OpenTube for Android" --notes "The newest build of the Android app (all C#). Install opentube.apk on your phone." --prerelease
+          gh release upload android-latest opentube.apk --clobber
+          gh release edit android-latest --notes "The newest build of the Android app (all C#), from ${GITHUB_SHA::8}. Install opentube.apk on your phone."

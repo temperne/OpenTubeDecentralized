@@ -17,6 +17,8 @@ public sealed class TorrentData
     public event Action<TorrentData>? Done, MetaReady;
     public event Action<int>? PieceDone;
     public long Uploaded, Downloaded;
+    /// <summary>Download pieces in order starting here (a player streaming from a position sets it; 0 by default).</summary>
+    public int FirstWanted;
     readonly object gate = new();
     readonly Dictionary<int, Assembly> building = [];
     byte[]? metaBuf; bool[]? metaGot;
@@ -73,8 +75,9 @@ public sealed class TorrentData
         {
             foreach (var (p, a) in building)   // finish pieces under way first
                 if (p < peerHas.Length && peerHas[p] && Free(a) is int bi) { a.Asked[bi] = peer; return (p, bi * Block, Math.Min(Block, a.Data.Length - bi * Block)); }
-            for (int p = 0; p < Have.Length; p++)
+            for (int k = 0; k < Have.Length; k++)
             {
+                var p = (k + FirstWanted) % Have.Length;   // in order from where the player is (streaming), then the rest
                 if (Have[p] || building.ContainsKey(p) || p >= peerHas.Length || !peerHas[p]) continue;
                 int size = Meta.SizeOf(p); var asm = new Assembly { Data = new byte[size], Got = new bool[(size + Block - 1) / Block] };
                 building[p] = asm; asm.Asked[0] = peer; return (p, 0, Math.Min(Block, size));

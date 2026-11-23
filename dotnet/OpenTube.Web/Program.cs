@@ -40,10 +40,10 @@ sealed class BrowserStore(IJSRuntime js) : IClientStore
 /// <summary>Plays a video: BitTorrent over WebRTC into the page's video element (binding: otPlayer in opentube.js).</summary>
 sealed class BrowserVideoPlayer(IJSRuntime js, ClientSession s) : IVideoPlayer
 {
-    public async Task<string?> Play(string elementId, string infoHash, string file, double size, Action<string> status)
+    public async Task<Playback> Play(string elementId, string infoHash, string file, double size, Action<string> status)
     {
         var trackers = JsonNode.Parse(Network.MainGenesisJson)?["payload"]?["trackers"]?.ToJsonString() ?? "[]";
         var site = s.Site.Replace("https://", "wss://").Replace("http://", "ws://") + "/tracker";
-        return await js.InvokeAsync<string?>("otPlayer.play", elementId, infoHash, file, $"[{System.Text.Json.JsonSerializer.Serialize(site)},{trackers.Trim('[', ']')}]");
+        return new Playback(null, await js.InvokeAsync<string?>("otPlayer.play", elementId, infoHash, file, $"[{System.Text.Json.JsonSerializer.Serialize(site)},{trackers.Trim('[', ']')}]"));
     }
 }

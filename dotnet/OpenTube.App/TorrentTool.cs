@@ -7,6 +7,7 @@ namespace OpenTube.App;
 /// opentube torrent get INFOHASH OUT HOST:PORT…      download from peers (only the infohash needed: the rest comes from them)
 /// opentube torrent hash FILE                       just the infohash
 /// opentube torrent dht [--dht-port=N]              run a DHT node only (a bootstrap node)
+/// opentube torrent serve INFOHASH OUT HOST:PORT…    download and serve it at http://127.0.0.1:N/INFOHASH as it arrives (the phone's player)
 /// --tracker=wss://…   (seed, get) also on this WebSocket tracker, with browsers over WebRTC (repeatable)
 /// --dht               (seed, get) find peers on the BitTorrent DHT and announce there (get needs no HOST:PORT then)
 /// --dht-port=N        its UDP port   --bootstrap=HOST:PORT   join through these nodes instead of the public routers
@@ -28,7 +29,7 @@ static class TorrentTool
             var d = new Dht { Log = Console.Error.WriteLine }; d.Start(dhtPort); Console.Error.WriteLine($"dht on UDP port {d.Port}");
             d.Bootstrap(boot.Count > 0 ? boot : null).Wait(); bt.UseDht(d);
         }
-        OpenTube.Node.WebTorrentPeers? Web(BtClient bt, TorrentData t) { if (trackers.Count == 0) return null; var w = new OpenTube.Node.WebTorrentPeers(bt, Console.Error.WriteLine); w.Announce(t, trackers); return w; }
+        OpenTube.Net.WebTorrentPeers? Web(BtClient bt, TorrentData t) { if (trackers.Count == 0) return null; var w = new OpenTube.Net.WebTorrentPeers(bt, Console.Error.WriteLine); w.Announce(t, trackers); return w; }
         switch (rest[0])
         {
             case "hash": Console.WriteLine(TorrentMeta.Create(rest[1]).InfoHash); return 0;
@@ -44,6 +45,15 @@ static class TorrentTool
                 bt.Listen(port); var web = Web(bt, t); Dht(bt);
                 Console.WriteLine($"{t.InfoHashHex} {bt.Port}");
                 while (true) { Thread.Sleep(5000); Console.Error.WriteLine($"peers {bt.PeerCount} uploaded {t.Uploaded}"); }
+            }
+            case "serve":
+            {
+                var bt = new BtClient { Log = Console.Error.WriteLine }; var t = bt.Add(TorrentData.Fetch(rest[1], rest[2]));
+                using var http = new OpenTube.Net.TorrentHttp(ih => bt.Torrents.GetValueOrDefault(ih));
+                bt.Listen(port); var web = Web(bt, t); Dht(bt);
+                foreach (var hp in rest[3..]) { var i = hp.LastIndexOf(':'); _ = bt.Connect(t, hp[..i], int.Parse(hp[(i + 1)..])); }
+                Console.WriteLine(http.UrlFor(t));
+                while (true) Thread.Sleep(5000);
             }
             case "get":
             {

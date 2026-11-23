@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Networking shared by the node and the phone app (not the browser, which has its own WebRTC): BitTorrent with
+       browsers over WebRTC data channels (SIPSorcery). -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\OpenTube.Core\OpenTube.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="SIPSorcery" Version="10.0.17" />
+  </ItemGroup>
+</Project>

@@ -6,7 +6,7 @@
 else
 {
     var p = v["payload"]!;
-    <div class="player" id="player-@Hash"></div>
+    <div class="player" id="player-@Hash">@if (src != null) { <video controls autoplay playsinline src="@src" style="width:100%"></video> }</div>
     <h2>@((string?)p["title"])</h2>
     <div class="sub"><a href="c/@Chain">@((string?)d!.Profile["name"])</a> · @Bytes(Js.Num(p["size"]) ?? 0) · @Ago(Js.Num(v["ts"]) ?? 0)</div>
     <p class="desc">@((string?)p["desc"])</p>
@@ -15,7 +15,7 @@ else
 }
 @code {
     [Parameter] public string Chain { get; set; } = ""; [Parameter] public string Hash { get; set; } = "";
-    string? status; string? started;
+    string? status, src; string? started;
     protected override async Task OnAfterRenderAsync(bool first)
     {
         var v = S.Chain(Chain)?.Videos.FirstOrDefault(x => (string?)x["hash"] == Hash);
@@ -23,7 +23,8 @@ else
         started = Hash;
         var p = v["payload"]!;
         status = "Finding peers for this video…"; StateHasChanged();
-        status = await Player.Play("player-" + Hash, (string)p["infohash"]!, (string?)p["file"] ?? "video.mp4", Js.Num(p["size"]) ?? 0, s => { status = s; InvokeAsync(StateHasChanged); });
+        var r = await Player.Play("player-" + Hash, (string)p["infohash"]!, (string?)p["file"] ?? "video.mp4", Js.Num(p["size"]) ?? 0, s => { status = s; InvokeAsync(StateHasChanged); });
+        src = r.Src; status = r.Status;
         StateHasChanged();
     }
 }

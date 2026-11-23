@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using OpenTube.Core;
 using OpenTube.Core.BitTorrent;
+using OpenTube.Net;
 
 namespace OpenTube.Node;
 

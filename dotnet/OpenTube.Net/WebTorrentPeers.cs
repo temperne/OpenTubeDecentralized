@@ -5,7 +5,7 @@ using System.Text.Json.Nodes;
 using OpenTube.Core.BitTorrent;
 using SIPSorcery.Net;
 
-namespace OpenTube.Node;
+namespace OpenTube.Net;
 
 /// <summary>
 /// BitTorrent with browsers: browsers speak BitTorrent only over WebRTC, finding each other on WebSocket trackers

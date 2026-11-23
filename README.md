@@ -60,6 +60,21 @@ is yours, so don't share it.
 
 Note: the joined-channel list is public, so anyone with your user ID can see which channels you host.
 
+## The C# website and the Android app
+
+Everything is moving to C#, one codebase (`dotnet/`):
+
+- **OpenTube.Core**: the network's rules, chains, the coin and BitTorrent (peer wire, encryption, the DHT).
+- **OpenTube.Client**: the engine for apps, linked to OpenTube computers over WebSockets.
+- **OpenTube.UI**: the pages (Razor), shared by the website and the phone app.
+- **OpenTube.Web**: the website in WebAssembly at `/app/` (the site's and every node's). JavaScript is only thin bindings to the browser.
+- **OpenTube.Mobile**: the Android app (.NET MAUI). Its pages are the same, the rest is native C#: the engine, the
+  chains and keys in the app's files, and videos over BitTorrent (WebRTC with browsers and nodes, TCP, the DHT),
+  streamed to the player as they arrive. Get it from the
+  [android-latest release](https://github.com/temperne/OpenTubeDecentralized/releases/download/android-latest/opentube.apk),
+  built by `.github/workflows/android.yml`. iOS comes from the same project and needs a Mac to build.
+- **OpenTube.Node** / **OpenTube.App**: the computers' node (all its parts) and its window/terminal/service.
+
 ## How peers connect (no central node)
 
 OpenTube works like Bitcoin and BitTorrent: every browser and every command-line node is an equal peer, and none is required.
