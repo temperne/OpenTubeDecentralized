@@ -10,5 +10,7 @@ public interface IVideoPlayer
     Task<Playback> Play(string elementId, string infoHash, string file, double size, Action<string> status);
     /// <summary>A live stream (<see cref="OpenTube.Client.LiveWatch"/>) as an address the page's video element plays.</summary>
     Task<Playback> PlayLive(OpenTube.Client.LiveWatch live);
+    /// <summary>Share a file from this device over BitTorrent (as a seed); its torrent (the infohash WebTorrent would give it).</summary>
+    Task<OpenTube.Core.BitTorrent.TorrentMeta> Share(string path, string name);
 }
 public sealed record Playback(string? Src, string? Status);

@@ -56,6 +56,11 @@ public sealed class BrowserTorrents : IVideoPlayer
         return new Playback($"/webtorrent/{infoHash}/{name}", "Finding peers for this video…");
     }
 
+    public Task<TorrentMeta> Share(string path, string name)
+    {
+        var t = bt.Add(TorrentData.Seed(path, name)); web.Announce(t, Trackers());
+        return Task.FromResult(t.Meta!);
+    }
     public async Task<Playback> PlayLive(LiveWatch live)
     {
         init ??= js.InvokeAsync<bool>("otStream.init", self).AsTask();

@@ -46,6 +46,9 @@ textarea { width: 100%; font: inherit; padding: 8px 10px; border-radius: 8px; bo
 .post.reply, .replies .post { margin-left: 18px; border-bottom: none; padding: 6px 0; }
 .small-actions button, .small-actions a.button { padding: 4px 10px; font-size: 13px; } button.on { border-color: var(--accent); color: var(--accent); font-weight: 600; }
 .list-plain { padding-top: 4px; padding-bottom: 4px; }
+label { display: block; font-weight: 600; margin-top: 10px; font-size: 14px; }
+.thumb-preview { max-width: 240px; border-radius: 8px; margin-top: 8px; display: block; }
+a.primary-link { background: var(--accent); color: #fff; border: none; }
 /* phones: a compact header, the sections as a bar at the bottom (big enough to tap), nothing wider than the screen */
 @media (max-width: 640px) {
   html, body { overflow-x: hidden; }

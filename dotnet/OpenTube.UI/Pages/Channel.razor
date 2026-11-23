@@ -15,6 +15,7 @@ else
             <div class="sub">@d.Kind · @d.Videos.Count videos @(d.LiveNow.Count > 0 ? " · LIVE now" : "")</div>
             <p>@((string?)d.Profile["about"])</p>
             <div class="row-actions">
+                @if (d.Owner is { } mine && S.IsMine(mine)) { <a class="button primary-link" href="upload/@Id">＋ Upload</a> <a class="button primary-link" href="golive/@Id">● Go live</a> }
                 @if (S.Notes.Subscription(Id) is { } how) { <button @onclick="() => S.Notes.Subscribe(Id, false)">@(how == "join" ? "Joined" : "Subscribed") ✓</button> }
                 else { <button class="primary" @onclick="() => S.Notes.Subscribe(Id, true)">Subscribe</button> }
                 @if (d.Owner is { } own && !S.IsMine(own)) { <a class="button" href="messages/@own">✉ Message</a> }

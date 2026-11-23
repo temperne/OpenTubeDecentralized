@@ -11,6 +11,7 @@ public partial class MainPage : ContentPage
         {
             e.WebView.Settings.MixedContentMode = Android.Webkit.MixedContentHandling.AlwaysAllow;
             e.WebView.Settings.MediaPlaybackRequiresUserGesture = false;
+            if (e.WebView.WebChromeClient is { } inner) e.WebView.SetWebChromeClient(new CameraChromeClient(inner));   // the camera for going live
         };
 #endif
     }

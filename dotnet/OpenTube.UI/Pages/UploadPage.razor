@@ -1,0 +1,70 @@
+@page "/upload"
+@page "/upload/{Chain}"
+@inherits Live
+@inject IVideoPlayer Player
+@inject Microsoft.JSInterop.IJSRuntime JS
+@using Microsoft.AspNetCore.Components.Forms
+<h2>Upload a video</h2>
+@if (!S.Ready) { <p class="sub">Starting…</p> }
+else
+{
+    var chans = S.Publish.MyChannels();
+    if (chans.Count == 0) { <p>You don’t have a channel yet. <a href="you">Create one</a> first.</p> }
+    else
+    {
+        var nodes = S.Publish.StorageNodes();
+        <div class="panel">
+            <label>Channel</label>
+            <select @bind="chain">@foreach (var c in chans) { <option value="@c.Id">@c.Name</option> }</select>
+            <label>Video</label>
+            <InputFile OnChange="Pick" accept="video/*" @ref="input" />
+            @if (file != null) { <div class="sub">@file.Name · @Bytes(file.Size) · posting costs @((S.Publish.PostCost(file.Size) / 100).ToString("0.##")) coins (you have @((S.Balance(S.Me.pub) / 100).ToString("0.##")))</div> }
+            @if (thumb is { Length: > 0 }) { <img src="@thumb" class="thumb-preview" alt="" /> }
+            <label>Title</label>
+            <input @bind="title" maxlength="140" />
+            <label>Description</label>
+            <textarea @bind="desc" rows="3" maxlength="5000"></textarea>
+            @if (nodes.Count > 0)
+            {
+                <label>Kept on</label>
+                <select value="@(node ?? nodes[0].Node)" @onchange="e => node = (string?)e.Value ?? string.Empty">@foreach (var (k, n) in nodes) { <option value="@k">@n</option> }<option value="">This device only (keep the app open while people watch)</option></select>
+            }
+            else { <p class="sub">None of your computers is online to keep it, so this device shares it while the app is open. Run the OpenTube command on a computer (Devices on the site) to keep your videos available.</p> }
+            <div class="row-actions"><button class="primary" disabled="@(busy || file == null || string.IsNullOrWhiteSpace(title))" @onclick="Go">Publish to channel</button></div>
+            @if (msg != null) { <div class="sub" id="upload-status">@msg</div> }
+        </div>
+    }
+}
+@code {
+    [Parameter] public string? Chain { get; set; }
+    string chain = "", title = "", desc = "", thumb = ""; string? msg; bool busy;
+    string? node;   // null: the first of your computers (as they come online); "": this device only
+    IBrowserFile? file; InputFile? input;
+    protected override void OnParametersSet()
+    {
+        if (chain.Length == 0) chain = Chain ?? S.Publish.MyChannels().FirstOrDefault()?.Id ?? "";
+    }
+    async Task Pick(InputFileChangeEventArgs e)
+    {
+        file = e.File; if (title.Length == 0) title = System.Text.RegularExpressions.Regex.Replace(Path.GetFileNameWithoutExtension(file.Name), "[_-]+", " ");
+        try { thumb = await JS.InvokeAsync<string>("otUi.thumb", input!.Element); } catch { thumb = ""; }
+    }
+    async Task Go()
+    {
+        busy = true; void Say(string m) { msg = m; InvokeAsync(StateHasChanged); }
+        try
+        {
+            Say("Reading the file…");
+            var dir = Path.Combine(Path.GetTempPath(), "opentube-upload", Guid.NewGuid().ToString("n")[..8]); Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, string.Concat(file!.Name.Select(c => char.IsLetterOrDigit(c) || c is '.' or '-' or '_' or ' ' ? c : '_')));
+            await using (var src = file.OpenReadStream(8L << 30)) await using (var dst = File.Create(path)) await src.CopyToAsync(dst);
+            Say("Making its torrent…");
+            var meta = await Player.Share(path, Path.GetFileName(path));
+            var b = await S.Publish.Video(chain, meta, Path.GetFileName(path), file.Size, file.ContentType is { Length: > 0 } ct ? ct : "video/mp4", title, desc, thumb, Say);
+            var keepOn = node ?? S.Publish.StorageNodes().FirstOrDefault().Node;
+            if (!string.IsNullOrEmpty(keepOn)) await S.Publish.Store(keepOn, chain, meta.InfoHash, Say);
+            Nav.NavigateTo($"v/{chain}/{b["hash"]}");
+        }
+        catch (Exception e) { Say("Couldn’t publish: " + e.Message); busy = false; }
+    }
+}

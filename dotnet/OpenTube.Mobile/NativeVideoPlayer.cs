@@ -41,6 +41,11 @@ public sealed class NativeVideoPlayer : IVideoPlayer
         return list.Distinct().ToList();
     }
 
+    public Task<TorrentMeta> Share(string path, string name)
+    {
+        var t = bt.Add(TorrentData.Seed(path, name)); web.Announce(t, Trackers());
+        return Task.FromResult(t.Meta!);
+    }
     public Task<Playback> PlayLive(LiveWatch live) => Task.FromResult(new Playback($"http://127.0.0.1:{http.Port}/live/{live.Stream}", live.Status));
 
     public Task<Playback> Play(string elementId, string infoHash, string file, double size, Action<string> status)

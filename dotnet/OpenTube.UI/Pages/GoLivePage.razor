@@ -1,0 +1,95 @@
+@page "/golive"
+@page "/golive/{Chain}"
+@inherits Live
+@implements IAsyncDisposable
+@inject Microsoft.JSInterop.IJSRuntime JS
+<h2>Go live</h2>
+@if (!S.Ready) { <p class="sub">Starting…</p> }
+else
+{
+    var chans = S.Publish.MyChannels();
+    if (chans.Count == 0) { <p>You don’t have a channel yet. <a href="you">Create one</a> first.</p> }
+    else
+    {
+        <div class="panel">
+            <h3>With this device’s camera</h3>
+            <label>Channel</label>
+            <select @bind="chain" disabled="@(live != null)">@foreach (var c in chans) { <option value="@c.Id">@c.Name</option> }</select>
+            <label>Title</label>
+            <input @bind="title" maxlength="140" disabled="@(live != null)" />
+            <div class="player"><video id="cam-preview" autoplay muted playsinline style="width:100%"></video></div>
+            <div class="row-actions">
+                @if (live == null) { <button class="primary" disabled="@busy" @onclick="Start">● Go live</button> }
+                else { <button class="primary" @onclick="Stop">■ End stream</button> <a href="live/@live.Chain/@live.Stream">Watch page</a> }
+            </div>
+            <div class="sub" id="golive-status">@(live != null ? $"{live.Status} · {Bytes(live.Bytes)} sent · {live.Viewers} watching" : msg)</div>
+            <p class="sub">Your computers relay it to viewers, and one records it so you can publish it afterwards.</p>
+        </div>
+        <div class="panel">
+            <h3>With OBS</h3>
+            <p class="sub">Stream from OBS to one of your computers; it goes live on the channel above.</p>
+            @foreach (var (n, perms, _) in S.MyNodes().Where(x => x.Perms.Contains('o')))
+            {
+                <div class="row-actions"><b>@NodeName(n)</b> <button @onclick="() => Obs(n)">Show OBS settings</button></div>
+            }
+            @if (!S.MyNodes().Any(x => x.Perms.Contains('o'))) { <p class="sub">None of your computers receives OBS yet: run the OpenTube command on the computer with OBS (Devices on the site).</p> }
+            @if (obs != null)
+            {
+                <div class="panel">
+                    <div>In OBS: Settings → Stream → Service “Custom…”</div>
+                    @foreach (var u in ObsServers()) { <div class="mono">Server: @u</div> }
+                    <div class="mono">Stream key: @((string?)obs["key"])</div>
+                    @if ((string?)obs["portNote"] is { } pn) { <div class="sub">⚠ @pn</div> }
+                    <div class="row-actions"><button @onclick="LinkObs">Go live on “@(chans.FirstOrDefault(c => c.Id == chain)?.Name)” from OBS</button></div>
+                </div>
+            }
+            @if (obsMsg != null) { <div class="sub">@obsMsg</div> }
+        </div>
+    }
+}
+@code {
+    [Parameter] public string? Chain { get; set; }
+    string chain = "", title = "Live"; string? msg, obsMsg, obsNode; bool busy;
+    LiveBroadcast? live; System.Text.Json.Nodes.JsonObject? obs;
+    Microsoft.JSInterop.DotNetObjectReference<GoLivePage>? self;
+    protected override void OnParametersSet() { if (chain.Length == 0) chain = Chain ?? S.Publish.MyChannels().FirstOrDefault()?.Id ?? ""; }
+    string NodeName(string n) => S.Engine.Read(e => e.Nodes.TryGetValue(n, out var x) ? (string?)x["info"]?["name"] : null) ?? "your computer";
+    async Task Start()
+    {
+        busy = true; msg = "Starting the camera…";
+        self ??= Microsoft.JSInterop.DotNetObjectReference.Create(this);
+        var r = await JS.InvokeAsync<System.Text.Json.Nodes.JsonObject>("otUi.camStart", self, "cam-preview");
+        if ((string?)r["error"] is { } err) { msg = err; busy = false; return; }
+        try { live = await LiveBroadcast.Start(S, chain, title, (string)r["mime"]!); live.Changed += Redraw; }
+        catch (Exception e) { msg = "Couldn’t go live: " + e.Message; await JS.InvokeVoidAsync("otUi.camStop"); }
+        busy = false;
+    }
+    [Microsoft.JSInterop.JSInvokable] public void CamChunk(byte[] chunk) => live?.Chunk(chunk);
+    async Task Stop() { await JS.InvokeVoidAsync("otUi.camStop"); if (live != null) { await live.Stop(); live.Changed -= Redraw; } msg = "The stream has ended. Your computer’s recording appears on the channel to publish."; live = null; }
+    void Redraw() => InvokeAsync(StateHasChanged);
+    async Task Obs(string n) { obsNode = n; obsMsg = "Asking your computer…"; try { obs = await S.NodeCtl(n, "obs"); obsMsg = null; } catch (Exception e) { obsMsg = e.Message; } }
+    IEnumerable<string> ObsServers()
+    {
+        var port = (int)(Js.Num(obs!["port"]) ?? 1935); var suffix = port == 1935 ? "" : ":" + port;
+        var hosts = new List<string?> { (string?)obs["publicHost"], (string?)obs["publicIp"] }.Concat((obs["ips"] as System.Text.Json.Nodes.JsonArray ?? []).Select(x => (string?)x)).Append("127.0.0.1");
+        return hosts.OfType<string>().Where(h => h.Length > 0 && !h.EndsWith(".trycloudflare.com")).Distinct().Select(h => $"rtmp://{h}{suffix}/live");
+    }
+    async Task LinkObs()
+    {
+        obsMsg = "Linking…";
+        try
+        {
+            var owner = S.Engine.Read(e => e.Store.Chains.TryGetValue(chain, out var c) ? c.Owner : null);
+            var args = new System.Text.Json.Nodes.JsonObject { ["channel"] = chain, ["title"] = title };
+            if (owner != null && S.KeyOf(owner) is { } k) args["channelSig"] = k.Sign($"opentube-obs-channel:{obsNode}:{S.Me.pub}:{chain}");
+            obs = await S.NodeCtl(obsNode!, "obs.set", args);
+            if (!Js.IsTrue(obs["linked"]) && owner != null && S.KeyOf(owner) != null)
+            {   // link the computer to the channel (it may write the live block for it)
+                await Task.Run(() => S.Engine.Append(chain, new System.Text.Json.Nodes.JsonObject { ["type"] = "relay", ["key"] = obsNode, ["on"] = true }));
+            }
+            obsMsg = "Done: Start Streaming in OBS goes live on this channel.";
+        }
+        catch (Exception e) { obsMsg = e.Message; }
+    }
+    public async ValueTask DisposeAsync() { base.Dispose(); if (live != null) { try { await JS.InvokeVoidAsync("otUi.camStop"); } catch { } await live.Stop(); } self?.Dispose(); }
+}

@@ -47,6 +47,10 @@ public sealed class ClientSession : IAsyncDisposable
     public Mail Mail { get; private set; } = null!;
     /// <summary>Posts and friends.</summary>
     public Social Social { get; private set; } = null!;
+    /// <summary>Publishing videos, and help from your computers.</summary>
+    public Publish Publish { get; private set; } = null!;
+    /// <summary>The key for one of your keys (your identity or a channel's), or null.</summary>
+    public Identity? KeyOf(string pub) => KeyFor(pub);
     static readonly HttpClient http = new() { Timeout = TimeSpan.FromSeconds(10) };
 
     public ClientSession(IClientStore store, string site) { this.store = store; Site = site.TrimEnd('/'); }
@@ -71,6 +75,7 @@ public sealed class ClientSession : IAsyncDisposable
         Engine.Persist = (c, b) => { try { store.SaveBlock(c, (JsonObject)b.DeepClone()); } catch { } Changed?.Invoke(); };
         Notes = new Notifications(this, store); await Notes.Load(); Notes.Start();
         Mail = new Mail(this, store); Mail.Start();
+        Publish = new Publish(this);
         Social = new Social(this, store); _ = Task.Run(async () => { await Task.Delay(5000); try { await Social.Refresh(); } catch { } });
         Ready = true; Changed?.Invoke();
         online = CancellationTokenSource.CreateLinkedTokenSource(stop.Token);
