@@ -5,9 +5,16 @@
 import fs from 'node:fs';
 const FILE = new URL('../seeds.json', import.meta.url);
 const cur = JSON.parse(fs.readFileSync(FILE, 'utf8'));
-const get = async (u, ms = 8000) => { const r = await fetch(u, { signal: AbortSignal.timeout(ms) }); if (!r.ok) throw new Error(String(r.status)); return r.json(); };
+// an address that redirects elsewhere isn't a node: redirects count as failures
+const get = async (u, ms = 8000) => { const r = await fetch(u, { signal: AbortSignal.timeout(ms), redirect: 'manual' }); if (!r.ok) throw new Error(String(r.status)); return r.json(); };
+const SITE = (process.env.SITE || 'https://opentubedecentralized.jasonajensen.workers.dev').replace(/\/+$/, '');
 const known = new Set((cur.entry || []).map(u => u.replace(/\/+$/, '')));
 let network = cur.network || null;
+// the site's list too: the entry nodes its node hears of right now (a computer behind a tunnel gets a new address
+// each time it starts, so the old addresses alone would never lead to it)
+let siteUp = false;
+try { const j = await get(SITE + '/entries.json'); siteUp = true; network ||= j.network; for (const e of j.entry || []) if (e?.node && /^https:\/\//.test(e.url || '')) known.add(e.url.replace(/\/+$/, '')); }
+catch (e) { console.log(`${SITE}: no entry list (${e.message})`); }
 for (const u of [...known]) {
   try { const j = await get(u + '/entries.json'); network ||= j.network; if (j.network && network && j.network !== network) continue; for (const e of j.entry || []) if (/^https:\/\//.test(e?.url || '')) known.add(e.url.replace(/\/+$/, '')); }
   catch (e) { console.log(`${u}: no entry list (${e.message})`); }
@@ -17,8 +24,9 @@ for (const u of known) {
   try { const s = await get(u + '/status'); if (network && s.network && s.network !== network) { console.log(`${u}: another network`); continue; } alive.push(u); console.log(`${u}: up (height ${s.height})`); }
   catch (e) { console.log(`${u}: down (${e.message})`); }
 }
-// keep the old list when nothing answers (better a stale list than none); otherwise only what's up now
-const entry = alive.length ? alive.slice(0, 40) : [...(cur.entry || [])];
+// only what's up now. When nothing answers and the site couldn't be asked either, this machine is probably offline:
+// keep the old list then. (With no entry nodes, browsers use the site's own node.)
+const entry = alive.length || siteUp ? alive.slice(0, 40) : [...(cur.entry || [])];
 const next = { ...cur, ...(network ? { network } : {}), updated: alive.length ? new Date().toISOString() : cur.updated || null, entry };
 if (JSON.stringify(next.entry) !== JSON.stringify(cur.entry) || (next.network && next.network !== cur.network)) {
   fs.writeFileSync(FILE, JSON.stringify(next, null, 2) + '\n'); console.log('seeds.json updated:', entry.length, 'entry node(s)');
