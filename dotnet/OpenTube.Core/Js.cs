@@ -25,7 +25,10 @@ public static partial class Js
     /// <summary>!!x && typeof x === 'object' (arrays count).</summary>
     public static bool IsObjectLike(JsonNode? n) => n is JsonObject or JsonArray;
     public static string? Str(JsonNode? n) => IsString(n) ? n!.GetValue<string>() : null;
-    public static double? Num(JsonNode? n) => IsNumber(n) ? n!.GetValue<double>() : null;
+    public static double? Num(JsonNode? n) => IsNumber(n) ? NumOf((JsonValue)n!) : null;
+    /// <summary>A JSON number as a double, whatever .NET type it was created from (parsed JSON, int, long, double…).</summary>
+    public static double NumOf(JsonValue v) =>
+        v.TryGetValue<double>(out var d) ? d : v.TryGetValue<long>(out var l) ? l : v.TryGetValue<int>(out var i) ? i : v.TryGetValue<decimal>(out var m) ? (double)m : v.TryGetValue<float>(out var f) ? f : double.Parse(v.ToJsonString(), System.Globalization.CultureInfo.InvariantCulture);
     /// <summary>JavaScript truthiness of a JSON value.</summary>
     public static bool Truthy(JsonNode? n) => n switch
     {
@@ -35,7 +38,7 @@ public static partial class Js
         {
             JsonValueKind.True => true, JsonValueKind.False => false,
             JsonValueKind.String => v.GetValue<string>().Length > 0,
-            JsonValueKind.Number => v.GetValue<double>() is var d && d != 0 && !double.IsNaN(d),
+            JsonValueKind.Number => NumOf(v) is var d && d != 0 && !double.IsNaN(d),
             _ => false,
         },
         _ => false,

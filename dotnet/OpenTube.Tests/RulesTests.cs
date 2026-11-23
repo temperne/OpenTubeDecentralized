@@ -92,3 +92,37 @@ public class PayloadTests
         Assert.True(bad.Count == 0, $"{bad.Count} of {n} disagree:\n" + string.Join("\n", bad.Take(12)));
     }
 }
+
+// The coin ledger: random histories replayed through C#, compared verdict by verdict and state by state with JavaScript
+public class LedgerTests
+{
+    [Fact]
+    public void Ledger_agrees_with_javascript()
+    {
+        var V = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "../../../data/ledger.json")))!;
+        int run = 0, txs = 0;
+        foreach (var steps in V["runs"]!.AsArray())
+        {
+            run++; var L = new Ledger(); int blk = 0;
+            foreach (var step in steps!.AsArray())
+            {
+                blk++;
+                foreach (var x in step!["txs"]!.AsArray())
+                {
+                    txs++; var t = x!["t"]!.AsObject(); var want = (string?)x["why"];
+                    var got = Tx.Check(t, trusted: true) ? L.Apply(t) : "checkTx";
+                    Assert.True(want == got, $"run {run} block {blk}: {t.ToJsonString()[..Math.Min(400, t.ToJsonString().Length)]}\n  JS: {want ?? "applied"}\n  C#: {got ?? "applied"}");
+                }
+                L.EndBlock(step["miner"], (double)step["ts"]!); L = new Ledger(L);
+                var js = (string)step["state"]!; var cs = L.Snapshot();
+                if (js != cs)
+                {
+                    var a = JsonNode.Parse(js)!.AsObject(); var b = JsonNode.Parse(cs)!.AsObject();
+                    var diff = a.Select(kv => kv.Key).Where(k => Blocks.Canon(a[k]) != Blocks.Canon(b[k])).Select(k => $"  {k}:\n    JS {Blocks.Canon(a[k])[..Math.Min(300, Blocks.Canon(a[k]).Length)]}\n    C# {Blocks.Canon(b[k])[..Math.Min(300, Blocks.Canon(b[k]).Length)]}");
+                    Assert.Fail($"run {run} block {blk}: state differs\n" + string.Join("\n", diff.Take(4)));
+                }
+            }
+        }
+        Assert.True(txs > 1000);
+    }
+}

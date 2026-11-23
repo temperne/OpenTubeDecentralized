@@ -82,7 +82,7 @@ public static class Blocks
                 case JsonValue x:
                     if (x.TryGetValue<string>(out var s)) sb.Append(JsString(s));
                     else if (x.TryGetValue<bool>(out var b)) sb.Append(b ? "true" : "false");
-                    else sb.Append(Js.NumberToString(x.GetValue<double>()));
+                    else sb.Append(Js.NumberToString(Js.NumOf(x)));
                     break;
             }
         }
@@ -120,7 +120,7 @@ public static class Blocks
         foreach (var (k, v) in block) if (k is not ("hash" or "sig" or "nonce")) rest[k] = v?.DeepClone();
         return Canon(rest) + ":";
     }
-    public static string Hash(JsonObject block) => Sha256Hex(Preimage(block) + Js.NumberToString(block["nonce"]!.GetValue<double>()));
+    public static string Hash(JsonObject block) => Sha256Hex(Preimage(block) + Js.NumberToString(Js.NumOf((JsonValue)block["nonce"]!)));
     public static string Sha256Hex(string s) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(s)));
     public static int LeadingZeroBits(ReadOnlySpan<byte> d)
     {

@@ -35,6 +35,21 @@ public static partial class Rules
         catch { return false; }
     }
 
+    /// <summary>zeroBits(hash): leading zero bits of a hex string (a non-hex character counts as 4 and ends it).</summary>
+    public static int ZeroBits(string? h)
+    {
+        if (h == null) return 0;
+        int z = 0;
+        foreach (var c in h)
+        {
+            int n = c is >= '0' and <= '9' ? c - '0' : c is >= 'a' and <= 'f' ? c - 'a' + 10 : c is >= 'A' and <= 'F' ? c - 'A' + 10 : -1;
+            if (n < 0) return z + 4;   // parseInt gives NaN; Math.clz32(NaN) is 32
+            if (n == 0) { z += 4; continue; }
+            return z + System.Numerics.BitOperations.LeadingZeroCount((uint)n) - 28;
+        }
+        return z;
+    }
+
     /// <summary>validGenesis(g): what the first block of a chain (channel, list, group, friends' circle, org, case, monthly chains) may be.</summary>
     public static bool ValidGenesis(JsonNode? node)
     {
@@ -71,7 +86,7 @@ public static partial class Rules
     {
         null => "null",
         JsonValue v when IsString(v) => v.GetValue<string>(),
-        JsonValue v when IsNumber(v) => NumberToString(v.GetValue<double>()),
+        JsonValue v when IsNumber(v) => NumberToString(Js.NumOf(v)),
         JsonValue v when IsBool(v) => IsTrue(v) ? "true" : "false",
         JsonArray a => string.Join(",", a.Select(x => x == null ? "" : JsString(x))),
         _ => "[object Object]",

@@ -153,20 +153,7 @@ public static partial class Payload
     // ---- helpers (JavaScript names in comments)
     static string GenesisKind(Chain c) => Str(Get(Get(c.Genesis, "payload"), "kind")) ?? "";   // kind_(chain)
     static List<string> Parents(JsonObject b) => (Get(b, "parents") as JsonArray)?.Select(x => Str(x) ?? "\0").ToList() ?? [];
-    /// <summary>zeroBits(b.hash): leading zero bits of a hex string.</summary>
-    static int ZeroBits(JsonNode? hash)
-    {
-        if (Str(hash) is not { } h) return 0;
-        int z = 0;
-        foreach (var c in h)
-        {
-            int n = c is >= '0' and <= '9' ? c - '0' : c is >= 'a' and <= 'f' ? c - 'a' + 10 : c is >= 'A' and <= 'F' ? c - 'A' + 10 : -1;
-            if (n < 0) return z + 4;   // parseInt gives NaN; Math.clz32(NaN) is 32
-            if (n == 0) { z += 4; continue; }
-            return z + System.Numerics.BitOperations.LeadingZeroCount((uint)n) - 28;
-        }
-        return z;
-    }
+    static int ZeroBits(JsonNode? hash) => Rules.ZeroBits(Str(hash));
     static double NextMonthStart(double startMs) => DateTimeOffset.FromUnixTimeMilliseconds((long)startMs).AddMonths(1).ToUnixTimeMilliseconds();
     static bool VoteValue(JsonNode? v) => Num(v) is double d && (d == 1 || d == 0 || d == -1);   // [1, 0, -1].includes(v)
     static JsonNode? OrEmpty(JsonObject p, string k) => Get(p, k) ?? JsonValue.Create("");   // p[k] ?? ''
@@ -180,7 +167,7 @@ public static partial class Payload
     {
         null => "null",
         JsonValue v when IsString(v) => v.GetValue<string>(),
-        JsonValue v when IsNumber(v) => NumberToString(v.GetValue<double>()),
+        JsonValue v when IsNumber(v) => NumberToString(Js.NumOf(v)),
         JsonValue v when IsBool(v) => IsTrue(v) ? "true" : "false",
         JsonArray a => string.Join(",", a.Select(x => x == null ? "" : JsToString(x, true))),
         _ => "[object Object]",
@@ -193,9 +180,9 @@ public static partial class Payload
     static bool RefShape(JsonNode? x) => Truthy(x) && IsHex(Get(x, "chain"), 64) && IsHex(Get(x, "block"), 64);
     static bool MediaRefShape(JsonNode? m) => m is JsonObject && IsHex(Get(m, "ih"), 40) && IsStr(Get(m, "name"), 200) && IsStr(Get(m, "mime"), 80) && IsSafeInteger(Get(m, "size")) && Num(Get(m, "size")) > 0
         && (Undef((JsonObject)m, "thumb") || (IsImg(Get(m, "thumb")) && Str(Get(m, "thumb"))!.Length <= 16000));
-    static bool MediaListOk(JsonObject p) => Undef(p, "media") || (Get(p, "media") is JsonArray a && a.Count <= 10 && a.All(MediaRefShape));
-    static bool PlaceShape(JsonNode? x) => x is JsonObject or JsonArray && IsFinite(Get(x, "lat")) && Math.Abs(Num(Get(x, "lat"))!.Value) <= 90 && IsFinite(Get(x, "lon")) && Math.Abs(Num(Get(x, "lon"))!.Value) <= 180 && IsStr(Get(x, "label") ?? JsonValue.Create(""), 120);
-    static bool ValidTags(JsonObject p, string k)
+    internal static bool MediaListOk(JsonObject p) => Undef(p, "media") || (Get(p, "media") is JsonArray a && a.Count <= 10 && a.All(MediaRefShape));
+    internal static bool PlaceShape(JsonNode? x) => x is JsonObject or JsonArray && IsFinite(Get(x, "lat")) && Math.Abs(Num(Get(x, "lat"))!.Value) <= 90 && IsFinite(Get(x, "lon")) && Math.Abs(Num(Get(x, "lon"))!.Value) <= 180 && IsStr(Get(x, "label") ?? JsonValue.Create(""), 120);
+    internal static bool ValidTags(JsonObject p, string k)
     {
         if (Undef(p, k)) return true;
         if (Get(p, k) is not JsonArray t || t.Count > 8) return false;
