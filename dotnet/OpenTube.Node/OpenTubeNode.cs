@@ -89,7 +89,6 @@ public sealed class OpenTubeNode : IAsyncDisposable
     public async Task StartAsync()
     {
         Directory.CreateDirectory(Options.DataDir);
-        await Processes.StopEarlier(Options.DataDir, m => Log("[start] " + m));   // one OpenTube per data folder: an earlier one keeps the ports
         Html = File.ReadAllText(Path.Combine(SiteDir, "index.html"));
         Build = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(Html)))[..12];
         Version = Network.VersionOf(Html);
@@ -159,7 +158,8 @@ public sealed class OpenTubeNode : IAsyncDisposable
             Obs = new ObsLive(this);
             if (OwnerUser != null) { var p = Obs.ProfileOf(OwnerUser); Log($"[obs] stream key for the owner: {(string?)p["key"]}"); }
             Obs.Save();
-            Rtmp = new RtmpServer(Options.ObsPort, Obs.OnPublish, Log, Path.Combine(Options.DataDir, "obs-port.txt")); Rtmp.Start();
+            // the port: the one chosen on the site (Devices → OBS), else --obs-port (1935)
+            Rtmp = new RtmpServer(Js.Num(Obs.Store["port"]) is double chosen ? (int)chosen : Options.ObsPort, Obs.OnPublish, Log); Rtmp.Start();
         }
 
         // control from the site (Devices): signed commands routed to this node, answered with signed replies

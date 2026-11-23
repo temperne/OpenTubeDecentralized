@@ -27,17 +27,17 @@ public sealed class RtmpServer
     readonly Func<string, object> onPublish;   // IStreamSink, or a string: why not
     readonly Action<string> log;
     TcpListener? listener;
-    /// <summary>The port OBS streams to: the one asked for (1935), or another free one when that's taken (see <see cref="Note"/>).</summary>
+    /// <summary>The port OBS streams to: the one chosen (1935 unless changed on the site), or the next free one when another program has it (see <see cref="Note"/>).</summary>
     public int Port { get; private set; }
-    public readonly int Wanted;
-    /// <summary>Why the port isn't the one asked for (shown on the site under Devices → OBS).</summary>
+    public int Wanted { get; private set; }
+    /// <summary>Why the port isn't the one chosen (shown on the site under Devices → OBS).</summary>
     public string? Note;
-    readonly string? memory;
     public int Live; public long Bytes; public string? LastStage; public double? KeyInterval; public string? Error;
 
-    /// <param name="memory">A file that keeps the port picked when the wanted one was taken, so OBS's settings stay right after a restart.</param>
-    public RtmpServer(int port, Func<string, object> onPublish, Action<string> log, string? memory = null) { Port = Wanted = port; this.memory = memory; this.onPublish = onPublish; this.log = s => log("[obs] " + s); }
+    public RtmpServer(int port, Func<string, object> onPublish, Action<string> log) { Port = Wanted = port; this.onPublish = onPublish; this.log = s => log("[obs] " + s); }
 
+    /// <summary>Listen on another port from now on (Devices → OBS → Port). Streams under way keep their connection.</summary>
+    public void Restart(int port) { Stop(); Wanted = port; Note = null; Error = null; Start(); }
     public void Start() => _ = Task.Run(Listen);
     bool TryListen(int port)
     {
@@ -51,33 +51,19 @@ public sealed class RtmpServer
     }
     async Task Listen()
     {
-        try
-        {
-            if (!TryListen(Wanted))
-            {
-                // the port is taken: an older OpenTube (the Node.js one, or an earlier copy) is stopped and the port taken back
-                var holders = Processes.PortHolders(Wanted);
-                var ours = holders.Where(h => h.Pid != Environment.ProcessId && Processes.IsOpenTube(h.Cmd)).Select(h => h.Pid).ToList();
-                if (ours.Count > 0) { log($"port {Wanted} is held by an older OpenTube: stopping it and taking the port"); await Processes.Stop(ours, log); }
-                if (ours.Count == 0 || !TryListen(Wanted))
-                {
-                    // something else has it: use another port (the one picked last time, else the next free one) and say so
-                    var who = holders.Where(h => h.Pid != Environment.ProcessId).Select(h => Processes.Short(h.Cmd)).FirstOrDefault(c => c.Length > 0);
-                    var last = memory != null && File.Exists(memory) && int.TryParse(File.ReadAllText(memory).Trim(), out var lp) ? lp : 0;
-                    var picked = new[] { last }.Concat(Enumerable.Range(Wanted + 1, 64)).Where(p => p > 0 && p != Wanted).FirstOrDefault(TryListen);
-                    if (picked == 0) { Error = $"port {Wanted} is taken{(who != null ? $" (by {who})" : "")} and no other port near it is free"; log(Error); return; }
-                    Note = $"port {Wanted} is used by {(who != null ? $"another program ({who})" : "another program")}, so OBS streams to port {picked} on this computer";
-                    log(Note + " (put that port in OBS’s server address: Devices on the site shows it)");
-                    if (memory != null) try { File.WriteAllText(memory, picked.ToString()); } catch { }
-                }
-            }
+        var picked = new[] { Wanted }.Concat(Enumerable.Range(Wanted + 1, 64)).Where(p => p <= 65535).FirstOrDefault(TryListen);
+        if (picked == 0) { Error = $"port {Wanted} and the ports after it are taken: choose another under Devices → OBS on the site"; log(Error); return; }
+        if (picked != Wanted)
+        {   // another program has the chosen port: the next free one, said here and on the site (it can be changed there)
+            Note = $"port {Wanted} is used by {(Internet.WhoHas(Wanted) is { } w ? $"another program ({w})" : "another program")}, so OBS streams to port {picked} on this computer";
+            log(Note + " (Devices → OBS on the site shows it, and can change it)");
         }
-        catch (Exception e) { Error = $"couldn’t listen on port {Wanted}: {e.Message}"; log(Error); return; }
         Error = null;
         log($"OBS receiver on rtmp://this-computer{(Port == 1935 ? "" : ":" + Port)}/live (all addresses, so OBS on another computer reaches it too; its firewall must let in TCP port {Port})");
+        var l = listener!;
         while (true)
         {
-            TcpClient c; try { c = await listener!.AcceptTcpClientAsync(); } catch { return; }
+            TcpClient c; try { c = await l.AcceptTcpClientAsync(); } catch { return; }
             _ = Task.Run(() => new Session(this, c).Run());
         }
     }

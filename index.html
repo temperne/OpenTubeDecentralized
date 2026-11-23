@@ -7520,8 +7520,10 @@ function obsPanel(n, { chainId = null } = {}) {
     box.replaceChildren(h('div', { class: 'row', style: 'justify-content:space-between' }, h('span', {}, h('b', {}, `OBS on ${n.info?.name || 'this computer'}`), ' ', versionBadge(data.version)), st),
       h('p', { class: 'sub', style: 'margin:4px 0' }, 'In OBS: Settings → Stream → Service “Custom…”, then paste the server and the stream key. Use an H.264 encoder, AAC audio, keyframe interval 2 s. Start Streaming goes live on the channel below by itself.'),
       row('Server', h('div', { style: 'flex:1' }, servers.map(u => h('div', { class: 'row', style: 'gap:6px' }, h('code', { class: 'mono', style: 'flex:1' }, u), h('button', { class: 'small', onclick: () => copyText(u, 'Server') }, 'Copy'))))),
-      // 1935 was taken on that computer (another program): it picked another port, already in the addresses above
+      // the port OBS streams to: 1935 unless changed here; when another program has it, the computer took the next free one
       data.portNote ? h('div', { class: 'sub', style: 'margin-top:4px' }, `⚠ ${data.portNote[0].toUpperCase() + data.portNote.slice(1)}. The server addresses above already use port ${data.port}.`) : '',
+      data.owner ? (() => { const port = h('input', { type: 'number', min: 1024, max: 65535, value: data.portWanted || data.port, style: 'width:7em' });
+        return row('Port', port, h('button', { class: 'small', onclick: () => run('obs.set', { port: Number(port.value) }) }, 'Change'), h('span', { class: 'sub' }, 'the port OBS streams to on this computer (usually 1935)')); })() : '',
       // through its public https address (a Cloudflare Tunnel carries web traffic only): a small bridge next to OBS
       n.info?.public ? (() => { const cmd = NODE_COMMAND(location.origin + location.pathname.replace(/\/[^/]*$/, ''), ` --obs-via=${n.info.public}`);
         return row('Through its public address', h('div', { style: 'flex:1' },

@@ -149,6 +149,14 @@ public sealed class NodeControl(OpenTubeNode node)
                             p["channelBy"] = !string.IsNullOrEmpty(ch) ? user : null;
                             p["channel"] = ch != null && Js.IsHex(a["channel"], 64) ? ch : null;
                         }
+                        if (Js.Num(a["port"]) is double np)
+                        {   // the port OBS streams to (the computer's owner only)
+                            if (!owner) return Fail("only this computer’s owner can change its OBS port");
+                            if (np != Math.Floor(np) || np is < 1024 or > 65535 && np != 1935) return Fail("choose a port from 1024 to 65535 (1935 is OBS’s usual one)");
+                            if (node.Rtmp?.Live > 0) return Fail("someone is streaming right now: change the port once they stop");
+                            node.Obs.Store["port"] = (int)np; node.Obs.Save();
+                            if (node.Rtmp != null && (node.Rtmp.Wanted != (int)np || node.Rtmp.Error != null)) { node.Rtmp.Restart((int)np); for (int i = 0; i < 20 && node.Rtmp.Note == null && node.Rtmp.Port != (int)np && node.Rtmp.Error == null; i++) await Task.Delay(100); await Task.Delay(200); }
+                        }
                         if (Js.Str(a["title"]) is { } t) p["title"] = t.Length == 0 ? "Live" : t[..Math.Min(140, t.Length)];
                         if (a["youtube"] is JsonObject yt) { var y = (JsonObject)p["youtube"]!; if (Js.Str(yt["key"]) is { } yk) y["key"] = yk.Trim()[..Math.Min(200, yk.Trim().Length)]; if (Js.IsBool(yt["on"])) y["on"] = Js.IsTrue(yt["on"]); }
                         if (a["tile"] is JsonObject tl) { var tt = (JsonObject)p["tile"]!; if (Js.IsBool(tl["on"])) tt["on"] = Js.IsTrue(tl["on"]); if (Js.Num(tl["n"]) is 2 or 3 or 4) tt["n"] = Js.Num(tl["n"]); }
@@ -157,7 +165,7 @@ public sealed class NodeControl(OpenTubeNode node)
                     var chan = (string?)p["channel"];
                     data = new JsonObject
                     {
-                        ["key"] = p["key"]?.DeepClone(), ["port"] = node.Rtmp?.Port, ["portNote"] = node.Rtmp?.Note, ["ips"] = new JsonArray(LocalIps().Select(x => (JsonNode?)x).ToArray()), ["publicIp"] = null,
+                        ["key"] = p["key"]?.DeepClone(), ["port"] = node.Rtmp?.Port, ["portWanted"] = node.Rtmp?.Wanted, ["portNote"] = node.Rtmp?.Note, ["owner"] = owner, ["ips"] = new JsonArray(LocalIps().Select(x => (JsonNode?)x).ToArray()), ["publicIp"] = null,
                         ["channel"] = chan, ["title"] = p["title"]?.DeepClone(),
                         ["linked"] = chan != null && node.Obs.LinkedChannels().Contains(chan),
                         ["youtube"] = new JsonObject { ["on"] = Js.IsTrue(p["youtube"]?["on"]), ["set"] = !string.IsNullOrEmpty((string?)p["youtube"]?["key"]) }, ["tile"] = p["tile"]?.DeepClone(),
