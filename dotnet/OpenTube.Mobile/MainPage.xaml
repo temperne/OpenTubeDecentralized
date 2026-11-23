@@ -3,7 +3,9 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
              xmlns:local="clr-namespace:OpenTube.Mobile"
              xmlns:components="clr-namespace:OpenTube.Mobile.Components"
-             x:Class="OpenTube.Mobile.MainPage">
+             x:Class="OpenTube.Mobile.MainPage"
+             SafeAreaEdges="All"
+             BackgroundColor="#15171c">
 
     <BlazorWebView x:Name="blazorWebView" HostPage="wwwroot/index.html">
         <BlazorWebView.RootComponents>

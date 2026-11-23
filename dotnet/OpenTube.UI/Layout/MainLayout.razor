@@ -1,6 +1,8 @@
 @inherits LayoutComponentBase
 @implements IDisposable
 @inject ClientSession S
+@inject OpenTube.UI.UiPlatform Platform
+@inject NavigationManager Nav
 <header class="top">
     <a class="logo" href="">Open<span>Tube</span></a>
     <nav>
@@ -8,16 +10,23 @@
         <NavLink href="explore">Explore</NavLink>
         <NavLink href="you">You</NavLink>
     </nav>
+    <a class="bell" href="notifications" title="Notifications">🔔@if (S.Ready && S.Notes.Unread > 0) { <span class="bell-n">@(S.Notes.Unread > 99 ? "99+" : S.Notes.Unread.ToString())</span> }</a>
     <div class="net">
         <span class="dot @(S.Peers > 0 ? "on" : "")"></span>@(S.Peers) node@(S.Peers == 1 ? "" : "s")
         @if (S.Ready) { <span class="sub"> · main #@S.MainBest["height"]</span> }
-        <span class="badge">C# · WebAssembly</span>
+        <span class="badge">@Platform.Label</span>
     </div>
 </header>
 <main>@Body</main>
 @code {
-    protected override void OnInitialized() => S.Changed += Poke;
+    protected override void OnInitialized()
+    {
+        S.Changed += Poke;
+        AppNav.Go += Open;   // a tapped notification (phone)
+        if (AppNav.Pending is { } p) _ = InvokeAsync(() => Open(p));
+    }
+    void Open(string href) { AppNav.Pending = null; var l = AppNav.LinkFor(href, S.Site); _ = InvokeAsync(() => Nav.NavigateTo(l)); }
     bool pending;
     void Poke() { if (pending) return; pending = true; _ = InvokeAsync(async () => { await Task.Delay(500); pending = false; StateHasChanged(); }); }
-    public void Dispose() => S.Changed -= Poke;
+    public void Dispose() { S.Changed -= Poke; AppNav.Go -= Open; }
 }

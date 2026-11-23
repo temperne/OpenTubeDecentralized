@@ -23,12 +23,20 @@ public static class MauiProgram
         builder.Services.AddSingleton<IClientStore>(new FileStore(Path.Combine(data, "chain")));
         builder.Services.AddSingleton(sp => new ClientSession(sp.GetRequiredService<IClientStore>(), Site) { Log = m => System.Diagnostics.Debug.WriteLine("[opentube] " + m) });
         builder.Services.AddSingleton<IVideoPlayer>(sp => new NativeVideoPlayer(sp.GetRequiredService<ClientSession>(), Path.Combine(FileSystem.CacheDirectory, "videos")));
+        builder.Services.AddSingleton(new UiPlatform("C# · " + DeviceInfo.Platform));
 #if DEBUG
         builder.Services.AddBlazorWebViewDeveloperTools();
         builder.Logging.AddDebug();
 #endif
         var app = builder.Build();
-        _ = app.Services.GetRequiredService<ClientSession>().Start();
+        var session = app.Services.GetRequiredService<ClientSession>();
+        _ = Task.Run(async () =>
+        {
+            await session.Start();
+#if ANDROID
+            await AndroidNotifier.Attach(session);
+#endif
+        });
         return app;
     }
 }

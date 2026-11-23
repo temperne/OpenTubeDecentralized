@@ -56,6 +56,37 @@ public sealed class BrowserTorrents : IVideoPlayer
         return new Playback($"/webtorrent/{infoHash}/{name}", "Finding peers for this video…");
     }
 
+    public async Task<Playback> PlayLive(LiveWatch live)
+    {
+        init ??= js.InvokeAsync<bool>("otStream.init", self).AsTask();
+        if (!await init) return new Playback(null, "This browser can't play streams (no service workers).");
+        if (!await js.InvokeAsync<bool>("otStream.ready")) return new Playback(null, "Reload the page once to let it play streams (its service worker just started).");
+        return new Playback($"/webtorrent/live/{live.Stream}/live.{(live.Mp4 ? "mp4" : "webm")}", live.Status);
+    }
+    // a live stream for the service worker: one reader per request, pulled a chunk at a time
+    readonly ConcurrentDictionary<int, (LiveWatch W, System.Threading.Channels.ChannelReader<byte[]> R)> liveReaders = new();
+    int nextReader;
+    [JSInvokable] public object? LiveOpen(string stream)
+    {
+        if (s.Watching(stream) is not { } w) return null;
+        var id = Interlocked.Increment(ref nextReader); liveReaders[id] = (w, w.Subscribe());
+        return new { id, type = w.Mp4 ? "video/mp4" : "video/webm" };
+    }
+    [JSInvokable] public async Task<byte[]?> LiveRead(int id)
+    {
+        if (!liveReaders.TryGetValue(id, out var x)) return null;
+        using var to = new CancellationTokenSource(4000);
+        try
+        {
+            if (!await x.R.WaitToReadAsync(to.Token)) { LiveClose(id); return null; }   // the stream ended
+            using var ms = new MemoryStream();
+            while (ms.Length < 1 << 20 && x.R.TryRead(out var b)) ms.Write(b);
+            return ms.ToArray();
+        }
+        catch (OperationCanceledException) { return []; }   // nothing new yet: keeps the pull alive
+    }
+    [JSInvokable] public void LiveClose(int id) { if (liveReaders.TryRemove(id, out var x)) x.W.Unsubscribe(x.R); }
+
     // ---- what the service worker asks (through the binding in opentube.js)
     [JSInvokable] public async Task<object?> Info(string infoHash)
     {
@@ -70,7 +101,7 @@ public sealed class BrowserTorrents : IVideoPlayer
         if (!bt.Torrents.TryGetValue(infoHash, out var t) || t.Meta is not { } m) return null;
         var pos = (long)position; if (pos < 0 || pos >= m.Length) return null;
         int piece = (int)(pos / m.PieceLength), off = (int)(pos - (long)piece * m.PieceLength);
-        if (!await t.WhenHave(piece, TimeSpan.FromMinutes(2))) return null;
+        if (!await t.WhenHave(piece, TimeSpan.FromSeconds(4))) return [];   // still coming: an empty chunk keeps the service worker's pull alive (it gives up after 5 s)
         return t.ReadBlock(piece, off, Math.Min(Math.Min(max, 128 * 1024), m.SizeOf(piece) - off));
     }
 }

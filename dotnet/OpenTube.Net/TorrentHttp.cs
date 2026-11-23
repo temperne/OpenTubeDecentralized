@@ -15,10 +15,12 @@ public sealed class TorrentHttp : IDisposable
     readonly TcpListener listener = new(IPAddress.Loopback, 0);
     readonly CancellationTokenSource cts = new();
     readonly Func<string, TorrentData?> find;
+    readonly Func<string, (string Type, System.Threading.Channels.ChannelReader<byte[]> Reader, Action Done)?>? live;
     public int Port { get; }
-    public TorrentHttp(Func<string, TorrentData?> find)
+    /// <param name="live">Live streams by id (/live/{id}): their type, a reader of the continuous video, and what to do when the player leaves.</param>
+    public TorrentHttp(Func<string, TorrentData?> find, Func<string, (string Type, System.Threading.Channels.ChannelReader<byte[]> Reader, Action Done)?>? live = null)
     {
-        this.find = find; listener.Start(); Port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        this.find = find; this.live = live; listener.Start(); Port = ((IPEndPoint)listener.LocalEndpoint).Port;
         _ = Task.Run(async () => { while (!cts.IsCancellationRequested) { try { var c = await listener.AcceptTcpClientAsync(cts.Token); _ = Serve(c); } catch { return; } } });
     }
     public string UrlFor(TorrentData t) => $"http://127.0.0.1:{Port}/{t.InfoHashHex}";
@@ -34,7 +36,23 @@ public sealed class TorrentHttp : IDisposable
                 var lines = head.Split("\r\n"); var parts = lines[0].Split(' ');
                 if (parts.Length < 2) return;
                 var headers = lines.Skip(1).Select(l => l.Split(':', 2)).Where(kv => kv.Length == 2).ToDictionary(kv => kv[0].Trim().ToLowerInvariant(), kv => kv[1].Trim());
-                var t = find(parts[1].TrimStart('/').Split('?')[0]);
+                var path = parts[1].TrimStart('/').Split('?')[0];
+                if (path.StartsWith("live/") && live?.Invoke(path[5..].Split('/')[0]) is { } lv)
+                {   // a live stream: one chunked response for as long as it runs
+                    await s.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Type: {lv.Type}\r\nCache-Control: no-store\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"), cts.Token);
+                    try
+                    {
+                        while (await lv.Reader.WaitToReadAsync(cts.Token))
+                            while (lv.Reader.TryRead(out var b))
+                            {
+                                await s.WriteAsync(Encoding.ASCII.GetBytes(b.Length.ToString("x") + "\r\n"), cts.Token); await s.WriteAsync(b, cts.Token); await s.WriteAsync("\r\n"u8.ToArray(), cts.Token);
+                            }
+                        await s.WriteAsync("0\r\n\r\n"u8.ToArray(), cts.Token);
+                    }
+                    finally { lv.Done(); }
+                    return;
+                }
+                var t = find(path);
                 if (t == null) { await Status(s, "404 Not Found"); return; }
                 for (int i = 0; t.Meta == null && i < 600; i++) await Task.Delay(100, cts.Token);   // the torrent's info comes from the first peer
                 if (t.Meta is not { } m) { await Status(s, "504 Gateway Timeout"); return; }

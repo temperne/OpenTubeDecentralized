@@ -1,0 +1,30 @@
+@page "/live/{Chain}/{Stream}"
+@inherits Live
+@inject IVideoPlayer Player
+@* A live stream, watched in C# (LiveWatch) and played by the page's own video element *@
+@{ var d = S.Chain(Chain); var lb = Find(d); }
+@if (lb == null) { <p class="sub">Loading this stream from the network…</p> }
+else
+{
+    <div class="player">@if (src != null) { <video controls autoplay muted playsinline src="@src" style="width:100%"></video> }</div>
+    <h2><span class="badge live">LIVE</span> @((string?)lb["payload"]?["title"])</h2>
+    <div class="sub"><a href="c/@Chain">@((string?)d!.Profile["name"])</a> · started @Ago(Js.Num(lb["ts"]) ?? 0)</div>
+    <div class="sub" id="live-status">@(w?.Status ?? "Joining…")@(w != null && w.Bytes > 0 ? $" · {Bytes(w.Bytes)} received" : "")</div>
+}
+@code {
+    [Parameter] public string Chain { get; set; } = ""; [Parameter] public string Stream { get; set; } = "";
+    LiveWatch? w; string? src, started;
+    // by its stream id, or by its live block's hash (notifications link that way, as the JavaScript page does)
+    JsonObject? Find(Derived? d) => d?.Streams.FirstOrDefault(b => (string?)b["payload"]?["stream"] == Stream || (string?)b["hash"] == Stream);
+    protected override async Task OnAfterRenderAsync(bool first)
+    {
+        if (started == Stream) return;
+        var lb = Find(S.Chain(Chain));
+        if (lb == null) return;
+        started = Stream;
+        w = S.Watch(Chain, (JsonObject)lb.DeepClone()); w.Changed += Redraw;
+        src = (await Player.PlayLive(w)).Src; StateHasChanged();
+    }
+    void Redraw() => InvokeAsync(StateHasChanged);
+    public override void Dispose() { base.Dispose(); if (w != null) w.Changed -= Redraw; }
+}

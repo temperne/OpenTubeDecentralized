@@ -41,6 +41,8 @@ public sealed class ClientSession : IAsyncDisposable
     public int Peers => links.Values.Count(l => l.Open);
     public IEnumerable<string> LinkedUrls => links.Values.Where(l => l.Open).Select(l => l.Url);
     public bool Ready { get; private set; }
+    /// <summary>Notifications (shared with the JavaScript page in the browser; system notifications on the phone).</summary>
+    public Notifications Notes { get; private set; } = null!;
     static readonly HttpClient http = new() { Timeout = TimeSpan.FromSeconds(10) };
 
     public ClientSession(IClientStore store, string site) { this.store = store; Site = site.TrimEnd('/'); }
@@ -63,6 +65,7 @@ public sealed class ClientSession : IAsyncDisposable
         }
         catch (Exception e) { Log?.Invoke("couldn’t load saved chains: " + e.Message); }
         Engine.Persist = (c, b) => { try { store.SaveBlock(c, (JsonObject)b.DeepClone()); } catch { } Changed?.Invoke(); };
+        Notes = new Notifications(this, store); await Notes.Load(); Notes.Start();
         Ready = true; Changed?.Invoke();
         _ = Task.Run(FindNodes);
     }
@@ -133,6 +136,23 @@ public sealed class ClientSession : IAsyncDisposable
     }
     public JsonObject? Genesis(string id) => Engine.Read(e => e.Store.Directory.TryGetValue(id, out var d) ? (JsonObject)d.Genesis.DeepClone() : e.Store.Chains.TryGetValue(id, out var c) ? (JsonObject)c.Genesis.DeepClone() : null);
     /// <summary>Register a channel or list: its genesis block goes to the main chain's pool, and this device mines its own registration.</summary>
+    readonly Dictionary<string, LiveWatch> watching = [];
+    /// <summary>Watch a live stream (one connection per stream, however many pages show it).</summary>
+    public LiveWatch Watch(string chain, JsonObject liveBlock)
+    {
+        var stream = (string)liveBlock["payload"]!["stream"]!;
+        lock (watching)
+        {
+            if (watching.TryGetValue(stream, out var w) && !w.Ended) return w;
+            return watching[stream] = LiveWatch.Start(this, chain, liveBlock);
+        }
+    }
+    public LiveWatch? Watching(string stream) { lock (watching) return watching.GetValueOrDefault(stream); }
+    /// <summary>Live streams now, newest first: (chain, channel name, live block).</summary>
+    public List<(string Chain, string Name, JsonObject Block)> LiveNow() => Engine.Read(e => e.Store.Chains.Values.Where(c => c != e.Store.Main)
+        .SelectMany(c => { var d = Derived.Of(c); return d.LiveNow.Select(b => (c.Id, (string?)d.Profile["name"] ?? c.Id[..8], (JsonObject)b.DeepClone())); })
+        .OrderByDescending(x => Js.Num(x.Item3["ts"])).ToList());
+
     JsonObject channelKeys = new();
     Identity? KeyFor(string pub) { lock (channelKeys) return pub == Me.pub ? Me : channelKeys[pub] is JsonObject k ? new Identity((string)k["pub"]!, (string)k["priv"]!) : null; }
     /// <summary>Your key, or one of your channels' keys.</summary>

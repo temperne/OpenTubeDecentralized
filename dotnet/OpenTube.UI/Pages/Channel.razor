@@ -14,9 +14,16 @@ else
             <h2>@((string?)d.Profile["name"])</h2>
             <div class="sub">@d.Kind · @d.Videos.Count videos @(d.LiveNow.Count > 0 ? " · LIVE now" : "")</div>
             <p>@((string?)d.Profile["about"])</p>
+            <div class="row-actions">
+                @if (S.Notes.Subscription(Id) is { } how) { <button @onclick="() => S.Notes.Subscribe(Id, false)">@(how == "join" ? "Joined" : "Subscribed") ✓</button> }
+                else { <button class="primary" @onclick="() => S.Notes.Subscribe(Id, true)">Subscribe</button> }
+                <select value="@S.Notes.ObjectMode(Id)" @onchange="e => S.Notes.SetObject(Id, (string)e.Value!)" title="Notifications from this channel">
+                    <option value="default">🔔 Default</option><option value="all">🔔 All</option><option value="none">🔕 None</option>
+                </select>
+            </div>
         </div>
     </div>
-    @if (d.LiveNow.Count > 0) { <div class="live-banner">🔴 Live: @((string?)d.LiveNow[0]["payload"]?["title"])</div> }
+    @foreach (var lb in d.LiveNow) { <a class="live-banner" href="live/@Id/@lb["payload"]!["stream"]">🔴 Live now: @((string?)lb["payload"]?["title"]) · watch</a> }
     <div class="grid">
         @foreach (var v in d.Videos.OrderByDescending(v => Js.Num(v["ts"]))) { <VideoCard Chain="@Id" Block="(JsonObject)v.DeepClone()" ChannelName="@((string?)d.Profile["name"])" /> }
     </div>

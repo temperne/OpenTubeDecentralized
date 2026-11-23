@@ -24,7 +24,11 @@ public sealed class NativeVideoPlayer : IVideoPlayer
     {
         this.s = s; this.dir = dir; Directory.CreateDirectory(dir);
         web = new WebTorrentPeers(bt, new SipRtc(), m => System.Diagnostics.Debug.WriteLine("[bt] " + m));
-        http = new TorrentHttp(ih => bt.Torrents.GetValueOrDefault(ih));
+        http = new TorrentHttp(ih => bt.Torrents.GetValueOrDefault(ih), stream =>
+        {
+            if (s.Watching(stream) is not { } w) return null;
+            var r = w.Subscribe(); return (w.Mp4 ? "video/mp4" : "video/webm", r, () => w.Unsubscribe(r));
+        });
         bt.Listen(0);
         _ = Task.Run(async () => { try { var d = new Dht(); d.Start(0); await d.Bootstrap(); bt.UseDht(d); dht = d; } catch { } });
     }
@@ -36,6 +40,8 @@ public sealed class NativeVideoPlayer : IVideoPlayer
         foreach (var t in JsonNode.Parse(Network.MainGenesisJson)?["payload"]?["trackers"]?.AsArray() ?? []) if ((string?)t is { } u) list.Add(u);
         return list.Distinct().ToList();
     }
+
+    public Task<Playback> PlayLive(LiveWatch live) => Task.FromResult(new Playback($"http://127.0.0.1:{http.Port}/live/{live.Stream}", live.Status));
 
     public Task<Playback> Play(string elementId, string infoHash, string file, double size, Action<string> status)
     {

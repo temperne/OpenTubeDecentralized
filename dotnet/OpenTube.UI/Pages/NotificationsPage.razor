@@ -1,0 +1,35 @@
+@page "/notifications"
+@inherits Live
+<h2>Notifications</h2>
+@if (!S.Ready) { <p class="sub">Starting…</p> }
+else
+{
+    var all = S.Notes.All;
+    <div class="row-actions">
+        <button @onclick="() => S.Notes.MarkAllRead()" disabled="@(S.Notes.Unread == 0)">Mark all read</button>
+        <button @onclick="() => showSettings = !showSettings">@(showSettings ? "Hide settings" : "Settings")</button>
+    </div>
+    @if (showSettings)
+    {
+        <div class="panel">
+            <h3>What to notify you about</h3>
+            @foreach (var (key, label, _) in Notifications.Types)
+            {
+                <label class="check"><input type="checkbox" checked="@S.Notes.TypeOn(key)" @onchange="e => S.Notes.SetType(key, e.Value is true)" /> @label</label>
+            }
+            <p class="sub">For one channel, group or list: its page has 🔔 Default / All / None. On the phone, each kind is also its own Android notification category (sound, silent, off) in the system settings.</p>
+        </div>
+    }
+    @if (all.Count == 0) { <p class="sub">Nothing yet. Subscribe to channels (their page has a Subscribe button) to hear about new videos and live streams.</p> }
+    <div class="list">
+        @foreach (var n in all)
+        {
+            <a class="row-item note @(n.Read ? "" : "unread")" href="@AppNav.LinkFor(n.Href, S.Site)">
+                <span class="badge">@Notifications.LabelOf(n.Type)</span>
+                <span class="grow">@n.Text</span>
+                <span class="sub">@Ago(n.Ts)</span>
+            </a>
+        }
+    </div>
+}
+@code { bool showSettings; }

@@ -11,7 +11,7 @@
   window.otStore = {
     // the identity ({pub, priv}) and channelKeys are kept as objects (the JavaScript page's format); C# passes JSON text
     get: async (k) => { const v = await tx('kv', 'readonly', s => s.get(k)); return v == null ? null : typeof v === 'string' ? v : JSON.stringify(v); },
-    set: (k, v) => tx('kv', 'readwrite', s => s.put(k === 'identity' || k === 'channelKeys' ? JSON.parse(v) : v, k)),
+    set: (k, v) => { let o = v; try { o = JSON.parse(v); } catch {} return tx('kv', 'readwrite', s => s.put(o, k)); },   // JSON stays an object (as the JavaScript page keeps it)
     blocks: async () => JSON.stringify(await tx('blocks', 'readonly', s => s.getAll()) || []),
     put: (chainId, blockJson) => { const b = JSON.parse(blockJson); return tx('blocks', 'readwrite', s => s.put({ hash: b.hash, chainId, block: b })); }
   };
@@ -50,7 +50,20 @@
   let streamHub = null, swOk = null;
   async function onSw(event) {
     const d = event.data; if (d?.type !== 'webtorrent' || !streamHub) return;
-    const port = event.ports[0], m = /\/webtorrent\/([0-9a-f]{40})\//.exec(d.url);
+    const port = event.ports[0];
+    const lm = /\/webtorrent\/live\/([0-9a-f]{64})\//.exec(d.url);
+    if (lm) {   // a live stream: one continuous response, read from C# a chunk at a time
+      const r = await streamHub.invokeMethodAsync('LiveOpen', lm[1]);
+      if (!r) return port.postMessage({ status: 404, headers: {}, body: '' });
+      port.postMessage({ status: 200, headers: { 'Content-Type': r.type, 'Cache-Control': 'no-store' }, body: 'STREAM' });
+      port.onmessage = async ({ data }) => {
+        if (!data) { port.onmessage = null; streamHub.invokeMethodAsync('LiveClose', r.id); return; }
+        const chunk = await streamHub.invokeMethodAsync('LiveRead', r.id);
+        port.postMessage(chunk === null ? null : chunk);
+      };
+      return;
+    }
+    const m = /\/webtorrent\/([0-9a-f]{40})\//.exec(d.url);
     if (!m) return port.postMessage({ status: 404, headers: {}, body: '' });
     const info = await streamHub.invokeMethodAsync('Info', m[1]);
     if (!info) return port.postMessage({ status: 504, headers: {}, body: '' });
@@ -67,7 +80,7 @@
       if (!data) { port.onmessage = null; return; }   // the player let go (seeking, leaving)
       if (pos > end) return port.postMessage(null);
       const chunk = await streamHub.invokeMethodAsync('Read', m[1], pos, Math.min(end - pos + 1, 131072));
-      if (!chunk || !chunk.length) return port.postMessage(null);
+      if (chunk === null) return port.postMessage(null);   // (an empty chunk: the piece is still coming; the pull stays alive)
       pos += chunk.length; port.postMessage(chunk);
     };
   }

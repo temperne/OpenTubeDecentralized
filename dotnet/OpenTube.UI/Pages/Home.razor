@@ -1,5 +1,19 @@
 @page "/"
 @inherits Live
+@if (S.Ready && S.LiveNow() is { Count: > 0 } live)
+{
+    <h2>Live now</h2>
+    <div class="grid">
+        @foreach (var (chain, name, b) in live)
+        {
+            <a class="card" href="live/@chain/@b["payload"]!["stream"]">
+                <div class="thumb-empty live-thumb">● LIVE</div>
+                <div class="title">@((string?)b["payload"]?["title"])</div>
+                <div class="sub">@name · started @Ago(Js.Num(b["ts"]) ?? 0)</div>
+            </a>
+        }
+    </div>
+}
 <h2>Newest videos</h2>
 @if (!S.Ready) { <p class="sub">Starting…</p> }
 else

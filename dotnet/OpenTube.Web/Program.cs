@@ -20,6 +20,7 @@ builder.Services.AddSingleton(sp =>
     return new ClientSession(sp.GetRequiredService<IClientStore>(), site) { Log = m => Console.WriteLine("[opentube] " + m) };
 });
 builder.Services.AddSingleton<IVideoPlayer, BrowserTorrents>();
+builder.Services.AddSingleton(new UiPlatform("C# · WebAssembly"));
 var host = builder.Build();
 await host.Services.GetRequiredService<ClientSession>().Start();
 await host.RunAsync();

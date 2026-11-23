@@ -8,5 +8,7 @@ namespace OpenTube.UI;
 public interface IVideoPlayer
 {
     Task<Playback> Play(string elementId, string infoHash, string file, double size, Action<string> status);
+    /// <summary>A live stream (<see cref="OpenTube.Client.LiveWatch"/>) as an address the page's video element plays.</summary>
+    Task<Playback> PlayLive(OpenTube.Client.LiveWatch live);
 }
 public sealed record Playback(string? Src, string? Status);
