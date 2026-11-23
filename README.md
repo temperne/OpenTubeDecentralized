@@ -10,23 +10,19 @@ Every browser that opens `index.html` becomes a full node: it verifies blocks, s
 
 **Viewers** just open the page. Nothing to install.
 
-**Operators (optional but recommended)** run a home node on the machine that serves the page:
+**Operators (optional but recommended)** run OpenTube's node, one C# program (.NET 10) for Windows, macOS and Linux.
+It serves the page too, so any node is a way into the network:
 
 ```sh
-node server.mjs            # serves index.html on http://localhost:8080 and runs a node at /ot
+curl -fsSL https://<your site>/opentube-dotnet.sh | bash -s -- --site=https://<your site>
 ```
 
-You need Node 20 or newer, and there's no `npm install`. For HTTPS, put it behind a TLS proxy (e.g. `caddy reverse-proxy --to :8080`).
+(Windows: the PowerShell command from *Devices → Run OpenTube on a computer*.) It installs .NET 10 if it's missing,
+downloads OpenTube, builds it and starts it: a window on a desktop, a terminal UI over SSH, or `--service` with no UI
+(`--install-service` makes it start with the computer). From the repository: `cd dotnet && dotnet run --project
+OpenTube.App`. Every option and what the node does: [dotnet/README.md](dotnet/README.md).
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `PORT` | 8080 | HTTP port |
-| `DATA_DIR` | `./data` | Where the node stores blocks and its key |
-| `MAIN_ONLY=1` | off | Keep only the main chain, not channel chains |
-| `MINE=0` | mining on | Don't spend CPU confirming registrations |
-| `PEERS` | none | Comma-separated `wss://host/ot` URLs of other home nodes to sync with (Node 22+) |
-
-`GET /status` returns the node's height, tip and peer count as JSON.
+`GET /status` returns the node's height, tip, peers, live streams and meet places as JSON.
 
 ### On Cloudflare (Workers + Durable Objects)
 
@@ -40,24 +36,24 @@ npx wrangler deploy
 
 ### Run OpenTube on your computer with one command
 
-*My node → Your computers → Run OpenTube on a computer → Create my command* gives you one line to paste into a terminal (Windows Command Prompt or PowerShell, Mac Terminal, Linux). It needs Node.js 22+. The line downloads `opentube.mjs` from your site and runs it. Each start it fetches the site's current `server.mjs`, `headless.mjs`, `rtmp.mjs` and `index.html` into `~/.opentube/app`, so it stays up to date, and runs:
+*Devices → Run OpenTube on a computer → Create my command* gives you one line to paste into a terminal (Windows
+Command Prompt or PowerShell, Mac Terminal, Linux). It installs .NET 10 if the computer doesn't have it (for your user,
+no admin needed), downloads OpenTube from its repository, builds and starts it, and it updates itself afterwards. It
+runs:
 
-- **a full node** that syncs with the site (`PEERS=wss://site/ot`, no ranking list, no mining unless you tick it);
-- **video hosting** for your joined channels and your own channels: the node downloads their videos into a folder (`--videos=…`, default `~/OpenTube Videos`, same `Channel/channel.json` layout) and shares them with viewers' browsers over WebRTC, announcing on the meet places: its own tracker and every entry node's tracker. Every public computer is a meet place where browsers and nodes find each other for files; browsers use the entry nodes they know (seeds.json, remembered ones) first and the site's tracker only if they know none, and meet places found later are added to videos already playing. Files keep working while the site's server is down. It needs no browser: `host.mjs` uses WebTorrent, installed into `~/.opentube` on first run (a few MB). After a restart it shares straight from the files. `--cap-gb=5` limits each channel you joined (your own channels are never trimmed). `--browser-host` uses the older headless-Chromium host instead;
-- **an OBS receiver** on `rtmp://localhost/live`.
+- **a full node** that keeps the network, serves the website, the tracker and a live hub, and joins the peer mesh;
+- **video hosting** for your joined channels and your own channels: their videos in a folder (`--videos=…`, default
+  `~/OpenTube Videos`, the same `Channel/channel.json` layout as a browser), shared with viewers' browsers over WebRTC
+  on the meet places (every public computer's tracker) and with other computers over BitTorrent; `--cap-gb=5` limits
+  each channel you joined (your own channels are never trimmed);
+- **an OBS receiver** (`rtmp://this-computer/live`, a stream key per person), with recordings, group streams,
+  YouTube forwarding and flash computers;
+- **a public address** by itself: its own HTTPS when it's directly on the internet, otherwise a Cloudflare tunnel.
 
-The command carries a **grant signed by your personal key**. The node makes its own key and announces itself every 30 s, signed and carrying your grant. Your *My node* page lists your computers with what they run, online / last seen, their status (height, peers, hosted videos, folder, OBS) and addresses, plus a *Test connection* button. Whoever runs your command runs a node that is yours, so don't share it. Options: `--no-host`, `--no-obs`, `--no-node`, `--mine`, `--name=…`, `--port=…`.
-
-### Always-on hosting: the page itself, headless, acting as you
-
-Browsers host videos only while their tabs are open. To keep your joined channels online around the clock, run **the same page** on a server in headless Chromium and give it your user ID (My node → *Your user ID*):
-
-```sh
-npm install && npx playwright install --with-deps chromium   # once
-node headless.mjs https://your-site.example/ <your user ID> <video folder>
-```
-
-It mirrors you: your browser publishes a signed list of the channels you've joined (latest version only, stored by home nodes), and the headless page follows it. When you join a channel it joins and starts hosting; when you leave, it leaves and deletes those videos. It never needs your private key. Videos go into the `<video folder>` you give it (or `VIDEO_DIR`, default `./videos`), as real files in the same channel-folder layout a browser uses (see *The video folder* below). Chains and settings live in a persistent browser profile (`PROFILE_DIR`, default `./browser-profile`), and `CAP_GB` sets the storage limit per channel. It logs a status line every 30 seconds and restarts the page if it crashes. Any VPS, home PC or Raspberry Pi works. Cloudflare can't keep a browser running, so on a Cloudflare deployment the Worker handles chains, tracker and rankings, and headless hosts handle video.
+The command carries a **grant signed by your personal key**. The node makes its own key and announces itself every
+30 s, signed and carrying your grant. Your *Devices* page lists your computers with what they run, their status and
+addresses, and controls them (OBS, sharing, files, public access, update). Whoever runs your command runs a node that
+is yours, so don't share it.
 
 Note: the joined-channel list is public, so anyone with your user ID can see which channels you host.
 
@@ -67,8 +63,8 @@ OpenTube works like Bitcoin and BitTorrent: every browser and every command-line
 
 - **The mesh:** browsers and command-line nodes join the network's WebRTC room and connect directly to each other. Blocks, transactions and introductions spread over those connections; a peer that receives something new passes it on. Losing any peer, including the site the page came from, changes nothing for the others.
 - **Trackers only introduce peers:** the site's own tracker, every node's tracker, the network's defaults, and the current public WebSocket trackers from [ngosang/trackerslist](https://github.com/ngosang/trackerslist), fetched on every start (and remembered in case GitHub can't be reached). Any one of them is enough. Command-line nodes also use the list's UDP/HTTP trackers and the DHT for videos, so ordinary BitTorrent apps can share them too.
-- **Command-line nodes** are the always-on backbone, like bitcoind: they keep everything, join the same mesh (`@trystero-p2p/torrent` with WebTorrent's WebRTC, installed by `opentube.mjs`), and host videos.
-- **Public nodes with automatic HTTPS:** browsers only accept secure connections, so a node started with `--public` gets a public HTTPS name by itself: `<its IP, dashed>.sslip.io` (e.g. `203-0-113-7.sslip.io`, which resolves to that IP for everyone, so no domain is needed) with a Let's Encrypt certificate it obtains and renews itself (`tls.mjs`). `--public=your.domain` uses your own domain. It needs ports 80 and 443 (on Linux, run as root). The node announces its address in its check-ins; browsers then connect to it and use its tracker, and remember public nodes' trackers for the next start.
+- **Computers running OpenTube** are the always-on backbone, like bitcoind: they keep everything, join the same mesh (the .NET node speaks Trystero's WebRTC room protocol itself), and host videos.
+- **Public nodes with automatic HTTPS:** browsers only accept secure connections. A node directly on the internet gets a public HTTPS name by itself: `<its IP, dashed>.sslip.io` (e.g. `203-0-113-7.sslip.io`, which resolves to that IP for everyone, so no domain is needed) with a Let's Encrypt certificate it obtains and renews itself; `--public=your.domain` uses your own domain. Behind a router, or when ports 80/443 are taken by another program, it uses a Cloudflare tunnel instead. The node announces its address in its check-ins; browsers then connect to it and use its tracker, and remember public nodes' trackers for the next start.
 - **WebSocket links to nodes are only a backup:** a browser connects to the site's node (or `?nodes=wss://a/ot,wss://b/ot`, or nodes announcing a public address) only while it has fewer than 3 direct peers.
 - **Trending** is computed by each browser for itself; picking a ranking list is optional.
 
@@ -94,7 +90,7 @@ MAIN CHAIN (proof of work, every node keeps it)
 
 - **Main chain:** blocks need proof of work (18 leading zero bits by default; a browser takes a few seconds, a server well under one). The highest chain wins. Each block embeds the **complete signed genesis blocks** of the channels and lists it registers, so any node can open a channel from the main chain alone.
 - **Channel chains:** only the channel key can post videos, posts and settings. Other people can write `comment` and `hide` (their own comments) blocks when that video's comment setting allows it. Each video either uses the channel default or overrides it: *anyone*, *approved users only*, or *off*. The owner can change a video's setting at any time; the change is appended as a `settings` record. Other people's blocks also need a small proof of work (10 bits) to deter spam.
-- **How the network enforces comment rules:** there's no central server deciding. Every node, whether a browser, `server.mjs` or the Cloudflare node, runs the same rules on every block it receives. A comment is accepted only if, according to the owner's records in that comment's own history, its author may comment on that video and hasn't been revoked. A comment that fails is rejected: never stored, never relayed. A modified client can still create such a block, but no honest node will keep or forward it. Commenters could try to dodge a newer "off" or revoke by attaching to older blocks, so nodes also re-apply the owner's latest settings and revokes when they display a channel.
+- **How the network enforces comment rules:** there's no central server deciding. Every node, whether a browser, the .NET node or the Cloudflare node, runs the same rules on every block it receives. A comment is accepted only if, according to the owner's records in that comment's own history, its author may comment on that video and hasn't been revoked. A comment that fails is rejected: never stored, never relayed. A modified client can still create such a block, but no honest node will keep or forward it. Commenters could try to dodge a newer "off" or revoke by attaching to older blocks, so nodes also re-apply the owner's latest settings and revokes when they display a channel.
 - **Several writers:** a block may have up to 8 parents, so blocks written at the same time by different people merge instead of conflicting.
 - **Nothing is deleted.** Hiding a video or comment, or revoking a commenter, appends a signed record. Every node applies these records when it displays the channel, so the full history stays verifiable.
 - **Keys:** every channel and list gets **its own Ed25519 key pair** when you create it, and whoever holds the private key controls it. Each browser also has a **personal key** that identifies you when you comment. Channels made before per-channel keys are controlled by the personal key. Everything is managed on *My node*:
@@ -405,7 +401,7 @@ Channels can claim an **@name** and lists a **~name** (*Manage → Username*). T
 - One name per channel or list. Claiming a different one, or releasing it, frees the old name for anyone.
 - If two people claim the same name, the claim that lands in the main chain first wins.
 - Names are 3–30 characters: `a–z`, `0–9`, and `. _ -` in the middle. Capital letters are lowercased.
-- `server.mjs` and the Cloudflare worker serve the page for `/@…` and `/~…` paths; the page looks the name up.
+- Nodes and the Cloudflare worker serve the page for `/@…` and `/~…` paths; the page looks the name up.
 
 ## Live streaming
 
@@ -414,13 +410,13 @@ On your channel's Videos tab, **Go live**: pick a camera, a microphone, or *Shar
 - **Start:** the page appends a signed `live` block to the channel, so subscribers see a *LIVE* banner on the channel and at the top of their feed. Chat is comments on that block.
 - **WebRTC first:** the home node's live hub (`/live`) arranges viewers in a tree. **Members who joined the channel get the slots right under the broadcaster**; other viewers connect under members, and every viewer can pass the stream on to a few more. The hub only introduces peers; video goes browser to browser. About a second of delay.
 - **Segments as the fallback:** the broadcaster also cuts the stream into ~1 s chunks, each signed with the channel key and carrying its byte position in the recording. Viewers whose WebRTC connection fails (strict networks, no TURN relay) play these through the home node instead, a few seconds behind. `?live=segments` forces this.
-- **Members save the stream:** members' browsers (and headless hosts) join their channels' streams in the background, relay them, and write every chunk at its position into a file in the channel's folder. Their copy is the broadcaster's recording byte for byte.
+- **Members save the stream:** members' browsers (and hosting computers) join their channels' streams in the background, relay them, and write every chunk at its position into a file in the channel's folder. Their copy is the broadcaster's recording byte for byte.
 - **When it ends, the streamer chooses:** *Publish recording* hashes the recording and posts it as a normal video. Members already have it, so they only fetch what they missed. *Discard* deletes the recording, and members delete their copies.
 - Every node checks the rules: only the channel's key can start or end a stream or sign its chunks, and viewers verify every chunk's signature and hash.
 
-**OBS "Start Streaming" (recommended for OBS):** run OpenTube on the computer OBS runs on (*My node → Your computers → Run OpenTube on a computer*). It listens for OBS on `rtmp://localhost/live` (`rtmp.mjs`: RTMP in plain JavaScript, no ffmpeg needed). On the site, *Go live → Stream from OBS*, pick that computer, then in OBS set *Settings → Stream → Service “Custom…”*, server `rtmp://localhost/live`, any stream key, an H.264 video encoder (x264 or your GPU's H.264, not HEVC/AV1), AAC audio, and a keyframe interval of 2 s. Click *Start Streaming*. The computer repackages the stream as fragmented MP4, signs each fragment with its node key (your signed `live` block names it as the stream's `relay`), and relays it to the site's live hub. Viewers watch through segments, a few seconds behind. Your browser and members save the recording as an `.mp4`, and *Stop Streaming* leads to the usual publish-or-discard step. If you click Start Streaming before Go live, OBS shows an error saying so. This works with the Cloudflare site too.
+**OBS "Start Streaming" (recommended for OBS):** run OpenTube on the computer OBS runs on (*My node → Your computers → Run OpenTube on a computer*). It listens for OBS on `rtmp://localhost/live` (its own RTMP receiver, no ffmpeg needed). On the site, *Go live → Stream from OBS*, pick that computer, then in OBS set *Settings → Stream → Service “Custom…”*, server `rtmp://localhost/live`, any stream key, an H.264 video encoder (x264 or your GPU's H.264, not HEVC/AV1), AAC audio, and a keyframe interval of 2 s. Click *Start Streaming*. The computer repackages the stream as fragmented MP4, signs each fragment with its node key (your signed `live` block names it as the stream's `relay`), and relays it to the site's live hub. Viewers watch through segments, a few seconds behind. Your browser and members save the recording as an `.mp4`, and *Stop Streaming* leads to the usual publish-or-discard step. If you click Start Streaming before Go live, OBS shows an error saying so. This works with the Cloudflare site too.
 
-**OBS with a stream key (server.mjs home nodes only):** under *Go live*, open *Or send the stream from OBS with a stream key* and click *Get a stream key*. The page shows the exact OBS settings: Settings → Output → Advanced → Recording → *Custom Output (FFmpeg)* → *Output to URL*, the URL shown, container `webm`, video `libvpx` (VP8), audio `libvorbis` (browsers can't stream ffmpeg's Opus-in-WebM). Then *Start Recording* in OBS; stopping it ends the stream. The node signs the incoming bytes with its own key (your browser names the node as the stream's `relay` in the signed `live` block) and relays them as segments, a few seconds behind. Your browser records the stream, so keep the page open, and then asks publish or discard as usual. The Cloudflare node can't receive OBS streams; use the Virtual Camera there.
+**OBS with a stream key (an OpenTube computer, not the Cloudflare node):** under *Go live*, open *Or send the stream from OBS with a stream key* and click *Get a stream key*. The page shows the exact OBS settings: Settings → Output → Advanced → Recording → *Custom Output (FFmpeg)* → *Output to URL*, the URL shown, container `webm`, video `libvpx` (VP8), audio `libvorbis` (browsers can't stream ffmpeg's Opus-in-WebM). Then *Start Recording* in OBS; stopping it ends the stream. The node signs the incoming bytes with its own key (your browser names the node as the stream's `relay` in the signed `live` block) and relays them as segments, a few seconds behind. Your browser records the stream, so keep the page open, and then asks publish or discard as usual. The Cloudflare node can't receive OBS streams; use the Virtual Camera there.
 
 Known limits: the recording is WebM straight from the browser's recorder, so some players can't seek in it. The hub keeps the last minute of chunks, so a member who joins later than that fetches the gap after the stream is published.
 
@@ -588,7 +584,7 @@ To upload or join, you choose a folder once (*My node → Video folder*). OpenTu
 - **Join** creates the channel's folder and downloads each video straight into it. Nothing is held in memory: pieces are written to the file as they arrive, and the file is saved in steps, so a closed tab loses little.
 - **Reopening the page** shares everything in the folder again within a second. Videos you host also play straight from the file on disk.
 - **Browser support:** the folder uses the File System Access API, which Chrome and Edge on a computer provide. Firefox, Safari and phones can still **watch**, but not upload or join. After a restart Chrome may ask you to allow the folder again; a bar at the top of the page has the button. Choose "Allow on every visit" to stop the question.
-- **Headless hosts** (`headless.mjs`) use the folder given on the command line: Node does the file access and hands it to the page, so the files are real files on that machine. `?folder=browser` uses the browser's private storage with the same layout, for testing.
+- **Computers running OpenTube** keep the same layout in their video folder (`--videos=…`). `?folder=browser` uses the browser's private storage with the same layout, for testing.
 - Videos stored inside the browser by older versions keep being shared, and they move into the folder when you choose one.
 
 ## Where your copy of the network lives
@@ -603,7 +599,7 @@ Without a folder (Firefox, phones), the browser keeps the same set, and lets oth
 
 ## One source of rules
 
-The blockchain rules live in the `<script id="opentube-core">` block of `index.html`. `server.mjs` extracts and runs that exact block, so browser and server nodes always validate identically. If you change anything in `MAIN_GENESIS`, you start a different network.
+The blockchain rules live in the `<script id="opentube-core">` block of `index.html`. The .NET node implements the same rules in C# and is checked against that block on generated cases (`dotnet/OpenTube.Tests`), so browsers and computers validate identically. If you change anything in `MAIN_GENESIS`, you start a different network.
 
 ## Limitations
 - A browser hosts only while its tab is open. Home nodes keep chains available, but they don't store video files.
@@ -638,7 +634,7 @@ A computer of yours runs cloud servers for streams (*flash computers*): it start
 
 `custom` runs a create command with `OT_NAME` and `OT_USERDATA_FILE` (the setup script), expecting `{"id":"…","ip":"…"}` as its last line, and a delete command with `OT_ID`. Azure, for example: create `az vm create -g opentube -n "$OT_NAME" --image Ubuntu2404 --size Standard_F2s_v2 --custom-data "$OT_USERDATA_FILE" --generate-ssh-keys -o json --query "{id:name, ip:publicIpAddress}" | tr -d "\n"; echo`, delete `az vm delete -g opentube -n "$OT_ID" --yes`. Custom commands run on that computer, so only its owner may set them.
 
-**Lifecycle.** A new server installs Node.js, ffmpeg and OpenTube (2–4 minutes), comes online through a Cloudflare Tunnel, and is controlled like any of your computers (OBS, group, studio, update). Its recordings are copied to the parent (pinned, never trimmed). When it's idle with every recording copied, the parent shuts it down: **billed by the hour, at the end of the hour already paid for** (go live again before then and it just carries on); billed by the second, after a few idle minutes. **Shut down** does it at once; **keep** stops the automatic shutdown; a time limit (6 h by default) is the backstop.
+**Lifecycle.** A new server installs ffmpeg, .NET and OpenTube (2–4 minutes), comes online through a Cloudflare Tunnel, and is controlled like any of your computers (OBS, group, studio, update). Its recordings are copied to the parent (pinned, never trimmed). When it's idle with every recording copied, the parent shuts it down: **billed by the hour, at the end of the hour already paid for** (go live again before then and it just carries on); billed by the second, after a few idle minutes. **Shut down** does it at once; **keep** stops the automatic shutdown; a time limit (6 h by default) is the backstop.
 
 **Stats and scaling.** Viewers report how it's going with their check-ins (download speed, stalls, video in hand); hubs summarise it per stream (shown on the stream page: "100% smooth · 2.1 Mbps typical"), and each computer reports its streams' numbers in its status. With **add flash computers as viewers grow**, the parent starts another one on your account for every N viewers (up to a maximum), and one more when over a fifth of viewers are struggling. A flash computer of yours relays your live streams to viewers, so each one adds capacity; extra ones go idle when the stream ends and are shut down like any other.
 

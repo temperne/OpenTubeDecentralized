@@ -29,6 +29,9 @@ public sealed class NodeOptions
     /// </summary>
     public string Public { get; set; } = "auto";
     public string? PublicIp { get; set; }
+    /// <summary>A named Cloudflare tunnel (your Cloudflare account) for a fixed address: --tunnel-token=… --public-url=https://your.host.</summary>
+    public string? TunnelToken { get; set; }
+    public string? FixedPublicUrl { get; set; }
     public string? Email { get; set; }
     public int HttpPort { get; set; } = 80;
     public int HttpsPort { get; set; } = 443;
@@ -92,6 +95,8 @@ public sealed class NodeOptions
         o.Public = (Get("public", "PUBLIC") ?? "auto") switch { "0" or "off" or "no" => "off", "" or "1" or "auto" => "auto", var d => d.ToLowerInvariant() };
         if (args.Contains("--no-public")) o.Public = "off";
         o.PublicIp = Get("public-ip", "PUBLIC_IP");
+        o.TunnelToken = Get("tunnel-token", "TUNNEL_TOKEN"); o.FixedPublicUrl = Get("public-url", "PUBLIC_URL")?.TrimEnd('/');
+        if (o.TunnelToken != null) o.TunnelMode = "on";
         o.Email = Get("email", "PUBLIC_EMAIL");
         if (int.TryParse(Get("http-port", "PUBLIC_HTTP_PORT"), out var hp)) o.HttpPort = hp;
         if (int.TryParse(Get("https-port", "PUBLIC_HTTPS_PORT"), out var hsp)) o.HttpsPort = hsp;

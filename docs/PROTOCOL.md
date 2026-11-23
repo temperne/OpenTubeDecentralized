@@ -1,8 +1,8 @@
 # OpenTube protocol
 
 What a node or browser must do to take part in the network. The reference is the shared core in `index.html`
-(`<script id="opentube-core">`), which browsers, the JavaScript node (`server.mjs`) and the .NET node
-(`dotnet/`, via `JsCore`) all run. Where this document and the core disagree, the core wins; fix the document.
+(`<script id="opentube-core">`), which browsers run; the .NET node (`dotnet/`) implements the same rules in C#,
+checked against it on generated cases. Where this document and the core disagree, the core wins; fix the document.
 
 Test data for checking another implementation: `dotnet/OpenTube.Tests/data/vectors.json`. Those tests run against the
 real core and natively in C#.

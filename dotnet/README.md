@@ -67,8 +67,8 @@ Copy the website (`index.html`, `sw.js`, `seeds.json`) next to it, or pass `--si
 - networking, the website, crypto, storage, the UIs and the service.
 
 Each part is checked against the JavaScript core on generated cases (`OpenTube.Tests`, data made by the `gen-*.mjs`
-scripts from `index.html`). `compare-hub.cjs` runs the same live-hub and tracker script against a JavaScript node and
-the C# node. `JsCore` (the core running in Jint) is kept only for tests.
+scripts from `index.html`), and the node's features end to end with real browsers (the `test-*.cjs` scripts).
+`JsCore` (the core running in Jint) is kept only for tests.
 
 **OBS:** the node receives OBS's Start Streaming (RTMP, port 1935; `--obs-port=`, `--no-obs`). Each person's stream key
 is in `obs.json` (the JavaScript node's format); the owner's is printed at startup. The stream goes live on the channel
@@ -115,6 +115,8 @@ Google Cloud, Linode, Scaleway, your own commands; logins sealed in the browser 
 every minute; peers that don't pay stop getting pieces), storage proofs with other hosts (`test-proof.cjs`), earnings
 passed to the owner. The C# engine makes its own transactions (proof of work, signed).
 
-**Not in the .NET node yet** (the JavaScript node has them):
+The JavaScript node (`server.mjs` and its launcher) was retired once all of this was ported and tested.
+
+**Not in the .NET node yet:**
 - the DHT (finding ordinary BitTorrent apps without a tracker);
 

@@ -230,8 +230,6 @@ public sealed partial class NodeServer : IAsyncDisposable
     public static readonly (string File, string Type)[] SiteFiles =
     [
         ("sw.js", "text/javascript"), ("seeds.json", "application/json"),
-        ("opentube.mjs", "text/javascript"), ("server.mjs", "text/javascript"), ("host.mjs", "text/javascript"),
-        ("rtmp.mjs", "text/javascript"), ("tls.mjs", "text/javascript"), ("headless.mjs", "text/javascript"),
         ("opentube-dotnet.sh", "text/plain; charset=utf-8"), ("opentube-dotnet.ps1", "text/plain; charset=utf-8"),
     ];
 
@@ -246,15 +244,23 @@ public sealed partial class NodeServer : IAsyncDisposable
             var t0 = DateTime.UtcNow; string? url = null, lastError = null;
             try
             {
-                tunnel = Process.Start(new ProcessStartInfo(exe, $"tunnel --no-autoupdate --url http://localhost:{Node.Options.Port}") { RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false });
+                var named = Node.Options.TunnelToken != null;   // a named tunnel: your Cloudflare account, a fixed address
+                var psi = new ProcessStartInfo(exe) { RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false };
+                foreach (var a in named ? new[] { "tunnel", "--no-autoupdate", "run", "--token", Node.Options.TunnelToken! } : new[] { "tunnel", "--no-autoupdate", "--url", $"http://localhost:{Node.Options.Port}" }) psi.ArgumentList.Add(a);
+                tunnel = Process.Start(psi);
                 tunnel!.ErrorDataReceived += (_, e) =>
                 {
                     if (!string.IsNullOrWhiteSpace(e.Data) && (LogLevelRe().IsMatch(e.Data) || !e.Data.Contains(" INF "))) lastError = e.Data;
                     var m = e.Data == null ? null : TunnelUrl().Match(e.Data);
+                    if (Node.Options.TunnelToken != null && e.Data?.Contains("Registered tunnel connection") == true && url == null)
+                    {   // a named tunnel's address is the one you gave it (--public-url)
+                        url = Node.Options.FixedPublicUrl; tunnelUrl = url; TunnelError = null; Node.AnnounceSoon();
+                        if (url != null) { Node.PublicUrl = url; Node.Log($"public address: {url} (your Cloudflare tunnel)"); } else Node.Log("the Cloudflare tunnel is connected (give its address with --public-url=https://… so others can use it)");
+                    }
                     if (m is { Success: true } && url == null)
                     {
                         url = m.Value; tunnelUrl = url; TunnelError = null; Node.AnnounceSoon();
-                        if (Node.PublicUrl == null || Node.PublicUrl.Contains("trycloudflare.com")) Node.PublicUrl = url;
+                        if (Node.PublicUrl == null || Node.PublicUrl.Contains("trycloudflare.com")) Node.PublicUrl = url;   // (a quick tunnel)
                         Node.Log($"public address: {url} (a Cloudflare tunnel; browsers anywhere can open it)");
                     }
                 };

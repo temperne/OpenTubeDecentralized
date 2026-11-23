@@ -74,6 +74,8 @@ public static class Program
                                  public IP, or ports 80/443 forwarded): https://<ip>.sslip.io with a Let's
                                  Encrypt certificate. --public=your.domain for your own name, --public=off
         --email=YOU@…            for Let's Encrypt's expiry notices (optional)
+        --tunnel-token=… --public-url=https://your.host
+                                 a named Cloudflare tunnel (your account) for a fixed address
         --obs-via=https://…      only a bridge on the OBS computer: OBS → rtmp://127.0.0.1/live → that computer
                                  (through its tunnel or a firewall that blocks port 1935)
         --tunnel / --no-tunnel   a Cloudflare tunnel (cloudflared, downloaded if needed) is used when this
