@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk.WebAssembly">
+  <!-- The network's rules (OpenTube.Core) compiled to WebAssembly, for browsers: the same C# a .NET node runs. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <WasmEnableWebcil>true</WasmEnableWebcil>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\OpenTube.Core\OpenTube.Core.csproj" />
+  </ItemGroup>
+</Project>

@@ -3,4 +3,5 @@
   <Project Path="OpenTube.Core/OpenTube.Core.csproj" />
   <Project Path="OpenTube.Node/OpenTube.Node.csproj" />
   <Project Path="OpenTube.Tests/OpenTube.Tests.csproj" />
+  <Project Path="OpenTube.Wasm/OpenTube.Wasm.csproj" />
 </Solution>
