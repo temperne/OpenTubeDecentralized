@@ -4,6 +4,19 @@
 # Installs .NET 10 if this computer doesn't have it (into ~/.dotnet, no admin rights needed), downloads OpenTube
 # (no git needed) and starts the node: a window on a desktop, the terminal UI over SSH. Running it again updates.
 set -euo pipefail
+# Run as a regular user after su/sudo, the environment can still be root's (HOME=/root, XDG_RUNTIME_DIR=/run/user/0):
+# .NET then can't write its files or its locks ("NuGet-Migrations … /run/user/0/.dotnet … EACCES"). Use this user's own.
+ME="$(id -un 2>/dev/null || echo "${USER:-}")"
+if [ -z "${HOME:-}" ] || [ ! -w "$HOME" ]; then
+  H="$(getent passwd "$ME" 2>/dev/null | cut -d: -f6 || true)"; [ -n "$H" ] || H="$(eval echo "~$ME" 2>/dev/null || true)"
+  if [ -n "$H" ] && [ -w "$H" ]; then export HOME="$H"; else export HOME="${TMPDIR:-/tmp}/opentube-$(id -u)"; mkdir -p "$HOME"; fi
+fi
+if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ ! -w "$XDG_RUNTIME_DIR" ]; then
+  if [ -d "/run/user/$(id -u)" ] && [ -w "/run/user/$(id -u)" ]; then export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+  else export XDG_RUNTIME_DIR="$HOME/.opentube/run"; mkdir -p "$XDG_RUNTIME_DIR"; chmod 700 "$XDG_RUNTIME_DIR"; fi
+fi
+export DOTNET_CLI_HOME="$HOME"
+if [ -n "${NUGET_PACKAGES:-}" ] && ! mkdir -p "$NUGET_PACKAGES" 2>/dev/null; then export NUGET_PACKAGES="$HOME/.nuget/packages"; fi
 REPO="${OPENTUBE_REPO:-temperne/OpenTubeDecentralized}"
 REF="${OPENTUBE_REF:-ccr-500677da-r1uf50}"
 APP="$HOME/.opentube/dotnet-app"
