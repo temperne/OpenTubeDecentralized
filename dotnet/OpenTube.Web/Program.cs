@@ -19,7 +19,7 @@ builder.Services.AddSingleton(sp =>
     var site = new Uri(builder.HostEnvironment.BaseAddress).GetLeftPart(UriPartial.Authority);   // the site (and its node, when it has one)
     return new ClientSession(sp.GetRequiredService<IClientStore>(), site) { Log = m => Console.WriteLine("[opentube] " + m) };
 });
-builder.Services.AddSingleton<IVideoPlayer, BrowserVideoPlayer>();
+builder.Services.AddSingleton<IVideoPlayer, BrowserTorrents>();
 var host = builder.Build();
 await host.Services.GetRequiredService<ClientSession>().Start();
 await host.RunAsync();
@@ -35,15 +35,4 @@ sealed class BrowserStore(IJSRuntime js) : IClientStore
         return (JsonNode.Parse(json)?.AsArray() ?? []).Where(r => r?["chainId"] != null && r["block"] is JsonObject).Select(r => ((string)r!["chainId"]!, (JsonObject)r["block"]!.DeepClone())).ToList();
     }
     public void SaveBlock(string chain, JsonObject block) => _ = js.InvokeVoidAsync("otStore.put", chain, block.ToJsonString()).AsTask();
-}
-
-/// <summary>Plays a video: BitTorrent over WebRTC into the page's video element (binding: otPlayer in opentube.js).</summary>
-sealed class BrowserVideoPlayer(IJSRuntime js, ClientSession s) : IVideoPlayer
-{
-    public async Task<Playback> Play(string elementId, string infoHash, string file, double size, Action<string> status)
-    {
-        var trackers = JsonNode.Parse(Network.MainGenesisJson)?["payload"]?["trackers"]?.ToJsonString() ?? "[]";
-        var site = s.Site.Replace("https://", "wss://").Replace("http://", "ws://") + "/tracker";
-        return new Playback(null, await js.InvokeAsync<string?>("otPlayer.play", elementId, infoHash, file, $"[{System.Text.Json.JsonSerializer.Serialize(site)},{trackers.Trim('[', ']')}]"));
-    }
 }
