@@ -15,12 +15,30 @@
         <button class="primary" disabled="@busy" @onclick="Create">Create &amp; register</button>
         @if (msg != null) { <div class="sub">@msg</div> }
     </div>
+    @if (Push != null)
+    {
+        <div class="panel">
+            <h3>Notifications while the app is closed</h3>
+            <p class="sub">Your computers (or ones shared with you) watch for you and wake this phone with a push when there’s something, so the app needn’t stay connected. Pushes come through a UnifiedPush app on this phone, such as ntfy.</p>
+            @{ var ds = Push.Distributors(); }
+            @if (ds.Count == 0) { <p>Install <b>ntfy</b> (from F-Droid or Google Play; no account needed), then come back here.</p> }
+            else
+            {
+                <div class="row-actions">
+                    @foreach (var dist in ds) { <button class="primary" @onclick="() => Push.Enable(dist)">Use @(dist.Split('.').Last())</button> }
+                </div>
+            }
+            <div class="sub" id="push-status">@Push.Status</div>
+        </div>
+    }
     <div class="panel">
         <h3>Your channels</h3>
         @foreach (var c in S.Directory().Where(c => S.IsMine(c.Owner))) { <div><a href="c/@c.Id">@c.Name</a> <span class="badge">@c.Kind</span></div> }
     </div>
 }
 @code {
+    [Inject] IServiceProvider Sp { get; set; } = null!;
+    IPushSetup? Push => Sp.GetService(typeof(IPushSetup)) as IPushSetup;
     string name = "", about = ""; string? msg; bool busy;
     async Task Create()
     {

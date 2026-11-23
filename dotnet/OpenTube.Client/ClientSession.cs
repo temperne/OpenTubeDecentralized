@@ -67,7 +67,25 @@ public sealed class ClientSession : IAsyncDisposable
         Engine.Persist = (c, b) => { try { store.SaveBlock(c, (JsonObject)b.DeepClone()); } catch { } Changed?.Invoke(); };
         Notes = new Notifications(this, store); await Notes.Load(); Notes.Start();
         Ready = true; Changed?.Invoke();
-        _ = Task.Run(FindNodes);
+        online = CancellationTokenSource.CreateLinkedTokenSource(stop.Token);
+        _ = Task.Run(() => FindNodes(online));
+    }
+
+    // Power: in the background (a phone's screen off) the app keeps no connections; your node watches for you and
+    // wakes the phone with a push when something's worth it. Back on screen, it reconnects and catches up.
+    CancellationTokenSource online = new();
+    public bool Paused { get; private set; }
+    public void Pause()
+    {
+        if (Paused) return; Paused = true; online.Cancel();
+        foreach (var l in links.Values) l.Out.Writer.TryComplete();
+        links.Clear(); Changed?.Invoke(); Log?.Invoke("paused: no connections while in the background");
+    }
+    public void Resume()
+    {
+        if (!Paused) return; Paused = false;
+        online = CancellationTokenSource.CreateLinkedTokenSource(stop.Token);
+        _ = Task.Run(() => FindNodes(online)); Log?.Invoke("resumed");
     }
 
     void Send(string json, string? to)
@@ -77,9 +95,9 @@ public sealed class ClientSession : IAsyncDisposable
     }
 
     /// <summary>The site's own node (when it has one) and the entry nodes it lists; checked again every minute.</summary>
-    async Task FindNodes()
+    async Task FindNodes(CancellationTokenSource on)
     {
-        while (!stop.IsCancellationRequested)
+        while (!on.IsCancellationRequested)
         {
             var urls = new List<string> { Site.Replace("https://", "wss://").Replace("http://", "ws://") + "/ot" };
             foreach (var f in new[] { "/seeds.json", "/entries.json" })
@@ -89,26 +107,27 @@ public sealed class ClientSession : IAsyncDisposable
                     foreach (var e in j?["entry"]?.AsArray() ?? []) if ((e is JsonValue v && v.TryGetValue<string>(out var u) ? u : (string?)e?["url"]) is { } eu && eu.StartsWith("https://")) urls.Add(eu.TrimEnd('/').Replace("https://", "wss://") + "/ot");
                 }
                 catch { }
-            foreach (var u in urls.Distinct().Take(5)) if (!links.ContainsKey(u)) { var l = new Link(u, System.Threading.Channels.Channel.CreateUnbounded<string>()); links[u] = l; _ = Task.Run(() => Dial(l)); }
-            await Task.Delay(60000, stop.Token).ContinueWith(_ => { });
+            if (on.IsCancellationRequested) return;
+            foreach (var u in urls.Distinct().Take(5)) if (!links.ContainsKey(u)) { var l = new Link(u, System.Threading.Channels.Channel.CreateUnbounded<string>()); links[u] = l; _ = Task.Run(() => Dial(l, on.Token)); }
+            await Task.Delay(60000, on.Token).ContinueWith(_ => { });
         }
     }
-    async Task Dial(Link l)
+    async Task Dial(Link l, CancellationToken on)
     {
         var tries = 0;
-        while (!stop.IsCancellationRequested)
+        while (!on.IsCancellationRequested)
         {
             using var ws = new ClientWebSocket();
             try
             {
-                await ws.ConnectAsync(new Uri(l.Url), stop.Token);
+                await ws.ConnectAsync(new Uri(l.Url), on);
                 l.Open = true; tries = 0; Log?.Invoke("linked to " + l.Url);
                 Engine.PeerJoined(l.Url); Changed?.Invoke();
-                var writer = Task.Run(async () => { await foreach (var m in l.Out.Reader.ReadAllAsync(stop.Token)) { if (ws.State != WebSocketState.Open) break; await ws.SendAsync(Encoding.UTF8.GetBytes(m), WebSocketMessageType.Text, true, stop.Token); } });
+                var writer = Task.Run(async () => { await foreach (var m in l.Out.Reader.ReadAllAsync(on)) { if (ws.State != WebSocketState.Open) break; await ws.SendAsync(Encoding.UTF8.GetBytes(m), WebSocketMessageType.Text, true, on); } });
                 var buf = new byte[1 << 16]; using var ms = new MemoryStream();
-                while (ws.State == WebSocketState.Open && !stop.IsCancellationRequested)
+                while (ws.State == WebSocketState.Open && !on.IsCancellationRequested)
                 {
-                    var r = await ws.ReceiveAsync(buf, stop.Token);
+                    var r = await ws.ReceiveAsync(buf, on);
                     if (r.MessageType == WebSocketMessageType.Close) break;
                     ms.Write(buf, 0, r.Count); if (ms.Length > 16 << 20) break;
                     if (!r.EndOfMessage) continue;
@@ -119,9 +138,30 @@ public sealed class ClientSession : IAsyncDisposable
             }
             catch { }
             if (l.Open) { l.Open = false; Changed?.Invoke(); }
-            await Task.Delay(TimeSpan.FromSeconds(Math.Min(300, 3 * Math.Pow(2, tries++))), stop.Token).ContinueWith(_ => { });
+            if (on.IsCancellationRequested) { try { ws.Abort(); } catch { } return; }
+            await Task.Delay(TimeSpan.FromSeconds(Math.Min(300, 3 * Math.Pow(2, tries++))), on).ContinueWith(_ => { });
         }
     }
+
+    // ---- your computers: the nodes you own, and those shared with you (their owner added you on Devices)
+    /// <summary>Your nodes (yours first), newest check-in first: (node key, permissions, last seen).</summary>
+    public List<(string Node, string Perms, double At)> MyNodes() => Engine.Read(e => e.Nodes.Values.Select(n =>
+    {
+        var user = (string?)n["grant"]?["user"];
+        var perms = user == Me.pub ? "ohm" : (string?)n["info"]?["users"]?[Me.pub] ?? "";
+        return ((string)n["node"]!, perms, Js.Num(n["at"]) ?? 0);
+    }).Where(x => x.Item2.Length > 0).OrderByDescending(x => x.Item2.Contains('o')).ThenByDescending(x => x.Item3).ToList());
+    /// <summary>A signed command to one of your computers (as the site's Devices page sends them), answered over the network.</summary>
+    public async Task<JsonObject> NodeCtl(string node, string cmd, JsonObject? args = null)
+    {
+        var c = new JsonObject { ["kind"] = "nodectl", ["v"] = 1, ["node"] = node, ["user"] = Me.pub, ["nonce"] = Convert.ToHexStringLower(System.Security.Cryptography.RandomNumberGenerator.GetBytes(12)), ["at"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), ["cmd"] = cmd, ["args"] = args ?? new JsonObject() };
+        c["sig"] = Me.Sign("opentube-nodectl:" + Blocks.Canon(c));
+        var r = await Engine.Route(node, c) as JsonObject ?? throw new TimeoutException("that computer didn’t answer");
+        if (!Js.IsTrue(r["ok"])) throw new InvalidOperationException((string?)r["error"] ?? "refused");
+        return r["data"] as JsonObject ?? [];
+    }
+    /// <summary>All your keys (your identity and your channels' keys): public, so a node can tell what's yours.</summary>
+    public List<string> MyKeys() { lock (channelKeys) return [Me.pub, .. channelKeys.Select(kv => kv.Key)]; }
 
     // ---- what pages show
     public JsonObject MainBest => Engine.Read(e => (JsonObject)e.Store.MainBest.DeepClone());

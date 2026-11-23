@@ -58,6 +58,17 @@ public sealed class NodeControl(OpenTubeNode node)
             JsonNode? data;
             switch (cmd)
             {
+                case "push.key": case "push.register": case "push.unregister":
+                {   // your phones and browsers: this computer watches for you and wakes them with a push (yours, or shared with you)
+                    if (node.Push == null) return Fail("notifications aren’t available on this computer");
+                    try
+                    {
+                        if (cmd == "push.key") return Reply(c, true, new JsonObject { ["key"] = node.Push.VapidKey });
+                        if (cmd == "push.unregister") return Reply(c, true, new JsonObject { ["removed"] = node.Push.Unregister(user, Js.Str(a["device"]) ?? "") });
+                        return Reply(c, true, await node.Push.Register(user, a));
+                    }
+                    catch (ArgumentException e) { return Fail(e.Message); }
+                }
                 case "logs":
                     if (!owner) return Fail("only the owner can read this computer’s log");
                     var n = (int)Math.Min(400, Js.Num(a["n"]) is double d && d > 0 ? d : 200);

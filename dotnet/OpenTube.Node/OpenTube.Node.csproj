@@ -10,6 +10,7 @@
   <ItemGroup>
     <ProjectReference Include="..\OpenTube.Core\OpenTube.Core.csproj" />
     <ProjectReference Include="..\OpenTube.Net\OpenTube.Net.csproj" />
+    <ProjectReference Include="..\OpenTube.Client\OpenTube.Client.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="SIPSorcery" Version="10.0.17" />

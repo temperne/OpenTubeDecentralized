@@ -184,6 +184,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
         Coord = new Coordination(this); _ = Task.Run(() => Coord.Run(stop.Token));
         Update = new Updater(this); _ = Task.Run(() => Update.Run(stop.Token));
         Web = new WebApp(this); _ = Task.Run(Web.EnsureBuilt);
+        Push = new NodePush(this); Push.Start();   // notifications for its people's phones and browsers (Web Push)
         Earn = new Earnings(this) { PendingTabs = Hosting != null ? Hosting.Tabs.Pending : null }; _ = Task.Run(() => Earn.Run(stop.Token));
         if (Hosting != null) _ = Task.Run(async () =>
         {
@@ -437,6 +438,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
             };
             if (Options.FlashParent != null) info["flash"] = new JsonObject { ["parent"] = Options.FlashParent, ["tag"] = Options.FlashTag };
             if (Flashes?.People > 0) info["flashes"] = Flashes.People;
+            info["push"] = true;   // it can notify your devices (Web Push)
             try { Engine.PublishNodeInfo(new JsonObject { ["grant"] = JsonNode.Parse(grantJson), ["roles"] = JsonSerializer.SerializeToNode(roles.Take(8).ToList()), ["addrs"] = JsonSerializer.SerializeToNode(addrs.Take(8).ToList()), ["info"] = info }); }
             catch (Exception e) { Log("announce failed: " + e.Message); }
             var wake = new TaskCompletionSource(); announceWake = wake;
@@ -473,6 +475,8 @@ public sealed class OpenTubeNode : IAsyncDisposable
     public Updater? Update { get; private set; }
     /// <summary>The C# website (WebAssembly) this node serves at /app/.</summary>
     public WebApp Web { get; private set; } = null!;
+    /// <summary>Notifications pushed to its people's devices while they sleep.</summary>
+    public NodePush? Push { get; private set; }
     public Coordination? Coord { get; private set; }
     public Flash? Flashes { get; private set; }
     /// <summary>The hubs' latest viewer counts for streams this computer sends or relays (stream -> message), for "watching" in its status.</summary>

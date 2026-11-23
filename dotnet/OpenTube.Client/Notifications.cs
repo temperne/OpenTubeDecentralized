@@ -28,7 +28,7 @@ public sealed class Notifications
     public event Action<Note>? Arrived;
     public event Action? Changed;
 
-    readonly ClientSession s; readonly IClientStore store;
+    readonly Engine engine; readonly IClientStore store; readonly Func<string, bool> isMine; readonly string me;
     readonly object gate = new();
     List<Note> list = [];
     readonly HashSet<string> seen = [];
@@ -36,7 +36,22 @@ public sealed class Notifications
     JsonObject Notif => settings["notif"] as JsonObject ?? (JsonObject)(settings["notif"] = new JsonObject());
     double Since => Js.Num(Notif["since"]) ?? 0;
 
-    public Notifications(ClientSession s, IClientStore store) { this.s = s; this.store = store; }
+    /// <param name="isMine">Your own keys (your identity, your channels' keys).</param>
+    public Notifications(Engine engine, IClientStore store, string me, Func<string, bool> isMine) { this.engine = engine; this.store = store; this.me = me; this.isMine = isMine; }
+    public Notifications(ClientSession s, IClientStore store) : this(s.Engine, store, s.Me.pub, s.IsMine) { }
+    /// <summary>The subscriptions and settings as they're stored (what the app sends its node, so the node notifies the same way).</summary>
+    public JsonObject Export() => new() { ["subs"] = subs.DeepClone(), ["notif"] = Notif.DeepClone() };
+    /// <summary>Take subscriptions and settings sent by the app (on a node).</summary>
+    public void Import(JsonObject x)
+    {
+        lock (gate)
+        {
+            if (x["subs"] is JsonObject sb) subs = (JsonObject)sb.DeepClone();
+            if (x["notif"] is JsonObject n) { var since = Notif["since"]?.DeepClone(); settings["notif"] = n.DeepClone(); Notif["since"] ??= since; foreach (var k in new[] { "types", "objects", "typeObj" }) if (Notif[k] is not JsonObject) Notif[k] = new JsonObject(); }
+        }
+    }
+    /// <summary>The chains these notifications follow (to keep loaded on a node).</summary>
+    public List<string> Subscribed { get { lock (gate) return subs.Select(kv => kv.Key).ToList(); } }
 
     public async Task Load()
     {
@@ -53,7 +68,9 @@ public sealed class Notifications
         if (Notif["since"] == null) { Notif["since"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); await SaveSettings(); }
     }
     /// <summary>Watch the chains for things to notify about (after Load and once the engine runs).</summary>
-    public void Start() => s.Engine.Store.BlockAdded += (c, b) => { try { OnBlock(c, b); } catch { } };
+    public void Start() => engine.Store.BlockAdded += Watch;
+    public void Stop() => engine.Store.BlockAdded -= Watch;
+    void Watch(Chain c, JsonObject b) { try { OnBlock(c, b); } catch { } }
 
     // ---- the list
     public List<Note> All { get { lock (gate) return [.. list]; } }
@@ -97,13 +114,16 @@ public sealed class Notifications
         }
         SaveList(); Arrived?.Invoke(n); Changed?.Invoke();
     }
-    bool Mine(string? k) => k != null && (s.IsMine(k) || s.Engine.Read(e => e.Store.Ledger.Resolve(k)) == s.Me.pub);
+    bool Mine(string? k) => k != null && (isMine(k) || engine.Read(e => e.Store.Ledger.Resolve(k)) == me);
     string Name(string? k)
     {
         if (k == null) return "someone";
-        var who = s.Engine.Read(e => e.Store.Ledger.Resolve(k));
-        var page = s.Directory().FirstOrDefault(c => c.Owner == who || c.Owner == k);
-        return page?.Name ?? who[..Math.Min(8, who.Length)];
+        return engine.Read(e =>
+        {
+            var who = e.Store.Ledger.Resolve(k);
+            var page = e.Store.Chains.Values.FirstOrDefault(c => c != e.Store.Main && (c.Owner == who || c.Owner == k) && (string?)c.Genesis["payload"]?["kind"] == "channel");
+            return page != null ? (string?)Derived.Of(page).Profile["name"] ?? who[..8] : who[..Math.Min(8, who.Length)];
+        });
     }
     static string Short(string? t, int n) => t == null ? "" : t.Length <= n ? t : t[..n] + "…";
     static string Coins(double units) => (units / 100).ToString("0.##");
@@ -112,7 +132,7 @@ public sealed class Notifications
     {
         if (b["payload"] is not JsonObject p || (Js.Num(b["ts"]) ?? 0) < Since - 3600000) return;
         var ts = Js.Num(b["ts"]) ?? 0; var hash = (string?)b["hash"] ?? ""; var author = (string?)b["author"];
-        if (chain == s.Engine.Store.Main) { OnMain(p, ts); return; }
+        if (chain == engine.Store.Main) { OnMain(p, ts); return; }
         if (Mine(author)) return;
         var kind = (string?)chain.Genesis["payload"]?["kind"]; var id = chain.Id; var type = (string?)p["type"];
         var d = Derived.Of(chain); var name = (string?)d.Profile["name"] ?? id[..8];
@@ -134,7 +154,7 @@ public sealed class Notifications
             Notify("like", $"{Name(author)} liked {(Title(target) is { Length: > 0 } t2 ? "“" + t2 + "”" : "your post")}", (string?)target["payload"]?["type"] == "video" ? $"#/v/{id}/{(string?)target["hash"]}" : $"#/c/{id}", id, ts, hash);
         if (kind == "org")
         {
-            if (type == "flag" && Js.IsTrue(p["on"]) && (string?)p["ref"]?["chain"] is { } rc && Mine(s.Engine.Read(e => e.Store.Chains.TryGetValue(rc, out var x) ? x.Owner : null)))
+            if (type == "flag" && Js.IsTrue(p["on"]) && (string?)p["ref"]?["chain"] is { } rc && Mine(engine.Read(e => e.Store.Chains.TryGetValue(rc, out var x) ? x.Owner : null)))
                 Notify("org", $"{name} flagged your video as {(string?)p["cls"]}", $"#/v/{rc}/{(string?)p["ref"]?["block"]}", id, ts, hash);
             if (type == "role" && Js.IsTrue(p["on"]) && Mine((string?)p["key"])) Notify("org", $"{name} gave you the role {((string?)p["role"] == "judge" ? "arbitrator" : (string?)p["role"])}", $"#/c/{id}/people", id, ts, hash);
         }
@@ -149,7 +169,7 @@ public sealed class Notifications
                 if (Mine((string?)o["to"])) Notify("coins", $"{Name(from)} sent you {Coins(Js.Num(o["amt"]) ?? 0)} coins", "#/wallet", null, ts, th + (string?)o["to"]);
             if (t["htlc"] is JsonObject h && Mine((string?)h["to"])) Notify("swap", $"{Name(from)} locked {Coins(Js.Num(h["amt"]) ?? 0)} coins for you (swap)", "#/exchange/swaps", null, ts, th);
             foreach (var k in new[] { "bid", "buy" })
-                if (t[k] is JsonObject x && (string?)x["id"] is { } lid && s.Engine.Read(e => e.Store.Ledger.Listings.TryGetValue(lid, out var L) ? L : null) is { } listing && Mine((string?)listing["seller"]))
+                if (t[k] is JsonObject x && (string?)x["id"] is { } lid && engine.Read(e => e.Store.Ledger.Listings.TryGetValue(lid, out var L) ? L : null) is { } listing && Mine((string?)listing["seller"]))
                     Notify("market", k == "bid" ? $"New bid: {Coins(Js.Num(x["amt"]) ?? 0)} coins on “{(string?)listing["title"]}”" : $"{Name(from)} bought “{(string?)listing["title"]}”", $"#/market/item/{lid}", null, ts, th);
         }
     }
