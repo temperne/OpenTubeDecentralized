@@ -79,6 +79,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
     public string? OwnerUser { get; private set; }
     public ObsLive? Obs { get; private set; }
     public RtmpServer? Rtmp { get; private set; }
+    public NodeControl? Control { get; private set; }
     Identity? rankerKey; JsonObject? rankerGenesis;
 
     /// <summary>Load this node's key and its saved blocks, then connect to peers.</summary>
@@ -156,6 +157,15 @@ public sealed class OpenTubeNode : IAsyncDisposable
             Obs.Save();
             Rtmp = new RtmpServer(Options.ObsPort, Obs.OnPublish, Log); Rtmp.Start();
         }
+
+        // control from the site (Devices): signed commands routed to this node, answered with signed replies
+        if (Options.ObsPort <= 0) Obs = new ObsLive(this);   // (sharing settings live in obs.json too)
+        Control = new NodeControl(this);
+        Engine.OnRoute = (body, replyTo) => _ = Task.Run(async () =>
+        {
+            try { var r = await Control.OnRoute(JsonNode.Parse(body)); if (r != null) Engine.SendReply(replyTo, r); }
+            catch (Exception e) { Log("[control] " + e.Message); }
+        });
 
         foreach (var p in Options.Peers) _ = DialAsync(p);
         _ = Task.Run(FindEntryNodes);
@@ -343,7 +353,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
         await Task.Delay(4000);
         while (!stop.IsCancellationRequested)
         {
-            var roles = new List<string> { "node" }; if (PublicUrl != null) roles.Add("entry");
+            var roles = new List<string> { "node" }; if (Rtmp != null) roles.Add("obs"); if (PublicUrl != null) roles.Add("entry");
             var addrs = new List<string>(); if (PublicUrl != null) addrs.Add(PublicUrl);
             addrs.AddRange(System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
                 .Where(i => i.OperationalStatus == System.Net.NetworkInformation.OperationalStatus.Up)
@@ -356,7 +366,11 @@ public sealed class OpenTubeNode : IAsyncDisposable
                 ["version"] = new JsonObject { ["name"] = Version, ["build"] = Build, ["impl"] = "dotnet" }, ["height"] = Engine.Read(e => e.Store.MainBest["height"]?.DeepClone()), ["chains"] = Engine.Read(e => e.Store.Chains.Count),
                 ["name"] = (Options.Label ?? Environment.MachineName)[..Math.Min(60, (Options.Label ?? Environment.MachineName).Length)],
                 ["os"] = $"{System.Runtime.InteropServices.RuntimeInformation.OSDescription} {System.Runtime.InteropServices.RuntimeInformation.OSArchitecture}",
-                ["node"] = $".NET {Environment.Version}", ["peers"] = peers.Values.Count(p => p.Role is "node-in" or "node-out"),
+                ["node"] = $".NET {Environment.Version}", ["peers"] = peers.Values.Count(p => p.Role is "node-in" or "node-out"), ["public"] = PublicUrl,
+                // who this computer is shared with: their permissions as letters (o: OBS, h: hosting, m: managing; g: a guest)
+                ["users"] = new JsonObject(((Obs?.Store["users"] as JsonObject) ?? []).Where(kv => !(Js.Num(kv.Value?["until"]) < DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())).Take(20)
+                    .Select(kv => new KeyValuePair<string, JsonNode?>(kv.Key, string.Concat((kv.Value?["can"] as JsonArray ?? []).Select(x => ((string?)x ?? " ")[0])) + (kv.Value?["guestOf"] != null ? "g" : "")))),
+                ["obs"] = Rtmp == null ? null : new JsonObject { ["port"] = Rtmp.Port, ["listening"] = Rtmp.Error == null, ["live"] = Rtmp.Live > 0, ["error"] = Rtmp.Error },
             };
             try { Engine.PublishNodeInfo(new JsonObject { ["grant"] = JsonNode.Parse(grantJson), ["roles"] = JsonSerializer.SerializeToNode(roles.Take(8).ToList()), ["addrs"] = JsonSerializer.SerializeToNode(addrs.Take(8).ToList()), ["info"] = info }); }
             catch (Exception e) { Log("announce failed: " + e.Message); }

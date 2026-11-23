@@ -7940,7 +7940,7 @@ $('#terms-ok').onclick = () => { try { localStorage.setItem('opentube-terms', '1
 render(true);
 window.addEventListener('beforeunload', (e) => { if (E.miner || hosting.size) { e.preventDefault(); e.returnValue = ''; } });
 // Exposed for debugging in the console.
-window.opentube = { me, engine: E, net, wt, meet: { seen: meetSeen, check: checkMeetPlaces, places: meetPlaces }, live: { broadcasts, viewing, hub: liveNet, liveStale, liveWhy }, nodeCtl, trackers: TRACKERS, diag, stale: { videoGone, checkVideos, scrape, vidSeen, vidChecked }, update: { check: checkPageUpdate, busy: pageBusy } };
+window.opentube = { me, signerFor, engine: E, net, wt, meet: { seen: meetSeen, check: checkMeetPlaces, places: meetPlaces }, live: { broadcasts, viewing, hub: liveNet, liveStale, liveWhy }, nodeCtl, trackers: TRACKERS, diag, stale: { videoGone, checkVideos, scrape, vidSeen, vidChecked }, update: { check: checkPageUpdate, busy: pageBusy } };
 
 // ---------------------------------------------------------------- connect
 if (params.get('net') === 'local') startLocal();

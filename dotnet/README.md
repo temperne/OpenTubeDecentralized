@@ -68,10 +68,21 @@ is in `obs.json` (the JavaScript node's format); the owner's is printed at start
 whose owner linked this computer, reaches viewers through this computer's live hub (or an entry node's), is recorded to
 `recordings/`, and ends on the channel when OBS stops. `test-obs.cjs` checks all of it with ffmpeg playing OBS.
 
+**Control from the site** (Devices): the site's signed commands (`nodectl`) are answered by the .NET node with signed
+replies. It serves:
+- OBS settings: the stream key (and a new one), the linked channel (proved by the channel's key or by your identity
+  owning it), the title;
+- sharing the computer with others;
+- the log;
+- status.
+
+Commands for features it doesn't have yet are refused with a clear message. `test-control.cjs` drives it from a real
+page on the site, then streams with the key the site received.
+
 **Not in the .NET node yet** (the JavaScript node has them):
 - video hosting (BitTorrent seeding), so recordings aren't offered for publishing yet;
 - the group studio;
 - YouTube forwarding;
 - flash computers;
-- node control from the site (`nodectl`);
+- self-update and public/tunnel switching from the site;
 - remembering the tunnel name across restarts.
