@@ -185,6 +185,9 @@ else
         case "flags": case "reports": case "rules": case "filings": case "cases": case "courts": case "people":
             <OrgTab Id="@Id" Tab="@tab" />
             break;
+        case "advertise":
+            <ChannelAdvertise Id="@Id" />
+            break;
         case "docket":
             <CaseDocket Id="@Id" />
             break;
@@ -206,7 +209,7 @@ else
     }
     static List<string> Tabs(Derived d, bool mine) => d.Kind switch
     {
-        "channel" => mine ? ["videos", "posts", "about", "manage"] : ["videos", "posts", "about"],
+        "channel" => mine ? ["videos", "posts", "about", "advertise", "manage"] : ["videos", "posts", "about"],
         "group" => [.. new[] { "discussion", "members", "about" }, .. mine ? new[] { "manage" } : []],
         "org" => [.. new[] { "flags", "reports", "rules", "filings", "cases", "courts", "people", "about" }, .. mine ? new[] { "manage" } : []],
         "case" => [.. new[] { "docket", "about" }, .. mine ? new[] { "manage" } : []],

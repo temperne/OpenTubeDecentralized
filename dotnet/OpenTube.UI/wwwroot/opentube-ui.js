@@ -39,3 +39,17 @@ window.otUi.locate = () => new Promise((res, rej) => {
   if (!navigator.geolocation) return rej(new Error('this device can’t tell its location'));
   navigator.geolocation.getCurrentPosition((p) => res([p.coords.latitude, p.coords.longitude]), (e) => rej(new Error(e.message || 'not allowed')), { timeout: 15000 });
 });
+// A chosen video file's length in seconds (for ads), from a hidden video element.
+window.otUi.duration = (input) => new Promise((res) => {
+  const f = input?.files?.[0]; if (!f) return res(0);
+  const v = document.createElement('video'); v.preload = 'metadata'; v.muted = true;
+  v.onloadedmetadata = () => { res(Math.ceil(v.duration || 0)); URL.revokeObjectURL(v.src); }; v.onerror = () => res(0);
+  v.src = URL.createObjectURL(f);
+});
+// Is this video element playing (and the page visible) at second i of it? Starts it if it hasn't started (muted if it must).
+window.otUi.playingAt = (id, i) => {
+  const v = document.getElementById(id); if (!v) return false;
+  if (v.paused && !v.ended && !v.dataset.tried) { v.dataset.tried = '1'; v.play().catch(() => { v.muted = true; v.play().catch(() => {}); }); }
+  return !v.paused && v.currentTime >= i - 1.5 && document.visibilityState === 'visible';
+};
+window.otUi.pause = (id) => { const v = document.getElementById(id); if (v) v.pause(); };

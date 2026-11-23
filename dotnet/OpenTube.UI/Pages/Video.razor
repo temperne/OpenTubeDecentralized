@@ -20,7 +20,21 @@ else
     var lists = S.MyLists();
     <div class="watch">
         <div class="watch-main">
-            <div class="player" id="player-@Hash">@if (src != null) { <video controls autoplay playsinline src="@src" style="width:100%"></video> }</div>
+            @if (ad != null && adPhase != "done")
+            {
+                <div class="player">@if (adSrc != null) { <video id="ad-video" autoplay playsinline src="@adSrc" style="width:100%"></video> }</div>
+                <div class="panel ad-panel" id="ad-panel">
+                    <div class="head-row"><span><span class="badge warnb">Ad</span> <b>@((string?)ad.Block["payload"]?["title"])</b> <span class="sub">· @ad.Name</span>
+                        @if ((string?)ad.Block["payload"]?["url"] is { Length: > 0 } au) { <a href="@au" target="_blank" rel="noopener noreferrer nofollow"> Visit advertiser ↗</a> }</span>
+                        @if (adPhase == "playing" && canSkip) { <button @onclick="SkipAd">Skip ad</button> }</div>
+                    <div class="sub" id="ad-status">@adStatus</div>
+                </div>
+            }
+            else
+            {
+                <div class="player" id="player-@Hash">@if (src != null) { <video controls autoplay playsinline src="@src" style="width:100%"></video> }</div>
+                @if (adResult != null) { <div class="panel ad-panel"><span class="badge @(adOk ? "ok" : "warnb")">@(adOk ? "Ad view verified" : "Ad view not counted")</span> <span class="sub" id="ad-result">@adResult</span></div> }
+            }
             @if (status != null) { <div class="sub">@status</div> }
             <h2 class="watch-title">@((string?)p["title"])</h2>
             <div class="row-actions">
@@ -141,12 +155,39 @@ else
     Task AddFriend(string key, string name) => Do(async () => { await S.Social.AddFriend(key, name); friends?.Add(key); }, "Adding…", () => msg = $"{name} is now a friend: they see your friends-only posts once they add you back.");
     Task Mute(string tag) => Do(() => S.Social.SetMuted("tags", tag, true), null, () => msg = $"You won’t see videos or ads tagged #{tag}. Undo under You → Settings → Not interested.");
     static string Views(double n) => n == 1 ? "1 view" : (n >= 1e6 ? $"{n / 1e6:0.#}M" : n >= 1e4 ? $"{Math.Round(n / 1e3)}K" : n.ToString("N0")) + " views";
-    protected override async Task OnParametersSetAsync() { if (started != null && started != Hash) { src = null; msg = null; } await Task.CompletedTask; }
+    protected override async Task OnParametersSetAsync()
+    {
+        if (started != null && started != Hash) { src = null; msg = null; adCts.Cancel(); adCts = new(); ad = null; viewing = null; adSrc = adStatus = adResult = null; adPhase = ""; canSkip = false; }
+        await Task.CompletedTask;
+    }
+    public override void Dispose() { base.Dispose(); adCts.Cancel(); }
+    Ads.Candidate? ad; Ads.Viewing? viewing; string? adSrc, adStatus, adResult; string adPhase = ""; bool adOk, canSkip; CancellationTokenSource adCts = new();
+    async Task RunAd(Derived d)
+    {
+        ad = await S.PickAd(Chain, (await S.Social.Muted()).Tags);
+        if (ad == null) return;
+        adPhase = "loading"; adStatus = "Loading ad…"; StateHasChanged();
+        var t = ad.Terms;
+        var bytes = await Player.Fetch((string)t["infohash"]!, (string?)ad.Block["payload"]?["file"] ?? "ad.mp4", Js.Num(t["size"]) ?? 0, TimeSpan.FromSeconds(20));
+        if (bytes == null || bytes.Length != (long)(Js.Num(t["size"]) ?? -1)) { adPhase = "done"; adOk = false; adResult = "The ad could not be loaded (no peer has it), so it was skipped."; return; }
+        viewing = new Ads.Viewing(S, ad, bytes, Hash, d.Owner!);
+        var r = await viewing.Run(async () =>
+        {
+            adSrc = (await Player.Play("ad-video", (string)t["infohash"]!, (string?)ad.Block["payload"]?["file"] ?? "ad.mp4", Js.Num(t["size"]) ?? 0, _ => { })).Src;
+            adPhase = "playing"; await InvokeAsync(StateHasChanged);
+            _ = Task.Delay(5000).ContinueWith(_ => { canSkip = true; InvokeAsync(StateHasChanged); });
+        }, async i => { try { return await JS.InvokeAsync<bool>("otUi.playingAt", "ad-video", i); } catch { return false; } },
+        st => { adStatus = st; InvokeAsync(StateHasChanged); }, adCts.Token);
+        try { await JS.InvokeVoidAsync("otUi.pause", "ad-video"); } catch { }
+        adPhase = "done"; adOk = r.Ok; adResult = r.Text.Length > 0 ? r.Text : null;
+    }
+    async Task SkipAd() { if (viewing != null) viewing.Skipped = true; adStatus = "Ad skipped · counting what you watched…"; await JS.InvokeVoidAsync("otUi.pause", "ad-video"); }
     protected override async Task OnAfterRenderAsync(bool first)
     {
-        var v = S.Chain(Chain)?.Videos.FirstOrDefault(x => (string?)x["hash"] == Hash);
+        var d0 = S.Chain(Chain); var v = d0?.Videos.FirstOrDefault(x => (string?)x["hash"] == Hash);
         if (v == null || started == Hash) return;
         started = Hash;
+        if (!S.IsMine(d0!.Owner)) { try { await RunAd(d0); } catch (Exception e) { adPhase = "done"; adResult = e.Message; } StateHasChanged(); }
         var p = v["payload"]!;
         status = "Finding peers for this video…"; StateHasChanged();
         var r = await Player.Play("player-" + Hash, (string)p["infohash"]!, (string?)p["file"] ?? "video.mp4", Js.Num(p["size"]) ?? 0, s => { status = s; InvokeAsync(StateHasChanged); });

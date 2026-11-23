@@ -112,3 +112,4 @@ label { display: block; margin-top: 10px; font-size: 13px; color: var(--sub); } 
 .fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0 12px; } label.check { display: flex; gap: 8px; align-items: center; color: var(--ink); font-size: 14px; } label.check input { width: auto; margin: 0; }
 .listing-img { max-width: 100%; max-height: 320px; border-radius: 10px; display: block; margin-bottom: 10px; }
 .linkchip { white-space: normal; } .linkchip .tagx { padding: 0 3px; }
+.ad-panel { margin: 8px 0; }

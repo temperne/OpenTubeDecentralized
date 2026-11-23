@@ -12,5 +12,7 @@ public interface IVideoPlayer
     Task<Playback> PlayLive(OpenTube.Client.LiveWatch live);
     /// <summary>Share a file from this device over BitTorrent (as a seed); its torrent (the infohash WebTorrent would give it).</summary>
     Task<OpenTube.Core.BitTorrent.TorrentMeta> Share(string path, string name);
+    /// <summary>A whole (small) file from the network, e.g. an ad, once every piece is here; null if it doesn't arrive in time.</summary>
+    Task<byte[]?> Fetch(string infoHash, string file, double size, TimeSpan timeout);
 }
 public sealed record Playback(string? Src, string? Status);

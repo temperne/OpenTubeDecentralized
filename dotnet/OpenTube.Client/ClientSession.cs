@@ -66,7 +66,7 @@ public sealed class ClientSession : IAsyncDisposable
         if (saved == null) await store.Set("identity", JsonSerializer.Serialize(Me));
         // every channel/list has its own key pair (the JavaScript page's "channelKeys": pub -> {pub, priv, chain, name, exported})
         try { if (await store.Get("channelKeys") is { } ck && JsonNode.Parse(ck) is JsonObject o) channelKeys = o; } catch { }
-        Engine = new Engine(Network.MainGenesis(), Me, (json, to) => Send(json, to), () => links.Where(l => l.Value.Open).Select(l => l.Key).ToList(), KeyFor) { MineMode = "own", Log = m => Log?.Invoke(m) };
+        Engine = new Engine(Network.MainGenesis(), Me, (json, to) => Send(json, to), () => links.Where(l => l.Value.Open).Select(l => l.Key).ToList(), KeyFor) { MineMode = "own", RelayWatch = false, Log = m => Log?.Invoke(m) };
         // this browser's (or phone's) own copy of the chains: checked when they arrived, so loaded as trusted
         try
         {

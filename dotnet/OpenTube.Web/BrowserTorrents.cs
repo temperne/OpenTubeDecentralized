@@ -56,6 +56,21 @@ public sealed class BrowserTorrents : IVideoPlayer
         return new Playback($"/webtorrent/{infoHash}/{name}", "Finding peers for this video…");
     }
 
+
+    public async Task<byte[]?> Fetch(string infoHash, string file, double size, TimeSpan timeout)
+    {
+        var name = string.Concat(Path.GetFileName(file).Select(c => char.IsLetterOrDigit(c) || c is '.' or '-' or '_' ? c : '_')); if (name.Length == 0) name = "ad.mp4";
+        var t = bt.Torrents.GetValueOrDefault(infoHash) ?? bt.Add(TorrentData.Fetch(infoHash, Path.Combine(Path.GetTempPath(), "opentube", infoHash, name)));
+        web.Announce(t, Trackers());
+        var until = DateTime.UtcNow + timeout;
+        while (!t.Complete && DateTime.UtcNow < until) await Task.Delay(250);
+        if (!t.Complete || t.Meta is not { } m) return null;
+        var outp = new byte[m.Length]; long at = 0;
+        for (int p = 0; p < t.Have.Length; p++)
+            for (int off = 0; off < m.SizeOf(p); off += 128 * 1024) { var b = t.ReadBlock(p, off, Math.Min(128 * 1024, m.SizeOf(p) - off)); if (b == null) return null; b.CopyTo(outp, at); at += b.Length; }
+        return outp;
+    }
+
     public Task<TorrentMeta> Share(string path, string name)
     {
         var t = bt.Add(TorrentData.Seed(path, name)); web.Announce(t, Trackers());

@@ -1,0 +1,69 @@
+@inherits Live
+@inject IVideoPlayer Player
+@inject IJSRuntime JS
+@using Microsoft.AspNetCore.Components.Forms
+@{ var d = S.Chain(Id); }
+@if (d != null)
+{
+    var running = S.WhereAdsRun(Id);
+    <div class="panel">
+        <div class="kv">
+            <div>Ad budget (this channel’s coins)</div><div>@ChainActions.Coins(S.Balance(d.Owner!))</div>
+            <div>Running on</div><div>@if (running.Count == 0) { <span class="sub">Nowhere yet. A channel or list owner must sponsor this channel (Market → Ad board) for your ads to run.</span> } @foreach (var c in running) { <div><ChainLink Id="@c" /></div> }</div>
+        </div>
+    </div>
+    <div class="panel">
+        <h3>Create an ad</h3>
+        <p class="sub">Ads are paid from this channel’s coins. Each verified view pays the price per view: half to the viewer, half to the creator of the video it ran with. Add coins to this channel from the Wallet (send to its ID).</p>
+        <InputFile @ref="input" OnChange="Pick" accept="video/*" />
+        @if (duration > 0) { <div class="sub">@duration s long@(duration > Ads.MaxDuration ? $" (too long: max {Ads.MaxDuration} s)" : "")</div> }
+        <label>Title</label><input @bind="title" maxlength="140" />
+        <label>Link</label><input @bind="url" maxlength="300" placeholder="https://… (optional link)" />
+        <label>What it’s for</label>
+        <select @bind="category"><option value="">Choose what it’s for…</option>@foreach (var (k, n) in Market.Categories.Where(c => c.Key is not "adviews")) { <option value="@k">@n</option> }</select>
+        <label>Tags</label><input @bind="tags" placeholder="Tags, e.g. running, shoes (up to 8)" />
+        <div class="fields">
+            <div><label>Coins per verified view</label><input @bind="per" inputmode="decimal" /></div>
+            <div><label>Maximum views</label><input type="number" min="1" max="1000000" @bind="maxViews" /></div>
+        </div>
+        <label class="check"><input type="checkbox" @bind="confirm" /> Pay a view only when another viewer watched it in sync and confirms it (safer against bots, but on a small network most views won’t pay)</label>
+        <div class="row-actions"><button class="primary" disabled="@busy" @onclick="Publish">Publish ad</button></div>
+        @if (msg != null) { <div class="sub" id="ad-msg">@msg</div> }
+    </div>
+    <div class="panel">
+        <h3>Your ads</h3>
+        @if (d.Ads.Count == 0) { <div class="sub">None yet.</div> }
+        @foreach (var b in d.Ads)
+        {
+            var t = b["payload"]!["terms"]!; var tid = Ads.TermsId(t);
+            <div class="row-item"><span class="grow"><b>@((string?)b["payload"]?["title"])</b> <span class="sub">· @S.AdViews(tid) of @t["maxViews"] views · @ChainActions.Coins(Js.Num(t["perView"]) ?? 0) coins per view · @t["duration"] s@((Js.Num(t["witnesses"]) ?? 0) > 0 ? " · confirmed views only" : "")</span></span></div>
+        }
+    </div>
+}
+@code {
+    [Parameter] public required string Id { get; set; }
+    InputFile? input; IBrowserFile? file; int duration; string title = "", url = "", category = "", tags = "", per = "0.20", thumb = ""; int maxViews = 100; bool confirm, busy; string? msg;
+    async Task Pick(InputFileChangeEventArgs e)
+    {
+        file = e.File; if (title.Length == 0) title = Path.GetFileNameWithoutExtension(file.Name);
+        try { duration = await JS.InvokeAsync<int>("otUi.duration", input!.Element); } catch { duration = 0; }
+        try { thumb = await JS.InvokeAsync<string>("otUi.thumb", input!.Element); } catch { thumb = ""; }
+    }
+    async Task Publish()
+    {
+        if (file == null) { msg = "Choose an ad video"; return; }
+        busy = true; msg = "Sharing the ad file…"; StateHasChanged();
+        try
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "opentube-ad", Guid.NewGuid().ToString("n")[..8]); Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, string.Concat(file.Name.Select(c => char.IsLetterOrDigit(c) || c is '.' or '-' or '_' ? c : '_')));
+            await using (var src = file.OpenReadStream(200L << 20)) await using (var dst = File.Create(path)) await src.CopyToAsync(dst);
+            var meta = await Player.Share(path, Path.GetFileName(path));
+            var tagList = tags.ToLowerInvariant().Split([' ', ',', '#'], StringSplitOptions.RemoveEmptyEntries).Select(t => System.Text.RegularExpressions.Regex.Replace(t, "[^a-z0-9-]", "")).Where(t => t.Length > 0).Distinct().ToList();
+            await S.CreateAd(Id, meta.InfoHash, Path.GetFileName(path), file.Size, duration, title, url, category, tagList, thumb, Trade.Units(per), maxViews, confirm);
+            msg = "Ad published. Channels and lists that sponsor you will start running it (keep this page open, or keep the file on one of your computers, so viewers can get it)."; file = null; title = "";
+        }
+        catch (Exception e) { msg = e.Message; }
+        busy = false;
+    }
+}

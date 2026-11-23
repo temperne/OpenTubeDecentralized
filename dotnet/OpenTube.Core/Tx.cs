@@ -124,6 +124,8 @@ public static partial class Tx
     static JsonObject Without(JsonNode? o, string k) { var c = (JsonObject)o!.DeepClone(); c.Remove(k); return c; }
 
     /// <summary>checkClaim(t): an ad view, with the advertiser's signed terms and enough other viewers who saw it.</summary>
+    /// <summary>Verify a claim being made here (before the pending state checks it: that needs its terms id).</summary>
+    public static bool VerifyClaim(JsonObject t) => CheckClaim(t);
     static bool CheckClaim(JsonObject t)
     {
         var c = Get(t, "claim")!; var terms = Get(c, "terms")!;

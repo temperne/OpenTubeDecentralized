@@ -68,6 +68,12 @@ public sealed class Engine
     readonly HashSet<string> requested = [];
     /// <summary>A usage receipt arrived (see SERVE): the node keeps its own and passes others on.</summary>
     public event Action<JsonObject, string>? OnReceipt;
+    /// <summary>Relay ad watch-group traffic to everyone (nodes do; an app or a page only listens).</summary>
+    public bool RelayWatch { get; set; } = true;
+    /// <summary>Ad watch-group messages ({t:"watch", s: session, ...}) from others.</summary>
+    public event Action<JsonObject>? OnWatch;
+    /// <summary>Send an ad watch-group message to everyone (nodes relay it).</summary>
+    public void SendWatch(JsonObject m) { m["t"] = "watch"; Send(m, null); }
     /// <summary>Send a message to every peer except one (null: all).</summary>
     public void SendAllBut(JsonObject m, string? except) { foreach (var p in peers()) if (p != except) Send(m, p); }
     public bool TrackAll { get => Store.TrackAll; set => Store.TrackAll = value; }
@@ -96,7 +102,7 @@ public sealed class Engine
                     break;
                 }
                 case "bk" when chain != null && Get(m, "b") is JsonArray b: Insert(chain.Id, b.Take(5000).Select(x => x?.DeepClone()).ToList(), from); break;
-                case "watch": Send(m); break;   // watch-group traffic: nodes relay it to everyone
+                case "watch": if (RelayWatch) Send(m); OnWatch?.Invoke(m); break;   // watch-group traffic (ads seen in sync): nodes relay it to everyone; apps hand it to the player
                 case "tx": if (Get(m, "x") is JsonObject x && AddTx(x)) MaybeMineSoon(); break;
                 case "mem": AcceptMembership(Get(m, "m")); break;
                 case "route": HandleRoute(m, from); break;
@@ -178,6 +184,7 @@ public sealed class Engine
             foreach (var (k, v) in fields) if (k != "memo" && v != null && !(v is JsonValue jv && jv.GetValueKind() == System.Text.Json.JsonValueKind.False)) body[k] = v.DeepClone();
             if (Str(fields["memo"]) is { Length: > 0 } memo) body["memo"] = memo;
             if (!Tx.Shape(body)) throw new InvalidOperationException("invalid transaction");
+            if (body["claim"] != null && !Tx.VerifyClaim(body)) throw new InvalidOperationException("the ad view’s terms or confirmations don’t check out");
             if (st.Check(body) is { } why) throw new InvalidOperationException(why);
             var bits = Truthy(Get(body, "starter")) ? (int)Coin.StarterBits : (int)Coin.TxBits;
             body["nonce"] = await Task.Run(() => Miner.Find(Blocks.Preimage(body), bits, CancellationToken.None) ?? 0);
