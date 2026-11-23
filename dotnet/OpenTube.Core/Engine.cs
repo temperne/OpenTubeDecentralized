@@ -43,6 +43,8 @@ public sealed class Engine
     JsonArray Arr(IEnumerable<string> s) => new(s.Select(x => (JsonNode?)x).ToArray());
     public void Announce(Chain c, string? to = null) => Send(new JsonObject { ["t"] = "heads", ["c"] = c.Id, ["h"] = Arr(HeadsOf(c)) }, to);
     /// <summary>A video's posting fee is paid (or it's from before the coin): hosts only keep paid videos.</summary>
+    /// <summary>A like or dislike counts once it's paid (as the JavaScript page counts them).</summary>
+    public bool VotePaid(JsonObject voteBlock) { lock (gate) return IsPaid("vote:" + Str(voteBlock["hash"]), Str(voteBlock["author"])); }
     public bool PostPaid(JsonObject v) { lock (gate) return Num(v["ts"]) < Coin.Epoch || IsPaid("post:" + Str(v["hash"]), null); }
     /// <summary>Ask peers for someone's signed list of joined channels.</summary>
     public void RequestMembership(string author) => Send(new JsonObject { ["t"] = "memrq", ["a"] = author }, null);

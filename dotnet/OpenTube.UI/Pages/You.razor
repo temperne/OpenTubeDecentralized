@@ -7,6 +7,10 @@
         <div><b>Your user ID</b></div>
         <div class="mono">@S.Me.pub</div>
         <div class="sub">Coins: @((S.Balance(S.Me.pub) / 100).ToString("0.00")) · this key lives in this browser (the same one the JavaScript page used here)</div>
+        @if (!S.Engine.Read(e => e.Store.Ledger.Starters.Contains(S.Me.pub)))
+        {
+            <div class="row-actions"><button class="primary" disabled="@starting" @onclick="Starter">Get 10 starter coins</button> <span class="sub" id="starter-status">@starterMsg</span></div>
+        }
     </div>
     <div class="panel">
         <h3>Create a channel</h3>
@@ -37,6 +41,13 @@
     </div>
 }
 @code {
+    bool starting; string? starterMsg;
+    async Task Starter()
+    {
+        starting = true; starterMsg = "Earning starter coins (proof of work: a little while)…"; StateHasChanged();
+        try { await S.Engine.SubmitTx(new JsonObject { ["starter"] = true }, S.Me); starterMsg = "Starter coins on the way: they count once the next main-chain block includes them."; }
+        catch (Exception e) { starterMsg = e.Message; starting = false; }
+    }
     [Inject] IServiceProvider Sp { get; set; } = null!;
     IPushSetup? Push => Sp.GetService(typeof(IPushSetup)) as IPushSetup;
     string name = "", about = ""; string? msg; bool busy;

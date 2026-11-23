@@ -12,6 +12,8 @@ public static class AppNav
         var parts = h.Split('/');
         if (parts.Length >= 3 && parts[0] is "v" or "live") return $"{parts[0]}/{parts[1]}/{parts[2]}";
         if (parts.Length >= 2 && parts[0] == "c") return $"c/{parts[1]}";
+        if (parts[0] == "square") return parts.Length >= 3 ? $"posts/{parts[1]}/{parts[2]}" : parts.Length == 2 ? $"posts/{parts[1]}" : "posts";
+        if (parts[0] == "friends") return "friends";
         if (parts[0] == "messages") return parts.Length >= 2 && parts[1].Length > 0 ? $"messages/{parts[1]}" : "messages";
         return site.TrimEnd('/') + "/#/" + h;   // not in the C# pages yet
     }

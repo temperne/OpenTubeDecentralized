@@ -1,0 +1,99 @@
+@page "/friends"
+@inherits Live
+@* Friends: posts sealed to the friends you choose; nobody else can read them *@
+<div class="head-row"><h2>Friends</h2></div>
+@if (!S.Ready) { <p class="sub">Starting…</p> }
+else
+{
+    @if (S.Social.MyPage == null)
+    {
+        <div class="panel">
+            <p>Your friends page is a chain only your friends can read: every post is encrypted to the friends you choose, and they keep a copy for you. Start it once:</p>
+            <button class="primary" disabled="@busy" @onclick="Start">Start my friends page</button>
+        </div>
+    }
+    else
+    {
+        <div class="panel">
+            <textarea placeholder="Share with your friends…" @bind="text" @bind:event="oninput" rows="3"></textarea>
+            <div class="row-actions">
+                <select @bind="audience">
+                    <option value="acquaintances">All friends</option><option value="friends">Friends and close friends</option><option value="close">Close friends only</option>
+                </select>
+                <button class="primary" disabled="@(busy || string.IsNullOrWhiteSpace(text))" @onclick="Post">Post to friends</button>
+            </div>
+        </div>
+        <div class="panel list-plain">
+            @if (feed == null) { <p class="sub">Opening your friends’ pages…</p> }
+            else if (feed.Count == 0) { <p class="sub">Nothing yet. Posts from you and your friends show up here.</p> }
+            else
+            {
+                foreach (var x in feed)
+                {
+                    <div class="post">
+                        <div><b>@Name(x.Author)</b> <span class="sub">· @Ago(x.Ts)@(x.Content?["to"] is System.Text.Json.Nodes.JsonArray to ? $" · shared with {to.Count - 1} friend(s)" : "")</span></div>
+                        @if (x.Content == null) { <div class="sub">🔒 A post that isn’t shared with you</div> }
+                        else
+                        {
+                            <div class="post-text">@((string?)x.Content["text"])</div>
+                            <div class="replies">
+                                @foreach (var r in x.Replies) { <div class="post reply"><b>@Name(r.Author)</b> <span class="sub">· @Ago(r.Ts)</span><div class="post-text">@(r.Content == null ? "🔒 not shared with you" : (string?)r.Content["text"])</div></div> }
+                            </div>
+                            <div class="compose">
+                                <input placeholder="Reply (sealed to the same friends)…" value="@replies.GetValueOrDefault(HashOf(x))" @oninput="e => replies[HashOf(x)] = (string?)e.Value ?? string.Empty" class="grow-input" />
+                                <button @onclick="() => Reply(x)">Reply</button>
+                            </div>
+                        }
+                    </div>
+                }
+            }
+        </div>
+    }
+    <div class="panel">
+        <h3>Your friends</h3>
+        <p class="sub">Only the friends you add can read what you share with them, once they add you too. Your user ID (give it to your friends):</p>
+        <div class="mono">@S.Me.pub</div>
+        @if (friends != null)
+        {
+            foreach (var f in friends)
+            {
+                <div class="row-item">
+                    <span class="grow"><b>@f.Name</b>@if (!f.HasPage) { <span class="badge"> hasn’t started a page yet</span> }</span>
+                    <select value="@f.Level" @onchange="e => S.Social.SetLevel(f.Key, (string)e.Value!)">
+                        @foreach (var (k, l) in Social.Levels) { <option value="@k">@l</option> }
+                    </select>
+                    <a class="button" href="messages/@f.Key">✉</a>
+                    <button @onclick="() => S.Social.RemoveFriend(f.Key)">Remove</button>
+                </div>
+            }
+            if (friends.Count == 0) { <p class="sub">No friends added yet.</p> }
+        }
+        <div class="row-actions">
+            <input placeholder="A friend’s user ID" @bind="addKey" class="grow-input" />
+            <input placeholder="Their name (for you)" @bind="addName" style="max-width:180px" />
+            <button @onclick="Add">Add friend</button>
+        </div>
+    </div>
+}
+@if (msg != null) { <div class="sub" id="friends-status">@msg</div> }
+@code {
+    List<Social.Friend>? friends; List<Social.Sealed>? feed;
+    readonly Dictionary<string, string> replies = new();
+    static string HashOf(Social.Sealed x) => (string)x.Block["hash"]!;
+    string text = "", audience = "acquaintances", addKey = "", addName = ""; string? msg; bool busy;
+    Dictionary<string, string> names = new();
+    string Name(string k) => k == S.Me.pub ? "You" : names.TryGetValue(k, out var n) ? n : S.NameOf(k);
+    protected override async Task OnInitializedAsync() { base.OnInitialized(); S.Social.Changed += Reload; await Load(); }
+    async Task Load()
+    {
+        friends = await S.Social.Friends(); names = friends.ToDictionary(f => f.Key, f => f.Name);
+        if (S.Social.MyPage != null) feed = await S.Social.Feed();
+    }
+    void Reload() => InvokeAsync(async () => { await Load(); StateHasChanged(); });
+    async Task Run(string doing, Func<Task> f) { busy = true; msg = doing; StateHasChanged(); try { await f(); msg = null; } catch (Exception e) { msg = e.Message; } busy = false; await Load(); }
+    Task Start() => Run("Registering your page (proof of work on the main chain)…", () => S.Social.StartPage());
+    Task Post() => Run("Encrypting…", async () => { await S.Social.PostToFriends(text, audience); text = ""; });
+    Task Reply(Social.Sealed x) => Run("Encrypting…", async () => { var k = (string)x.Block["hash"]!; await S.Social.ReplyToFriends(x.Page, x.Block, x.Content!, replies.GetValueOrDefault(k) ?? ""); replies[k] = ""; });
+    Task Add() => Run("", async () => { await S.Social.AddFriend(addKey, addName); addKey = addName = ""; });
+    public override void Dispose() { base.Dispose(); S.Social.Changed -= Reload; }
+}

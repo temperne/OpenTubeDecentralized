@@ -95,7 +95,17 @@ public sealed class Notifications
         if (obj != null && ObjectMode(obj) == "all") return true;
         return TypeOn(type);
     }
-    Task SaveSettings() => store.Set("settings", settings.ToJsonString());
+    /// <summary>Only the notification settings change here: the rest of the record (the friend list, …) is read fresh first.</summary>
+    async Task SaveSettings()
+    {
+        var cur = await store.Get("settings") is { } j && JsonNode.Parse(j) is JsonObject o ? o : [];
+        lock (gate) cur["notif"] = Notif.DeepClone();
+        await store.Set("settings", cur.ToJsonString());
+    }
+    /// <summary>Your friends and the people you follow (their public posts notify you), kept current by the friends page.</summary>
+    public HashSet<string> Following { get; set; } = [];
+    /// <summary>Your friends' pages (their sealed posts to you notify you).</summary>
+    public HashSet<string> FriendPages { get; set; } = [];
 
     // ---- subscriptions (shared with the JavaScript page: chain -> "sub" | "join")
     public string? Subscription(string chain) => (string?)subs[chain];
@@ -154,6 +164,10 @@ public sealed class Notifications
                 (string?)target["payload"]?["type"] == "video" ? $"#/v/{id}/{(string?)target["hash"]}" : $"#/c/{id}", id, ts, hash);
         if (type == "vote" && (Js.Num(p["v"]) ?? 0) > 0 && target != null && Mine((string?)target["author"]))
             Notify("like", $"{Name(author)} liked {(Title(target) is { Length: > 0 } t2 ? "“" + t2 + "”" : "your post")}", (string?)target["payload"]?["type"] == "video" ? $"#/v/{id}/{(string?)target["hash"]}" : $"#/c/{id}", id, ts, hash);
+        if (kind == "square" && type == "post" && Following.Contains(engine.Read(e => e.Store.Ledger.Resolve(author ?? ""))))
+            Notify("follow", $"{Name(author)}: {Short((string?)p["text"], 90)}", $"#/square/{(string?)chain.Genesis["payload"]?["month"]}/{hash}", null, ts, hash);
+        if (kind == "circle" && type == "sealed" && p["target"] == null && FriendPages.Contains(id)) Notify("friend", $"{Name(author)} shared something with friends", "#/friends", id, ts, hash);
+        if (kind == "circle" && type == "sealed" && target != null && Mine((string?)target["author"])) Notify("reply", $"{Name(author)} replied to your friends post", "#/friends", id, ts, hash);
         if (kind == "org")
         {
             if (type == "flag" && Js.IsTrue(p["on"]) && (string?)p["ref"]?["chain"] is { } rc && Mine(engine.Read(e => e.Store.Chains.TryGetValue(rc, out var x) ? x.Owner : null)))

@@ -45,6 +45,8 @@ public sealed class ClientSession : IAsyncDisposable
     public Notifications Notes { get; private set; } = null!;
     /// <summary>Private messages.</summary>
     public Mail Mail { get; private set; } = null!;
+    /// <summary>Posts and friends.</summary>
+    public Social Social { get; private set; } = null!;
     static readonly HttpClient http = new() { Timeout = TimeSpan.FromSeconds(10) };
 
     public ClientSession(IClientStore store, string site) { this.store = store; Site = site.TrimEnd('/'); }
@@ -69,6 +71,7 @@ public sealed class ClientSession : IAsyncDisposable
         Engine.Persist = (c, b) => { try { store.SaveBlock(c, (JsonObject)b.DeepClone()); } catch { } Changed?.Invoke(); };
         Notes = new Notifications(this, store); await Notes.Load(); Notes.Start();
         Mail = new Mail(this, store); Mail.Start();
+        Social = new Social(this, store); _ = Task.Run(async () => { await Task.Delay(5000); try { await Social.Refresh(); } catch { } });
         Ready = true; Changed?.Invoke();
         online = CancellationTokenSource.CreateLinkedTokenSource(stop.Token);
         _ = Task.Run(() => FindNodes(online));
@@ -220,6 +223,8 @@ public sealed class ClientSession : IAsyncDisposable
         await store.Set("channelKeys", json);
     }
     /// <summary>A new channel, list or group with a fresh key pair of its own (kept with the others in this browser).</summary>
+    /// <summary>Register a chain with your own key (your friends page): its genesis goes to the main chain's pool.</summary>
+    public Task<JsonObject> CreateGenesis(JsonObject payload) { var g = Engine.CreateGenesis(payload, Me); _ = Task.Run(Engine.MaybeMine); return Task.FromResult(g); }
     public async Task<JsonObject> CreateChannel(JsonObject payload)
     {
         var key = Identity.New(); var name = (string?)payload["name"] ?? "";

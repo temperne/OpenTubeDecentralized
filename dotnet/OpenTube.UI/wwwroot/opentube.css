@@ -40,6 +40,12 @@ a.button { display: inline-block; padding: 8px 10px; border-radius: 8px; border:
 .bubble { max-width: 80%; padding: 8px 12px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line); white-space: pre-wrap; word-break: break-word; }
 .bubble.out { align-self: flex-end; background: var(--accent); color: #fff; border: none; } .bubble.out .sub { color: #ffe; }
 .compose { display: flex; gap: 8px; align-items: flex-end; } .compose textarea { flex: 1; font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); resize: vertical; }
+.head-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; } .head-row h2 { margin: 12px 0; }
+textarea { width: 100%; font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); resize: vertical; }
+.post { padding: 10px 0; border-bottom: 1px solid var(--line); } .post:last-child { border-bottom: none; } .post-text { white-space: pre-wrap; word-break: break-word; margin: 4px 0; }
+.post.reply, .replies .post { margin-left: 18px; border-bottom: none; padding: 6px 0; }
+.small-actions button, .small-actions a.button { padding: 4px 10px; font-size: 13px; } button.on { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.list-plain { padding-top: 4px; padding-bottom: 4px; }
 /* phones: a compact header, the sections as a bar at the bottom (big enough to tap), nothing wider than the screen */
 @media (max-width: 640px) {
   html, body { overflow-x: hidden; }
@@ -47,7 +53,7 @@ a.button { display: inline-block; padding: 8px 10px; border-radius: 8px; border:
   .logo { font-size: 18px; }
   .net { font-size: 12px; margin-left: 0; } .net .badge { display: none; } .bell { margin-left: auto; }
   nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 3; background: var(--panel); border-top: 1px solid var(--line); justify-content: space-around; gap: 0; padding-bottom: env(safe-area-inset-bottom); }
-  nav a { flex: 1; text-align: center; padding: 14px 4px; font-size: 15px; }
+  nav a { flex: 1; text-align: center; padding: 14px 2px; font-size: 14px; } nav a.desk-only { display: none; }
   main { padding: 12px 12px 76px; }
   .grid { grid-template-columns: 1fr; gap: 14px; }
   h2 { font-size: 20px; }
