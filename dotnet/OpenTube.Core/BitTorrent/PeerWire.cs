@@ -59,6 +59,24 @@ public sealed class TorrentData
         if (!all) { Directory.CreateDirectory(System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(Path))!); using var f = new FileStream(Path, FileMode.OpenOrCreate); f.SetLength(m.Length); }
     }
 
+    /// <summary>Wait until a piece is here (a player wants it now: the download moves there).</summary>
+    public async Task<bool> WhenHave(int piece, TimeSpan timeout)
+    {
+        if (piece < 0 || piece >= Have.Length) return false;
+        if (Have[piece]) return true;
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        void On(int p) { if (p == piece) tcs.TrySetResult(); }
+        PieceDone += On;
+        try
+        {
+            if (Have[piece]) return true;
+            if (FirstWanted > piece || piece - FirstWanted > 4) FirstWanted = piece;
+            await Task.WhenAny(tcs.Task, Task.Delay(timeout));
+            return Have[piece];
+        }
+        finally { PieceDone -= On; }
+    }
+
     public byte[]? ReadBlock(int piece, int offset, int length)
     {
         if (Meta == null || piece < 0 || piece >= Have.Length || !Have[piece] || length <= 0 || length > 128 * 1024 || offset < 0 || offset + length > Meta.SizeOf(piece)) return null;

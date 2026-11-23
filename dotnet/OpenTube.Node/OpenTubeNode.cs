@@ -322,7 +322,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
         peers[id] = peer;
         if (role == "tracker") Tracker.Attach(id, text => Send(text, id));
         else if (role == "live") Hub.Attach(id, text => Send(text, id));
-        else { Engine.PeerJoined(id); if (role == "node-in") Send(new JsonObject { ["t"] = "nodehi", ["node"] = NodeKey }.ToJsonString(), id); }
+        else { Engine.PeerJoined(id); Obs?.Warm(); if (role == "node-in") Send(new JsonObject { ["t"] = "nodehi", ["node"] = NodeKey }.ToJsonString(), id); }
         if (role == "node-in") Log($"+ browser {id} ({peers.Count(p => p.Value.Role is "node-in" or "node-out")} connected)");
         var writer = Task.Run(async () =>
         {
@@ -490,7 +490,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
                 peers[id] = peer;
                 _ = Task.Run(async () => { await foreach (var text in peer.Out.Reader.ReadAllAsync()) { try { await send(text); } catch { } } });
                 Log($"+ peer {pid[..8]} over WebRTC ({peers.Count(p => p.Value.Role is "node-in" or "node-out")} connected)");
-                Engine.PeerJoined(id); Send(new JsonObject { ["t"] = "nodehi", ["node"] = NodeKey }.ToJsonString(), id);
+                Engine.PeerJoined(id); Obs?.Warm(); Send(new JsonObject { ["t"] = "nodehi", ["node"] = NodeKey }.ToJsonString(), id);
             },
             onMessage: (pid, text) => { try { if (JsonNode.Parse(text) is JsonObject m) Engine.Handle(m, "rtc:" + pid); } catch { } },
             onLeave: pid => { if (peers.TryRemove("rtc:" + pid, out var p)) { p.Out.Writer.TryComplete(); Log($"- peer {pid[..8]} ({peers.Count(x => x.Value.Role is "node-in" or "node-out")} connected)"); } });

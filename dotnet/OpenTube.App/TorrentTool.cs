@@ -29,7 +29,7 @@ static class TorrentTool
             var d = new Dht { Log = Console.Error.WriteLine }; d.Start(dhtPort); Console.Error.WriteLine($"dht on UDP port {d.Port}");
             d.Bootstrap(boot.Count > 0 ? boot : null).Wait(); bt.UseDht(d);
         }
-        OpenTube.Net.WebTorrentPeers? Web(BtClient bt, TorrentData t) { if (trackers.Count == 0) return null; var w = new OpenTube.Net.WebTorrentPeers(bt, Console.Error.WriteLine); w.Announce(t, trackers); return w; }
+        WebTorrentPeers? Web(BtClient bt, TorrentData t) { if (trackers.Count == 0) return null; var w = new WebTorrentPeers(bt, new OpenTube.Net.SipRtc(), Console.Error.WriteLine); w.Announce(t, trackers); return w; }
         switch (rest[0])
         {
             case "hash": Console.WriteLine(TorrentMeta.Create(rest[1]).InfoHash); return 0;

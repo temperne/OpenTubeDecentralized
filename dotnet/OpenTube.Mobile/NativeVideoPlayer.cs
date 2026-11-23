@@ -23,7 +23,7 @@ public sealed class NativeVideoPlayer : IVideoPlayer
     public NativeVideoPlayer(ClientSession s, string dir)
     {
         this.s = s; this.dir = dir; Directory.CreateDirectory(dir);
-        web = new WebTorrentPeers(bt, m => System.Diagnostics.Debug.WriteLine("[bt] " + m));
+        web = new WebTorrentPeers(bt, new SipRtc(), m => System.Diagnostics.Debug.WriteLine("[bt] " + m));
         http = new TorrentHttp(ih => bt.Torrents.GetValueOrDefault(ih));
         bt.Listen(0);
         _ = Task.Run(async () => { try { var d = new Dht(); d.Start(0); await d.Bootstrap(); bt.UseDht(d); dht = d; } catch { } });

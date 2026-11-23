@@ -1,0 +1,21 @@
+@page "/t/{InfoHash}"
+@inherits Live
+@inject IVideoPlayer Player
+@inject NavigationManager Nav
+@* Any video by its infohash (a link anyone can share), played over BitTorrent like the network's videos *@
+<h2>@Name</h2>
+<div class="player" id="player-@InfoHash">@if (src != null) { <video controls autoplay muted playsinline src="@src" style="width:100%"></video> }</div>
+<div class="sub mono">infohash @InfoHash</div>
+@if (status != null) { <div class="sub" id="play-status">@status</div> }
+@code {
+    [Parameter] public string InfoHash { get; set; } = "";
+    string Name => Uri.UnescapeDataString(new Uri(Nav.Uri).Query.TrimStart('?').Split('&').FirstOrDefault(q => q.StartsWith("name="))?[5..] ?? "video.mp4");
+    string? status, src, started;
+    protected override async Task OnAfterRenderAsync(bool first)
+    {
+        if (started == InfoHash || !System.Text.RegularExpressions.Regex.IsMatch(InfoHash, "^[0-9a-f]{40}$")) return;
+        started = InfoHash;
+        var r = await Player.Play("player-" + InfoHash, InfoHash, Name, 0, s => { status = s; InvokeAsync(StateHasChanged); });
+        src = r.Src; status ??= r.Status; StateHasChanged();
+    }
+}

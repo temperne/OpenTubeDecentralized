@@ -55,7 +55,7 @@ public sealed class TorrentHttp : IDisposable
                 for (long at = from; at <= to;)
                 {
                     int piece = (int)(at / m.PieceLength), off = (int)(at - (long)piece * m.PieceLength);
-                    await WaitFor(t, piece);
+                    if (!await t.WhenHave(piece, TimeSpan.FromMinutes(5))) throw new IOException("piece " + piece + " didn't come");
                     int n = (int)Math.Min(Math.Min(m.SizeOf(piece) - off, 64 * 1024), to - at + 1);
                     var b = t.ReadBlock(piece, off, n) ?? throw new IOException("can't read piece " + piece);
                     await s.WriteAsync(b, cts.Token); at += n;
@@ -63,15 +63,6 @@ public sealed class TorrentHttp : IDisposable
             }
         }
         catch { }   // the player closed the connection (seeking, leaving)
-    }
-    static async Task WaitFor(TorrentData t, int piece)
-    {
-        if (t.Have[piece]) return;
-        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        void On(int p) { if (p == piece) tcs.TrySetResult(); }
-        t.PieceDone += On;
-        try { if (!t.Have[piece]) { if (t.FirstWanted > piece || piece - t.FirstWanted > 4) t.FirstWanted = piece; await tcs.Task.WaitAsync(TimeSpan.FromMinutes(5)); } }
-        finally { t.PieceDone -= On; }
     }
     static async Task<string?> ReadHead(NetworkStream s)
     {

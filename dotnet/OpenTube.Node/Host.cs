@@ -36,7 +36,7 @@ public sealed class Host : IAsyncDisposable
     {
         this.node = node; this.videoDir = Path.GetFullPath(videoDir); this.capGB = capGB; log = node.Log;
         Bt = new BtClient(SHA1.HashData(Encoding.UTF8.GetBytes("opentube-node:" + node.NodeKey))) { Log = _ => { } };   // browsers recognize this node's bytes
-        Web = new WebTorrentPeers(Bt, log);
+        Web = new WebTorrentPeers(Bt, new SipRtc(), log);
         Tabs = new PieceTabs(node); Bt.OnSession = Tabs.Attach;   // pay per piece on every connection
         Directory.CreateDirectory(this.videoDir);
         ovFile = Path.Combine(this.videoDir, ".opentube-node.json");

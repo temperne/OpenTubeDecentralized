@@ -257,11 +257,15 @@ public sealed class Engine
         lock (gate)
         {
             c = Store.OpenChain(chainId) ?? throw new InvalidOperationException("This chain isn't known here.");
+            if (c.Heads.Count == 0 || c.Owner == null) throw new InvalidOperationException("the channel isn't loaded here yet");
             parents = c.Heads.Take(Limits.Parents).ToList(); height = parents.Max(p => Num(c.Blocks[p]["height"])!.Value) + 1;
             signer = asKey ?? (c.Owner is { } o ? keyFor(o) : null) ?? Signer; pow = c.Owner == signer.pub ? 0 : Store.CommentDifficulty;
         }
         var b = MakeBlock(chainId, parents, height, payload, pow, signer);
         Insert(chainId, [b]);
+        lock (gate)   // a block the chain's rules refuse goes nowhere: say so instead of reporting success
+            if (!Store.Chains.TryGetValue(chainId, out var after) || !after.Blocks.ContainsKey(Str(b["hash"])!))
+                throw new InvalidOperationException(signer.pub == c.Owner ? "the channel refused this block" : "the channel refused this block (signed by this computer: is it linked to the channel?)");
         return b;
     }
 

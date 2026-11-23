@@ -38,6 +38,13 @@ public sealed class ObsLive
         return p;
     }
     /// <summary>Channels whose owner linked this computer (it may go live on them).</summary>
+    bool Loaded(string chain) => node.Engine.Read(e => e.Store.Chains.TryGetValue(chain, out var c) && c.Owner != null && c.Heads.Count > 0);
+    /// <summary>Start loading the channels people picked for OBS, so they're here when OBS connects.</summary>
+    public void Warm()
+    {
+        foreach (var (_, pn) in (JsonObject)Store["profiles"]!)
+            if ((string?)pn?["channel"] is { Length: 64 } ch && !Loaded(ch) && node.Engine.OpenChain(ch) is { } c) node.Engine.RequestChain(c);
+    }
     public List<string> LinkedChannels() => node.Engine.Read(e => e.Store.Chains.Values.Where(c => c != e.Store.Main && (string?)c.Genesis["payload"]?["kind"] == "channel")
         .Where(c => Derived.Of(c).Relays.Contains(node.NodeKey!)).Select(c => c.Id).ToList());
 
@@ -86,6 +93,9 @@ public sealed class ObsLive
         }
         if (slot > 1) return "The group stream is off on this computer: use the main stream key.";
         var chain = ChannelFor(user, profile);
+        // the picked channel isn't loaded here yet (this computer just started, or doesn't keep it): take the stream,
+        // and the sink loads the channel from the network, checks the link and goes live (as the JavaScript node did)
+        if (chain == null && (string?)profile["channel"] is { Length: 64 } picked && !Loaded(picked)) { node.Log("[obs] the picked channel isn’t loaded here yet: loading it"); chain = picked; }
         if (chain == null) return "Not linked to a channel yet. On the site: Go live → OBS → pick this computer and link it to your channel.";
         return NewSink(chain, (string?)profile["title"] ?? "Live", profile);
     }
@@ -105,13 +115,41 @@ public sealed class ObsLive
         /// <summary>The group picture restarted (its encoder): same stream, a new start.</summary>
         public void Reinit(byte[] header)
         {
-            Piece(header, true);
+            Fragment(header, true);
             if (youtubeKey != null) { youtube?.End(); youtube = YouTube.Start(youtubeKey, node.Log); youtube?.Write(header); }
         }
         long n, offset; (Action<JsonObject> Seg, Action End, Action<JsonObject> Chunk)? local; RemoteBroadcast? remote; Chunker? chunks; YouTube? youtube; FileStream? rec; string? recPath, recFile;
         readonly object gate = new();
 
+        // Going live waits for the channel (a computer just started, or one that doesn't keep this channel, loads it from
+        // its peers first: as the JavaScript node did). Meanwhile the stream is queued, and nothing is lost.
+        readonly List<(byte[] B, bool K)> queued = []; bool starting, ended;
         public void Init(byte[] header, string mime)
+        {
+            lock (gate) { if (starting) return; starting = true; queued.Add((header, false)); }
+            _ = Task.Run(async () =>
+            {
+                var c = node.Engine.OpenChain(chain);
+                for (int i = 0; i < 120 && !Loaded(); i++)
+                {
+                    if (i == 0) node.Log("[obs] loading the channel before going live…");
+                    if (i % 10 == 0 && c != null) node.Engine.RequestChain(c);
+                    await Task.Delay(500);
+                }
+                if (!Loaded()) { node.Log("[obs] couldn’t go live: the linked channel didn’t load from the network (is this computer connected to peers?)"); return; }
+                if (node.Obs?.LinkedChannels().Contains(chain) == false) { node.Log("[obs] couldn’t go live: this computer isn’t linked to that channel. On the site: Go live → OBS → pick this computer and link it to your channel."); return; }
+                List<(byte[] B, bool K)> backlog; bool endNow;
+                lock (gate)
+                {
+                    try { Start(queued[0].B, mime); } catch (Exception e) { node.Log("[obs] couldn’t go live: " + e.Message); queued.Clear(); return; }
+                    backlog = queued.Skip(1).ToList(); queued.Clear(); endNow = ended;
+                    foreach (var (b, k) in backlog) Piece(b, k);
+                }
+                if (endNow) End();
+            });
+        }
+        bool Loaded() => node.Engine.Read(e => e.Store.Chains.TryGetValue(chain, out var ch) && ch.Owner != null && ch.Heads.Count > 0);
+        void Start(byte[] header, string mime)
         {
             // the hub viewers find the stream on: this node's own when it's public, else an entry node's (named in the live block)
             var hubNode = node.PublicUrl != null ? node.NodeKey : null; string? hubUrl = null;
@@ -124,8 +162,7 @@ public sealed class ObsLive
             }
             var payload = new JsonObject { ["type"] = "live", ["title"] = title[..Math.Min(140, title.Length)], ["stream"] = stream, ["mime"] = mime };
             if (hubNode != null) payload["hub"] = hubNode;
-            try { Block = (string?)node.Engine.Append(chain, payload)["hash"]; node.MyLive[stream] = true; }
-            catch (Exception e) { node.Log("[obs] couldn’t go live: " + e.Message); return; }
+            Block = (string?)node.Engine.Append(chain, payload)["hash"]; node.MyLive[stream] = true;   // (a refusal says why, in the caller)
             var name = node.Engine.Read(e => e.Store.Chains.TryGetValue(chain, out var c) ? (string?)Derived.Of(c).Profile["name"] : null) ?? chain[..8];
             node.Log($"[obs] live on {name}: “{title}”" + (hubUrl != null ? $" (viewers through {hubUrl.Replace("wss://", "").Replace("ws://", "").Replace("/live", "")})" : " (viewers through this computer)"));
             local = node.Hub.Local(stream, chain, mime);
@@ -145,7 +182,11 @@ public sealed class ObsLive
             Piece(header, false);
             node.Log($"[obs] recording to {recPath}");
         }
-        public void Fragment(byte[] fragment, bool key) => Piece(fragment, key);
+        public void Fragment(byte[] fragment, bool key)
+        {
+            lock (gate) if (local == null && starting && !ended) { if (queued.Count < 2000) queued.Add((fragment, key)); return; }
+            Piece(fragment, key);
+        }
         void Piece(byte[] bytes, bool key)
         {
             lock (gate)
@@ -164,7 +205,7 @@ public sealed class ObsLive
         {
             lock (gate)
             {
-                if (local == null) return;
+                if (local == null) { ended = true; return; }   // not live yet: it ends once it is (or never was)
                 var lend = local.Value.End; var rem = remote; var ch = chunks;
                 _ = (ch?.End() ?? Task.CompletedTask).ContinueWith(_ => { lend(); rem?.Close(); });   // the last chunk first, then leave
                 rec?.Dispose(); youtube?.End(); local = null;
