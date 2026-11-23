@@ -48,6 +48,17 @@ let fail = 0; const check = (ok, what) => { log(ok ? 'ok  ' : 'FAIL', what); if 
   await B.evaluate((id) => opentube.engine.submitTx({ buy: { id } }, opentube.me), lid);
   await C.goto(BASE + 'app/market/item/' + lid);
   check(await waitText(C, /Sold to/, 120000, () => C.goto(BASE + 'app/market/item/' + lid)), 'B buys it; the C# listing page shows it sold');
+  // a listing with its kind's own fields, a category and tags
+  await C.goto(BASE + 'app/market/new'); await C.waitForSelector('text=List it', { timeout: 30000 });
+  await C.selectOption('select >> nth=0', 'vehicle'); await C.waitForSelector('label:has-text("Make")', { timeout: 10000 });
+  await C.fill('input[maxlength="120"]', 'Old Volvo'); await C.fill('.fields div:has(label:text-is("Make")) input', 'Volvo'); await C.fill('.fields div:has(label:text-is("Year")) input', '1999');
+  await C.selectOption('.fields div:has(label:text-is("Fuel")) select', 'diesel');
+  await C.fill('input[inputmode="decimal"]', '3'); await C.fill('input[placeholder^="e.g. bike"]', 'classic, swedish'); await C.click('button:has-text("List it")');
+  const vid = await B.evaluate(async () => { for (let i = 0; i < 120; i++) { for (const [id, L] of opentube.engine.ledger.listings) if (L.title === 'Old Volvo') return id; await new Promise(r => setTimeout(r, 1000)); } return null; });
+  const vl = vid && await B.evaluate((id) => opentube.engine.ledger.listings.get(id), vid);
+  check(vl?.type === 'vehicle' && vl.details?.make === 'Volvo' && vl.details?.year === 1999 && vl.details?.fuel === 'diesel' && vl.tags?.includes('classic'), 'a vehicle listing with its fields and tags (the JavaScript side reads them): ' + JSON.stringify(vl && { type: vl.type, details: vl.details, tags: vl.tags }));
+  await C.goto(BASE + 'app/market/item/' + vid); check(await waitText(C, /Make\s*Volvo/, 60000, () => C.goto(BASE + 'app/market/item/' + vid)), 'the C# listing page shows the vehicle’s details');
+  await C.goto(BASE + 'app/market/mine'); check(await waitText(C, /Old Volvo/, 30000), 'Market → Mine lists it');
   // B lists an auction; the C# side bids
   await B.evaluate(() => opentube.engine.submitTx({ list: { kind: 'auction', type: 'goods', title: 'Lamp at auction', price: 100, ends: Date.now() + 86400000, fee: Math.max(1, Math.ceil(opentube.engine.ledger.prices.list)) } }, opentube.me));
   const aid = await B.evaluate(async () => { for (let i = 0; i < 120; i++) { for (const [id, L] of opentube.engine.ledger.listings) if (L.title === 'Lamp at auction') return id; await new Promise(r => setTimeout(r, 1000)); } return null; });
@@ -74,8 +85,8 @@ let fail = 0; const check = (ok, what) => { log(ok ? 'ok  ' : 'FAIL', what); if 
   await C.fill('input[placeholder="Name"]', 'Fair Court'); await C.click('button:has-text("Create")');
   await C.waitForURL(/\/app\/c\//, { timeout: 120000 }).catch(() => {}); const org = C.url().split('/c/')[1];
   check(await untilJ(B, (o) => opentube.engine.directory.get(o)?.genesis.payload.orgType === 'arbitration', org, 180000), 'Orgs: the C# side creates an arbitration body; the JavaScript side sees it registered');
-  await C.waitForSelector('button:has-text("Give role")', { timeout: 60000 }).catch(() => {});
-  await C.fill('input[placeholder="Their user ID"]', b); await C.selectOption('select:near(:text("Give role"))', 'judge'); await C.click('button:has-text("Give role")');
+  await C.goto(BASE + `app/c/${org}/people`); await C.waitForSelector('input[placeholder="User ID"]', { timeout: 60000 });
+  await C.fill('input[placeholder="User ID"]', b); await C.selectOption('select:has(option[value="judge"])', 'judge'); await C.click('button:has-text("Add")');
   check(await waitText(C, /arbitrator/, 60000), 'the owner gives B the arbitrator role');
   await B.goto(BASE + Q + '#/c/' + org); await B.waitForTimeout(1500);   // (opening its page loads the organization's chain)
   check(await untilJ(B, ({ o, k }) => { const c = opentube.engine.chains.get(o); return !!c && [...c.blocks.values()].some(x => x.payload.type === 'role' && x.payload.key === k && x.payload.role === 'judge' && x.payload.on); }, { o: org, k: b }, 60000), 'the JavaScript side sees the role on the organization’s chain');

@@ -33,3 +33,9 @@ window.otUi = {
     c.media.getTracks().forEach(t => t.stop());
   },
 };
+// The device's location ([lat, lon]), asked only when someone chooses "Use my location".
+window.otUi = window.otUi || {};
+window.otUi.locate = () => new Promise((res, rej) => {
+  if (!navigator.geolocation) return rej(new Error('this device can’t tell its location'));
+  navigator.geolocation.getCurrentPosition((p) => res([p.coords.latitude, p.coords.longitude]), (e) => rej(new Error(e.message || 'not allowed')), { timeout: 15000 });
+});

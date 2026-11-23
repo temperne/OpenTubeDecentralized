@@ -6,12 +6,24 @@
 else
 {
     var mine = S.IsMine(l.Seller); var escrow = l.L["escrow"] as System.Text.Json.Nodes.JsonObject;
+    var K = Market.KindOf(l.L);
     <div class="panel">
+        @if ((string?)l.L["image"] is { Length: > 0 } img) { <img class="listing-img" src="@img" alt="" /> }
         <h2>@l.Title</h2>
-        <div class="sub">@l.Type · @(l.Kind == "auction" ? "auction" : "fixed price") · listed by @S.NameOf(l.Seller) · @Ago(Js.Num(l.L["ts"]) ?? 0)</div>
+        <div class="sub">@K.Icon @K.Name · @(l.Kind == "auction" ? "auction" : "fixed price") · listed by <a class="person" href="u/@S.Engine.Read(e => e.Store.Ledger.Resolve(l.Seller))">@S.NameOf(l.Seller)</a> · @Ago(Js.Num(l.L["ts"]) ?? 0)</div>
+        <div class="row-actions">
+            @if ((string?)l.L["deal"] is { } deal) { <span class="badge">@(deal == "rent" ? "For rent · price per month" : "For sale")</span> }
+            @if ((Js.Num(l.L["qty"]) ?? 0) > 1) { <span class="badge">@l.L["qty"] left</span> }
+            @if ((string?)l.L["category"] is { } cat && cat != "adviews") { <span class="badge">@(Market.Categories.FirstOrDefault(c => c.Key == cat).Name ?? cat)</span> }
+            @if ((l.L["certs"] as System.Text.Json.Nodes.JsonArray)?.Count is > 0 and var nc) { <span class="badge">🎟 @nc ad view@(nc == 1 ? "" : "s") (they go to the buyer)</span> }
+        </div>
+        @{ var det = Market.Details(l.L); }
+        @if (det.Count > 0) { <div class="kv">@foreach (var (k, v) in det) { <div>@k</div><div>@v</div> }</div> }
+        @if (l.L["place"] is System.Text.Json.Nodes.JsonObject pl) { <div class="sub">📍 @((string?)pl["label"] is { Length: > 0 } plb ? plb : $"{pl["lat"]}, {pl["lon"]}") · <a href="@($"https://www.openstreetmap.org/?mlat={pl["lat"]}&mlon={pl["lon"]}#map=15/{pl["lat"]}/{pl["lon"]}")" target="_blank" rel="noopener">map</a></div> }
+        @if ((l.L["tags"] as System.Text.Json.Nodes.JsonArray) is { Count: > 0 } tg) { <div class="row-actions">@foreach (var t in tg) { <a class="tag" href="tag/@t">#@t</a> } </div> }
         <div class="big-price">@Trade.Coins(l.PriceNow) <span class="sub">coins@(l.Kind == "auction" ? (l.L["high"] != null ? $" · high bid · {Js.Num(l.L["bids"])} bid(s)" : " · starting bid") : "")</span></div>
         @if (l.Kind == "auction" && l.State == "open") { <div class="sub">Ends @DateTimeOffset.FromUnixTimeMilliseconds((long)(Js.Num(l.L["ends"]) ?? 0)).LocalDateTime</div> }
-        @if ((string?)l.L["about"] is { Length: > 0 } ab) { <p class="post-text">@ab</p> }
+        @if ((string?)l.L["about"] is { Length: > 0 } ab) { <Rich Text="@ab" /> }
         @if ((string?)l.L["contact"] is { Length: > 0 } ct) { <div class="sub">Contact: @ct</div> }
         @if ((string?)l.L["org"] is { } org) { <div class="sub">🛡 Payment held in escrow; disputes heard by <a href="c/@org">@(S.Genesis(org)?["payload"]?["name"])</a> (released after @(Js.Num(l.L["hold"]) ?? 14) days unless disputed).</div> }
         @if (escrow != null)
@@ -31,7 +43,7 @@ else
             @if (!l.Open) { <span class="sub">@(l.State == "sold" ? $"Sold to {S.NameOf((string?)l.L["buyer"] ?? "")}." : l.State == "withdrawn" ? "Withdrawn by the seller." : "Ended.")</span> }
             else if (mine) { if (l.L["high"] == null) { <button @onclick="() => Run(() => S.Trade.Unlist(Id))">Withdraw listing</button> } else { <span class="sub">You can’t withdraw it: it has a bid.</span> } }
             else if (l.Kind == "fixed" && (Js.Num(l.L["price"]) ?? 0) == 0) { <a class="button primary-link" href="messages/@l.Seller">✉ Contact</a> }
-            else if (l.Kind == "fixed") { <button class="primary" @onclick="() => Run(() => S.Trade.Buy(Id))">Buy for @Trade.Coins(Js.Num(l.L["price"]) ?? 0) coins</button> <a class="button" href="messages/@l.Seller">✉ Ask</a> }
+            else if (l.Kind == "fixed") { <button class="primary" @onclick="() => Run(() => S.Trade.Buy(Id))">@K.Act for @Trade.Coins(Js.Num(l.L["price"]) ?? 0) coins</button> <a class="button" href="messages/@l.Seller">✉ Ask</a> }
             else { <input @bind="bid" inputmode="decimal" placeholder="Your bid" style="max-width:140px" /><button class="primary" @onclick="() => Run(() => S.Trade.Bid(Id, Trade.Units(bid)))">Bid</button><span class="sub">at least @Trade.Coins(S.Trade.MinBid(l)) · held until the end, refunded if someone outbids you</span> }
         </div>
         @if (msg != null) { <div class="sub" id="item-status">@msg</div> }
