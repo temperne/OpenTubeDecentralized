@@ -50,7 +50,20 @@ sealed class MainWindow : Window
         var install = Btn("Run at startup", () => ShowText("Run at startup", Capture(() => ServiceInstaller.Install(args))));
         var howto = Btn("How to set it up by hand", () => ShowText("Run at startup", ServiceInstaller.Instructions(args)));
 
-        var top = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 8), Children = { website, install, howto } };
+        // public address: automatic (its own HTTPS when directly on the internet, else a Cloudflare tunnel), a tunnel always, off
+        var publicPick = new ComboBox { Margin = new Thickness(0, 0, 8, 0), ItemsSource = PublicChoices.Select(x => x.Label).ToList(), SelectedIndex = 0 };
+        bool picking = false;
+        publicPick.SelectionChanged += async (_, _) =>
+        {
+            if (picking || publicPick.SelectedIndex < 0) return;
+            var want = PublicChoices[publicPick.SelectedIndex].Setting;
+            if (want == server.PublicSetting) return;
+            publicPick.IsEnabled = false;
+            try { await Task.Run(() => server.SetPublic(want)); } catch (Exception e) { server.Node.Log("[internet] " + e.Message); }
+            publicPick.IsEnabled = true;
+        };
+        var publicLabel = new TextBlock { Text = "Public:", VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center, Margin = new Thickness(8, 0, 6, 0) };
+        var top = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 8), Children = { website, install, howto, publicLabel, publicPick } };
         var connectRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(0, 8, 0, 0) };
         connectRow.Children.Add(peerInput); Grid.SetColumn(connect, 1); connect.Margin = new Thickness(8, 0, 0, 0); connectRow.Children.Add(connect);
 
@@ -76,7 +89,10 @@ sealed class MainWindow : Window
                 status.Text = $"Network  {((string?)s["network"])?[..16]}…   OpenTube {s["version"]} on {s["impl"]}\n" +
                               $"Main     #{s["height"]} · {s["registered"]} registered · {s["chains"]} chains · {s["pending"]} pending\n" +
                               $"Peers    {s["peers"]} connected · tracker {s["trackerClients"]} · live {s["liveClients"]} · nodes known {s["nodes"]}\n" +
-                              $"Website  http://localhost:{server.Node.Options.Port}   {server.Node.PublicUrl ?? "(no public address)"}";
+                              $"Website  http://localhost:{server.Node.Options.Port}   {server.Node.PublicUrl ?? "(no public address)"}\n" +
+                              $"Internet {server.Describe()}";
+            var idx = Array.FindIndex(PublicChoices, x => x.Setting == server.PublicSetting);
+            if (idx >= 0 && publicPick.SelectedIndex != idx && publicPick.IsEnabled) { picking = true; publicPick.SelectedIndex = idx; picking = false; }
             peers.ItemsSource = server.Node.PeerList.Where(p => p.Role is "node-in" or "node-out").Select(p => $"{(p.Role == "node-out" ? "→" : "←")} {p.Label}").ToList();
             var text = string.Join('\n', server.Node.Logs);
             if (log.Text != text) { log.Text = text; log.CaretIndex = text.Length; }
@@ -85,6 +101,12 @@ sealed class MainWindow : Window
         Closed += (_, _) => server.DisposeAsync().AsTask().Wait(3000);
     }
 
+    public static readonly (string Setting, string Label)[] PublicChoices =
+    [
+        ("auto", "Automatic (its own HTTPS if it can, else a Cloudflare tunnel)"),
+        ("tunnel", "Always a Cloudflare tunnel (too)"),
+        ("off", "Off (only by IP and the peer mesh)"),
+    ];
     static string Capture(Func<int> f) { var o = Console.Out; var w = new StringWriter(); Console.SetOut(w); try { f(); } finally { Console.SetOut(o); } return w.ToString(); }
     void ShowText(string title, string text) =>
         new Window { Title = title, Width = 760, Height = 560, Content = new ScrollViewer { Content = new SelectableTextBlock { Text = text, Margin = new Thickness(16), FontFamily = new FontFamily("monospace") } } }.ShowDialog(this);

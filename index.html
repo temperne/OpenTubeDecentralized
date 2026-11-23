@@ -7818,6 +7818,17 @@ function nodeRow(n) {
       box.append(h('div', { class: 'row', style: 'gap:6px' }, btn, copy), pre); return box;
     }) : null,   // owner, or shared with you: your own cloud login
     // public (an entry node: browsers use it as a way in, tracker and live hub) or not, and switching it from here
+    i.reach ? h('div', { class: 'row', style: 'gap:8px;margin-top:4px;flex-wrap:wrap;align-items:center' },   // .NET nodes: how it's reachable, and why
+      i.public ? h('span', {}, '🌐 Public at ', h('a', { href: i.public, target: '_blank', rel: 'noopener' }, i.public), n.roles.includes('entry') ? h('span', { class: 'badge ok', style: 'margin-left:6px' }, 'entry node') : null,
+          h('span', { class: 'sub' }, i.reach.mode === 'direct' ? ' · its own HTTPS (directly on the internet)' : ' · through a Cloudflare tunnel' + (i.reach.why ? ` (${i.reach.why})` : '')))
+        : h('span', { class: 'sub' }, i.reach.mode === 'tunnel' ? '⏳ Starting a Cloudflare tunnel…' : '🔒 Not public: only reachable by IP and from the peer mesh',
+          i.reach.why ? ` (${i.reach.why})` : '', i.reach.tunnelError ? h('span', { style: 'color:var(--warn)' }, ` · tunnel: ${i.reach.tunnelError}`) : null),
+      owner && online ? h('label', { class: 'sub', title: 'Automatic: its own HTTPS when it’s directly on the internet, otherwise a Cloudflare tunnel (no open ports or account needed)' }, 'Public: ',
+        h('select', { onchange: async (e) => {
+          const sel = e.target; sel.disabled = true; test.textContent = 'Changing how this computer is reachable: it reports back within a minute…';
+          try { await nodeCtl(n, 'public.set', { mode: sel.value }); }
+          catch (err) { sel.disabled = false; test.textContent = '✗ ' + err.message; }
+        } }, [['auto', 'Automatic'], ['tunnel', 'Always a tunnel too'], ['off', 'Off']].map(([v, l]) => h('option', { value: v, selected: (i.reach.setting || 'auto') === v }, l)))) : null) :
     h('div', { class: 'row', style: 'gap:8px;margin-top:4px;flex-wrap:wrap' },
       i.public ? h('span', {}, '🌐 Public at ', h('a', { href: i.public, target: '_blank', rel: 'noopener' }, i.public), n.roles.includes('entry') ? h('span', { class: 'badge ok', style: 'margin-left:6px' }, 'entry node') : null)
         : h('span', { class: 'sub' }, '🔒 Not public: only reachable from the peer mesh', i.tunnel && i.tunnel !== 'on' ? h('span', { style: 'color:var(--warn)' }, ` · tunnel failed: ${i.tunnel}`) : null),

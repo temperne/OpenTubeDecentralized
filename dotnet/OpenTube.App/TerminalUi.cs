@@ -14,14 +14,24 @@ public static class TerminalUi
 
         Application.Init();
         var top = Application.Top;
-        var status = new Label("Starting…") { X = 1, Y = 0, Width = Dim.Fill(1), Height = 7 };
+        var status = new Label("Starting…") { X = 1, Y = 0, Width = Dim.Fill(1), Height = 8 };
         var peersList = new ListView(new List<string>()) { X = 1, Y = 0, Width = Dim.Fill(1), Height = Dim.Fill() };
         var logList = new ListView(new List<string>()) { X = 1, Y = 0, Width = Dim.Fill(1), Height = Dim.Fill() };
-        var statusFrame = new FrameView("Node") { X = 0, Y = 1, Width = Dim.Fill(), Height = 9 };
+        var statusFrame = new FrameView("Node") { X = 0, Y = 1, Width = Dim.Fill(), Height = 10 };
         var peersFrame = new FrameView("Connected") { X = 0, Y = Pos.Bottom(statusFrame), Width = Dim.Percent(35), Height = Dim.Fill(1) };
         var logFrame = new FrameView("Log") { X = Pos.Right(peersFrame), Y = Pos.Bottom(statusFrame), Width = Dim.Fill(), Height = Dim.Fill(1) };
         statusFrame.Add(status); peersFrame.Add(peersList); logFrame.Add(logList);
 
+        void PickPublic()
+        {
+            var choices = MainWindow.PublicChoices;
+            var cur = Array.FindIndex(choices, x => x.Setting == server.PublicSetting);
+            var pick = MessageBox.Query(Math.Min(100, Application.Driver.Cols - 4), 14, "Public address",
+                "How this computer can be reached from the internet:\n" + server.Describe() + "\n\n" +
+                string.Join("\n", choices.Select((c, i) => $"{(i == cur ? "●" : "○")} {c.Label}")), "_Automatic", "_Tunnel always", "_Off", "_Cancel");
+            if (pick is < 0 or > 2 || choices[pick].Setting == server.PublicSetting) return;
+            _ = Task.Run(() => server.SetPublic(choices[pick].Setting));
+        }
         void Message(string title, string text) => MessageBox.Query(Math.Min(100, Application.Driver.Cols - 4), Math.Min(30, Application.Driver.Rows - 4), title, text, "OK");
         void AddPeer()
         {
@@ -43,7 +53,8 @@ public static class TerminalUi
             new MenuBarItem("_Node", [
                 new MenuItem("_Connect to a node…", "", AddPeer),
                 new MenuItem("_Website address", "", () => Message("Open in a browser", $"This computer:  http://localhost:{server.Node.Options.Port}\n" +
-                    (server.Node.PublicUrl is { } u ? $"Anywhere:       {u}" : "No public address yet (install cloudflared for one)."))),
+                    (server.Node.PublicUrl is { } u ? $"Anywhere:       {u}" : "No public address yet.") + "\n\n" + server.Describe())),
+                new MenuItem("_Public address…", "", PickPublic),
                 null!,
                 new MenuItem("_Quit", "Ctrl+Q", () => Application.RequestStop()),
             ]),
@@ -67,6 +78,7 @@ public static class TerminalUi
                     $"Main      #{s["height"]}   {s["registered"]} registered   {s["chains"]} chains loaded   {s["pending"]} pending\n" +
                     $"Peers     {s["peers"]} connected   tracker {s["trackerClients"]}   live {s["liveClients"]}   nodes known {s["nodes"]}\n" +
                     $"Website   http://localhost:{server.Node.Options.Port}   {server.Node.PublicUrl ?? "(no public address)"}\n" +
+                    $"Internet  {server.Describe()}\n" +
                     $"Node key  {s["node"]}\n" +
                     $"Up        {TimeSpan.FromSeconds((long?)s["uptime"] ?? 0):d\\.hh\\:mm\\:ss}";
                 peersList.SetSource(server.Node.PeerList.Where(p => p.Role is "node-in" or "node-out").Select(p => $"{(p.Role == "node-out" ? "→" : "←")} {p.Label}").ToList());

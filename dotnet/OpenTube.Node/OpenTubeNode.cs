@@ -26,6 +26,9 @@ public sealed class OpenTubeNode : IAsyncDisposable
     public string? NetworkId { get; private set; }
     /// <summary>The public https address (a Cloudflare tunnel, or one given), once there is one.</summary>
     public string? PublicUrl { get; set; }
+    /// <summary>How this node is reachable (set by the web server): shown on the site and answering public.set.</summary>
+    public Func<JsonObject>? ReachInfo { get; set; }
+    public Func<string, Task>? SetPublic { get; set; }
     public DateTime Started { get; } = DateTime.UtcNow;
 
     readonly ConcurrentDictionary<string, Peer> peers = new();
@@ -192,36 +195,67 @@ public sealed class OpenTubeNode : IAsyncDisposable
     }
 
     /// <summary>
-    /// Ways into the network without naming a peer: the entry nodes in seeds.json and, with --site, the site's
-    /// /entries.json (asked again every 10 minutes). Like the JavaScript node, it keeps a few of them connected.
+    /// Ways into the network without naming a peer, asked every minute: the entry nodes the network itself announces
+    /// (signed node statuses with an https address, fresh in the last 10 minutes), the site's /entries.json (the Cloudflare
+    /// site this node came from: --site, remembered for later starts), and seeds.json. Keeps up to 4 linked; stops dialing
+    /// ones nobody lists any more. While none answers, the site's own node is the way in (dropped once an entry answers).
     /// </summary>
     async Task FindEntryNodes()
     {
-        var dialed = new HashSet<string>(Options.Peers);
+        var siteFile = Path.Combine(Options.DataDir, "site.txt");
+        if (Options.Site != null) { try { File.WriteAllText(siteFile, Options.Site); } catch { } }
+        else if (File.Exists(siteFile)) { Options.Site = File.ReadAllText(siteFile).Trim().TrimEnd('/'); Log($"site: {Options.Site} (remembered)"); }
+        if (Options.Site == null) Log("no --site given and none remembered: entry nodes come only from seeds.json and the network");
+        var dials = new Dictionary<string, CancellationTokenSource>();
+        List<string> fromSite = []; DateTime siteAsked = DateTime.MinValue; string? siteNode = null; CancellationTokenSource? siteDial = null;
+        bool Linked(string url) => peers.ContainsKey("node:" + url);
         while (!stop.IsCancellationRequested)
         {
             var found = new List<string>();
-            try
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            foreach (var n in Engine.Read(e => e.Nodes.Values.Select(x => (JsonObject)x.DeepClone()).ToList()))   // entry nodes the network announces
+                if ((string?)n["node"] != NodeKey && n["roles"] is JsonArray r && r.Any(x => (string?)x == "entry") && now - (Js.Num(n["at"]) ?? 0) < 10 * 60000)
+                    if ((n["addrs"] as JsonArray ?? []).Select(x => (string?)x).FirstOrDefault(x => x?.StartsWith("https://", StringComparison.Ordinal) == true) is { } u) found.Add(u);
+            bool anyLinked = dials.Keys.Any(Linked);
+            if (Options.Site != null && (DateTime.UtcNow - siteAsked > TimeSpan.FromMinutes(anyLinked ? 10 : 1)))
             {
-                var seeds = Path.Combine(SiteDir, "seeds.json");
-                if (File.Exists(seeds)) foreach (var e in JsonNode.Parse(File.ReadAllText(seeds))?["entry"]?.AsArray() ?? []) if (e is JsonValue v && v.TryGetValue<string>(out var u)) found.Add(u);
-            }
-            catch { }
-            if (Options.Site != null)
+                siteAsked = DateTime.UtcNow;
                 try
                 {
                     using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
                     var j = JsonNode.Parse(await http.GetStringAsync(Options.Site + "/entries.json"));
-                    foreach (var e in j?["entry"]?.AsArray() ?? []) if ((string?)e?["url"] is { } u) found.Add(u);
+                    fromSite = (j?["entry"]?.AsArray() ?? []).Select(e => (string?)e?["url"]).Where(u => u != null).Select(u => u!).ToList();
                 }
                 catch (Exception e) { Log($"couldn't ask {Options.Site} for entry nodes: {e.Message}"); }
-            var own = PublicUrl?.TrimEnd('/');
-            foreach (var u in found.Select(x => x.TrimEnd('/')).Where(x => x.StartsWith("https://", StringComparison.Ordinal) && x != own).Distinct().Take(4))
-            {
-                var url = NodeOptions.NormalizePeer(u);
-                if (dialed.Add(url)) { Log($"connecting to entry node {u}"); _ = DialAsync(url); }
             }
-            await Task.Delay(TimeSpan.FromMinutes(10), stop.Token).ContinueWith(_ => { });
+            found.AddRange(fromSite);
+            try
+            {
+                var seeds = Path.Combine(SiteDir, "seeds.json");
+                if (File.Exists(seeds)) foreach (var e in JsonNode.Parse(File.ReadAllText(seeds))?["entry"]?.AsArray() ?? []) if ((e is JsonValue v && v.TryGetValue<string>(out var u) ? u : (string?)e?["url"]) is { } su) found.Add(su);
+            }
+            catch { }
+            var own = PublicUrl?.TrimEnd('/');
+            var want = found.Select(x => x.TrimEnd('/')).Where(x => x.StartsWith("https://", StringComparison.Ordinal) && x != own).Distinct().Select(NodeOptions.NormalizePeer).ToList();
+            foreach (var (url, cts) in dials.ToList())   // nobody lists it any more and it isn't answering: let it go
+                if (!want.Contains(url) && !Linked(url)) { cts.Cancel(); dials.Remove(url); Log($"let go of {url} (no longer listed)"); }
+            var linkedCount = dials.Keys.Count(Linked);
+            foreach (var url in want)
+            {
+                if (dials.ContainsKey(url) || Options.Peers.Contains(url)) continue;
+                if (dials.Count >= 4 + dials.Keys.Count(k => !Linked(k)) && linkedCount >= 4) break;
+                var cts = CancellationTokenSource.CreateLinkedTokenSource(stop.Token); dials[url] = cts;
+                Log($"connecting to entry node {url.Replace("wss://", "https://").Replace("/ot", "")}"); _ = DialAsync(url, cts.Token);
+            }
+            // the site's own node: only while no entry node answers
+            anyLinked = dials.Keys.Any(Linked);
+            siteNode ??= Options.Site != null ? NodeOptions.NormalizePeer(Options.Site) : null;
+            if (siteNode != null)
+            {
+                if (!anyLinked && siteDial == null) { siteDial = CancellationTokenSource.CreateLinkedTokenSource(stop.Token); Log($"no entry node answers yet: connecting to the site's node {siteNode}"); _ = DialAsync(siteNode, siteDial.Token); }
+                else if (anyLinked && siteDial != null && !Options.Peers.Contains(siteNode)) { siteDial.Cancel(); siteDial = null; Log($"let go of {siteNode} (an entry node answers)"); }
+            }
+            await Task.Delay(TimeSpan.FromSeconds(anyLinked ? 60 : 15), stop.Token).ContinueWith(_ => { });
         }
     }
 
@@ -246,20 +280,22 @@ public sealed class OpenTubeNode : IAsyncDisposable
         await RunSocket(ws, id, role, label);
     }
 
-    async Task DialAsync(string url)
+    async Task DialAsync(string url, CancellationToken? until = null)
     {
-        var tries = 0;
-        while (!stop.IsCancellationRequested)
+        var ct = until ?? stop.Token; var tries = 0;
+        while (!ct.IsCancellationRequested)
         {
             using var ws = new ClientWebSocket();
             try
             {
-                await ws.ConnectAsync(new Uri(url), stop.Token);
+                await ws.ConnectAsync(new Uri(url), ct);
                 tries = 0; Log($"linked to {url}");
+                using var reg = ct.Register(() => { try { ws.Abort(); } catch { } });
                 await RunSocket(ws, "node:" + url, "node-out", url);
             }
-            catch (Exception e) when (!stop.IsCancellationRequested) { if (tries == 0) Log($"can't reach {url}: {e.Message}"); }
-            await Task.Delay(TimeSpan.FromSeconds(Math.Min(600, 10 * Math.Pow(2, tries++))), stop.Token).ContinueWith(_ => { });
+            catch (Exception e) when (!ct.IsCancellationRequested) { if (tries == 0) Log($"can't reach {url}: {e.Message}"); }
+            catch when (ct.IsCancellationRequested) { return; }
+            await Task.Delay(TimeSpan.FromSeconds(Math.Min(600, 10 * Math.Pow(2, tries++))), ct).ContinueWith(_ => { });
         }
     }
 
@@ -367,6 +403,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
                 ["name"] = (Options.Label ?? Environment.MachineName)[..Math.Min(60, (Options.Label ?? Environment.MachineName).Length)],
                 ["os"] = $"{System.Runtime.InteropServices.RuntimeInformation.OSDescription} {System.Runtime.InteropServices.RuntimeInformation.OSArchitecture}",
                 ["node"] = $".NET {Environment.Version}", ["peers"] = peers.Values.Count(p => p.Role is "node-in" or "node-out"), ["public"] = PublicUrl,
+                ["reach"] = ReachInfo?.Invoke(), ["tunnel"] = ReachInfo?.Invoke() is { } ri ? ((string?)ri["tunnelUrl"] != null ? "on" : (string?)ri["tunnelError"]) : null,
                 // who this computer is shared with: their permissions as letters (o: OBS, h: hosting, m: managing; g: a guest)
                 ["users"] = new JsonObject(((Obs?.Store["users"] as JsonObject) ?? []).Where(kv => !(Js.Num(kv.Value?["until"]) < DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())).Take(20)
                     .Select(kv => new KeyValuePair<string, JsonNode?>(kv.Key, string.Concat((kv.Value?["can"] as JsonArray ?? []).Select(x => ((string?)x ?? " ")[0])) + (kv.Value?["guestOf"] != null ? "g" : "")))),
@@ -374,9 +411,13 @@ public sealed class OpenTubeNode : IAsyncDisposable
             };
             try { Engine.PublishNodeInfo(new JsonObject { ["grant"] = JsonNode.Parse(grantJson), ["roles"] = JsonSerializer.SerializeToNode(roles.Take(8).ToList()), ["addrs"] = JsonSerializer.SerializeToNode(addrs.Take(8).ToList()), ["info"] = info }); }
             catch (Exception e) { Log("announce failed: " + e.Message); }
-            await Task.Delay(30000, stop.Token).ContinueWith(_ => { });
+            var wake = new TaskCompletionSource(); announceWake = wake;
+            await Task.WhenAny(Task.Delay(30000, stop.Token), wake.Task).ContinueWith(_ => { });
         }
     }
+    TaskCompletionSource? announceWake;
+    /// <summary>Tell the owner's Devices page now (after a change), not at the next half-minute.</summary>
+    public void AnnounceSoon() => _ = Task.Delay(1500).ContinueWith(_ => announceWake?.TrySetResult());
 
     public async ValueTask DisposeAsync()
     {

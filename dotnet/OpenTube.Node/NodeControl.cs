@@ -59,6 +59,15 @@ public sealed class NodeControl(OpenTubeNode node)
                     if (!owner) return Fail("only the owner can read this computer’s log");
                     var n = (int)Math.Min(400, Js.Num(a["n"]) is double d && d > 0 ? d : 200);
                     return Reply(c, true, new JsonObject { ["lines"] = new JsonArray(node.Logs.TakeLast(n).Select(l => (JsonNode?)l).ToArray()) });
+                case "public.set":
+                {   // auto: its own HTTPS when directly on the internet, else a tunnel; tunnel: a tunnel always (too); off
+                    if (!owner) return Fail("only the owner can change this");
+                    var mode = Js.Str(a["mode"]); if (mode is not ("auto" or "tunnel" or "off")) return Fail("bad mode");
+                    if (node.SetPublic == null) return Fail("not available");
+                    node.Log($"[control] public: {mode}, from the owner's console");
+                    _ = Task.Run(async () => { await Task.Delay(500); try { await node.SetPublic(mode); } catch (Exception e) { node.Log("[internet] " + e.Message); } });
+                    return Reply(c, true, new JsonObject { ["applying"] = mode });
+                }
                 case "status":
                     data = node.Status.DeepClone(); break;
                 case "users": case "users.set":
@@ -122,7 +131,7 @@ public sealed class NodeControl(OpenTubeNode node)
                     if (cmd.StartsWith("group", StringComparison.Ordinal)) return Fail("group streams aren’t in the .NET version of OpenTube yet: run the Node.js program on this computer for them");
                     if (cmd.StartsWith("flash", StringComparison.Ordinal)) return Fail("flash computers aren’t in the .NET version of OpenTube yet");
                     if (cmd is "store" or "store.status" or "relay") return Fail("video hosting isn’t in the .NET version of OpenTube yet");
-                    if (cmd is "update" or "public.set") return Fail("restart it yourself: run the same command again (it downloads the current version)");
+                    if (cmd == "update") return Fail("restart it yourself: run the same command again (it downloads the current version)");
                     return Fail("this computer doesn’t know that command (it runs the .NET version of OpenTube)");
             }
             node.Log($"[control] {cmd} from {who}’s console");
