@@ -76,6 +76,23 @@ public static class Svc
     /// <summary>(tests and screenshots) what to open first: OPENTUBE_START, or ?start= in the browser.</summary>
     public static string? StartOption => Environment.GetEnvironmentVariable("OPENTUBE_START") ?? Query("start");
     public static string? QueryOption(string name) => Query(name);
+    /// <summary>In a browser: the page the address names (/app/c/…, /app/u/…, an old #/… link), opened at start.</summary>
+    public static string? AddressRoute()
+    {
+#if __WASM__
+        try
+        {
+            var loc = System.Runtime.InteropServices.JavaScript.JSHost.GlobalThis.GetPropertyAsJSObject("location");
+            var path = Uri.UnescapeDataString(loc?.GetPropertyAsString("pathname") ?? ""); var hash = loc?.GetPropertyAsString("hash") ?? "";
+            var i = path.IndexOf("/app/", StringComparison.Ordinal);
+            var r = i >= 0 ? path[(i + 5)..].Trim('/') : "";
+            if (r.Length == 0 && hash.StartsWith("#/")) r = hash[2..].Trim('/');
+            return r.Length > 0 && !r.Contains('.') || r.StartsWith('@') || r.StartsWith('~') || r.StartsWith("n/") ? r : null;   // (not a file)
+        }
+        catch { }
+#endif
+        return null;
+    }
     static string? Query(string name)
     {
 #if __WASM__

@@ -13,6 +13,7 @@ public static class Router
         var h = href.StartsWith("#/") ? href[2..] : href.TrimStart('/');
         var p = h.Split('/', StringSplitOptions.RemoveEmptyEntries);
         if (p.Length == 0) return;
+        Console.WriteLine("[route] " + h);
         switch (p[0])
         {
             case "v" when p.Length >= 3: App.Open(typeof(WatchPage), new WatchArgs(p[1], p[2])); break;
@@ -33,6 +34,9 @@ public static class Router
             case "market": App.Open(typeof(MarketPage), p.Length >= 2 ? p[1] : null); break;
             case "exchange": App.Open(typeof(ExchangePage), p.Length >= 2 ? p[1] : null); break;
             case "orgs": App.Open(typeof(OrgsPage)); break;
+            case "tag" when p.Length >= 2: App.Open(typeof(TagPage), p[1]); break;
+            case "n" when p.Length >= 2: App.Open(typeof(NamePage), p[1]); break;
+            case var x when x.StartsWith('@') || x.StartsWith('~'): App.Open(typeof(NamePage), x); break;
             case "domains": App.Open(typeof(DomainsPage), p.Length >= 2 ? p[1] : null); break;
             case "map": case "places": App.Open(typeof(PlacesPage)); break;
             default: App.Open(typeof(ComingPage), p[0]); break;

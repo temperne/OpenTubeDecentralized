@@ -3,9 +3,10 @@ using System.Diagnostics;
 namespace OpenTube.Node;
 
 /// <summary>
-/// The C# website (Blazor WebAssembly, OpenTube.Web) a node serves at /app/. It's found ready-made (--app-dir, the site's
-/// app/ folder), or, when the node runs from the OpenTuber command (its source is here), built once per version in the
-/// background: "dotnet publish" into app-web/ next to the source, marked with the commit it was built from.
+/// The C# website a node serves at /app/: the Uno app for the browser (OpenTube.Uno; before it, the Blazor OpenTube.Web).
+/// It's found ready-made (--app-dir, the site's app/ folder), or, when the node runs from the OpenTuber command (its
+/// source is here), built once per version in the background: "dotnet publish" into app-web/ next to the source, marked
+/// with the commit it was built from.
 /// </summary>
 public sealed class WebApp(OpenTubeNode node)
 {
@@ -19,8 +20,8 @@ public sealed class WebApp(OpenTubeNode node)
         get
         {
             foreach (var d in new[] { node.Options.AppDir, Path.Combine(node.SiteDir, "app"), built })
-                if (d != null) foreach (var c in new[] { Path.Combine(d, "wwwroot", "app"), Path.Combine(d, "app"), d })
-                    if (File.Exists(Path.Combine(c, "index.html")) && File.Exists(Path.Combine(c, "opentube.js"))) return Path.GetFullPath(c) + Path.DirectorySeparatorChar;
+                if (d != null) foreach (var c in new[] { Path.Combine(d, "wwwroot", "app"), Path.Combine(d, "wwwroot"), Path.Combine(d, "app"), d })
+                    if (File.Exists(Path.Combine(c, "index.html")) && (File.Exists(Path.Combine(c, "uno-config.js")) || File.Exists(Path.Combine(c, "opentube.js")))) return Path.GetFullPath(c) + Path.DirectorySeparatorChar;
             return null;
         }
     }
@@ -31,13 +32,15 @@ public sealed class WebApp(OpenTubeNode node)
         var commit = File.Exists(Path.Combine(src, ".commit")) ? File.ReadAllText(Path.Combine(src, ".commit")).Trim() : "";
         var mark = Path.Combine(built, ".commit");
         if (File.Exists(mark) && File.ReadAllText(mark).Trim() == commit && commit != "") return;
-        var proj = Path.Combine(src, "dotnet", "OpenTube.Web");
-        if (!Directory.Exists(proj)) return;
+        var uno = Path.Combine(src, "dotnet", "OpenTube.Uno", "OpenTube.Uno", "OpenTube.Uno.csproj");
+        var proj = File.Exists(uno) ? uno : Path.Combine(src, "dotnet", "OpenTube.Web");
+        if (!File.Exists(uno) && !Directory.Exists(proj)) return;
         Building = true;
         try
         {
             node.Log("[web] building the C# website (WebAssembly) for /app/ …");
             var psi = new ProcessStartInfo("dotnet") { ArgumentList = { "publish", proj, "-c", "Release", "-o", built, "--nologo" }, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+            if (proj == uno) foreach (var a in new[] { "-f", "net10.0-browserwasm", "-p:WasmShellWebAppBasePath=/app/" }) psi.ArgumentList.Add(a);
             using var p = Process.Start(psi)!; var output = await p.StandardOutput.ReadToEndAsync(); await p.WaitForExitAsync();
             if (p.ExitCode != 0) { node.Log("[web] the C# website didn’t build: " + output.Split('\n').LastOrDefault(l => l.Contains("error"))?.Trim()); return; }
             File.WriteAllText(mark, commit);

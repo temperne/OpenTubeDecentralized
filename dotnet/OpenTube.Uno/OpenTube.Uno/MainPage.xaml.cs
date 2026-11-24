@@ -15,7 +15,7 @@ public sealed partial class MainPage : Page
         tick.Tick += (_, _) => { UpdateStatus(); TestStart(); }; tick.Start(); UpdateStatus();
     }
     // (tests and screenshots: OPENTUBE_START=first-video opens the top trending video once the network has it)
-    string? testStart = Svc.StartOption;
+    string? testStart = Svc.StartOption ?? (Svc.AddressRoute() is { } r ? "go:" + r : null);
     void TestStart()
     {
         if (testStart is { } ts && ts.StartsWith("you") && Svc.S is { Ready: true }) { testStart = null; App.Open(typeof(YouPage), ts.Contains(':') ? ts[(ts.IndexOf(':') + 1)..] : "profile"); return; }
