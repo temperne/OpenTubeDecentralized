@@ -1,0 +1,10 @@
+<Page x:Class="OpenTube.Uno.Pages.ComingPage"
+      xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      Background="{ThemeResource BackgroundBrush}">
+  <StackPanel Padding="24" Spacing="12" VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="480">
+    <TextBlock x:Name="Title" FontSize="22" FontWeight="Bold" HorizontalAlignment="Center" />
+    <TextBlock TextWrapping="Wrap" TextAlignment="Center" Foreground="{ThemeResource OnSurfaceVariantBrush}"
+               Text="This screen is next in the conversion to the shared C# app. Until then it’s on the website." />
+  </StackPanel>
+</Page>

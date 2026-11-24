@@ -1,0 +1,32 @@
+<Page x:Class="OpenTube.Uno.Pages.HomePage"
+      xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:c="using:OpenTube.Uno.Controls"
+      Background="{ThemeResource BackgroundBrush}">
+  <RefreshContainer x:Name="Refresh" RefreshRequested="OnRefresh">
+    <ScrollViewer>
+      <StackPanel Padding="16" Spacing="16" MaxWidth="1400">
+        <StackPanel x:Name="LiveSection" Spacing="10" Visibility="Collapsed">
+          <TextBlock Text="Live now" FontSize="20" FontWeight="Bold" />
+          <c:VideoGrid x:Name="LiveGrid" />
+        </StackPanel>
+        <Grid>
+          <TextBlock x:Name="Heading" Text="Home" FontSize="24" FontWeight="Bold" VerticalAlignment="Center" />
+          <StackPanel x:Name="SortBar" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+            <ToggleButton x:Name="HotButton" Content="Hot" IsChecked="True" Click="OnHot" />
+            <ToggleButton x:Name="NewButton" Content="Newest" Click="OnNew" />
+          </StackPanel>
+        </Grid>
+        <Border x:Name="Intro" Visibility="Collapsed" Background="{ThemeResource SurfaceBrush}" CornerRadius="12" Padding="16">
+          <StackPanel Spacing="10">
+            <TextBlock TextWrapping="Wrap" Text="You don’t follow anything yet. Here’s what’s trending: subscribe to channels you like and their videos show up here." />
+            <Button Content="Explore channels" Click="OnExplore" HorizontalAlignment="Left" />
+          </StackPanel>
+        </Border>
+        <TextBlock x:Name="Empty" Visibility="Collapsed" TextWrapping="Wrap" Foreground="{ThemeResource OnSurfaceVariantBrush}" />
+        <ProgressRing x:Name="Loading" IsActive="True" HorizontalAlignment="Center" Margin="0,40" />
+        <c:VideoGrid x:Name="Grid" />
+      </StackPanel>
+    </ScrollViewer>
+  </RefreshContainer>
+</Page>

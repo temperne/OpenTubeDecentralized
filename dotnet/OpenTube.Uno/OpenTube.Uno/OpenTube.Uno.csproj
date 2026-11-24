@@ -1,0 +1,49 @@
+<Project Sdk="Uno.Sdk">
+  <PropertyGroup>
+    <TargetFrameworks>net10.0-android;net10.0-browserwasm;net10.0-desktop</TargetFrameworks>
+
+    <OutputType>Exe</OutputType>
+    <UnoSingleProject>true</UnoSingleProject>
+
+    <!-- Display name -->
+    <ApplicationTitle>OpenTube</ApplicationTitle>
+    <!-- App Identifier -->
+    <ApplicationId>org.opentube.app</ApplicationId>
+    <!-- Versions -->
+    <ApplicationDisplayVersion>1.0</ApplicationDisplayVersion>
+    <ApplicationVersion>1</ApplicationVersion>
+    <!-- Package Publisher -->
+    <ApplicationPublisher>OpenTube</ApplicationPublisher>
+    <!-- Package Description -->
+    <Description>OpenTube: decentralized video, one C# UI for Android, the web and desktop.</Description>
+
+    <!--
+      UnoFeatures are used to quickly add and manage features enabled for your app.
+      https://aka.platform.uno/singleproject-features
+    -->
+    <UnoFeatures>
+      Material;
+      MediaPlayerElement;
+      Toolkit;
+      Mvvm;
+      Skia;
+    </UnoFeatures>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net10.0-browserwasm'">
+    <!-- the app's files (chains, keys) persist in the browser (IndexedDB) -->
+    <WasmShellEnableIDBFS>true</WasmShellEnableIDBFS>
+    <!-- the client's JSON (blocks, keys) uses System.Text.Json's reflection mode, as the Blazor site does -->
+    <JsonSerializerIsReflectionEnabledByDefault>true</JsonSerializerIsReflectionEnabledByDefault>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- keep OpenTube's own code whole when trimming (its JSON records need their constructors' parameter names) -->
+    <TrimmerRootAssembly Include="OpenTube.Core" />
+    <TrimmerRootAssembly Include="OpenTube.Client" />
+    <ProjectReference Include="..\..\OpenTube.Client\OpenTube.Client.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(TargetFramework)' != 'net10.0-browserwasm'">
+    <!-- native BitTorrent (TCP, the DHT, WebRTC) and the local video server -->
+    <ProjectReference Include="..\..\OpenTube.Net\OpenTube.Net.csproj" />
+  </ItemGroup>
+</Project>

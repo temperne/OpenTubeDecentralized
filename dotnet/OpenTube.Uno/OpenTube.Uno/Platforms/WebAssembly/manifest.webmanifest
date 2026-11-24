@@ -1,0 +1,10 @@
+{
+  "background_color": "#ffffff",
+  "description": "OpenTube.Uno",
+  "display": "standalone",
+  "name": "OpenTube.Uno",
+  "short_name": "OpenTube.Uno",
+  "start_url": "/index.html",
+  "theme_color": "#ffffff",
+  "scope": "/"
+}
