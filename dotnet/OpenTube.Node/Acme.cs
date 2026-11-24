@@ -59,8 +59,10 @@ public sealed class Acme(string dataDir, Action<string> log, string? directory =
     public static bool NeedsRenewal(X509Certificate2? c) => c == null || c.NotAfter.ToUniversalTime() < DateTime.UtcNow.AddDays(30);
 
     /// <summary>Get a new certificate for <paramref name="host"/>; throws with Let's Encrypt's reason if it can't.</summary>
-    public async Task<X509Certificate2> Issue(string host, string? email = null)
+    public async Task<X509Certificate2> Issue(string host, string? email = null, string[]? names = null)
     {
+        // names: one certificate for several names (wildcards too), checked through this node's own DNS (dns-01)
+        var all = names is { Length: > 0 } ? names : [host]; var viaDns = names is { Length: > 0 };
         Directory.CreateDirectory(dir);
         var accountFile = Path.Combine(dir, "account-ec.pem");
         key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
@@ -73,15 +75,18 @@ public sealed class Acme(string dataDir, Action<string> log, string? directory =
         var (_, accRes) = await Post((string)dirs["newAccount"]!, acct, useJwk: true);
         kid = accRes.Headers.Location?.ToString() ?? throw new Exception("no account");
 
-        var (order, orderRes) = await Post((string)dirs["newOrder"]!, new JsonObject { ["identifiers"] = new JsonArray(new JsonObject { ["type"] = "dns", ["value"] = host }) });
+        var (order, orderRes) = await Post((string)dirs["newOrder"]!, new JsonObject { ["identifiers"] = new JsonArray(all.Select(n => (JsonNode?)new JsonObject { ["type"] = "dns", ["value"] = n }).ToArray()) });
         var orderUrl = orderRes.Headers.Location!.ToString();
         foreach (var az in order!["authorizations"]!.AsArray())
         {
             var (authz, _) = await Post((string)az!, null);
             if ((string?)authz!["status"] == "valid") continue;
-            var ch = authz["challenges"]!.AsArray().FirstOrDefault(c => (string?)c!["type"] == "http-01") ?? throw new Exception("no http-01 check offered");
+            var kind = viaDns ? "dns-01" : "http-01";
+            var ch = authz["challenges"]!.AsArray().FirstOrDefault(c => (string?)c!["type"] == kind) ?? throw new Exception($"no {kind} check offered");
             var token = (string)ch!["token"]!;
-            Tokens[token] = token + "." + Thumbprint();
+            var txtName = "_acme-challenge." + (string?)authz["identifier"]?["value"];
+            if (viaDns) DnsServer.Txt.GetOrAdd(txtName, _ => []).Add(B64u.Encode(SHA256.HashData(Encoding.UTF8.GetBytes(token + "." + Thumbprint()))));
+            else Tokens[token] = token + "." + Thumbprint();
             try
             {
                 await Post((string)ch["url"]!, new JsonObject());
@@ -91,14 +96,14 @@ public sealed class Acme(string dataDir, Action<string> log, string? directory =
                     var (a, _) = await Post((string)az!, null);
                     var st = (string?)a!["status"];
                     if (st == "valid") break;
-                    if (st == "invalid" || i > 40) throw new Exception("Let's Encrypt couldn't reach this computer: " + (a["challenges"]?.AsArray().Select(c => (string?)c?["error"]?["detail"]).FirstOrDefault(d => d != null) ?? st));
+                    if (st == "invalid" || i > 40) throw new Exception((viaDns ? "Let's Encrypt couldn't check this domain's DNS (are its name servers this computer?): " : "Let's Encrypt couldn't reach this computer: ") + (a["challenges"]?.AsArray().Select(c => (string?)c?["error"]?["detail"]).FirstOrDefault(d => d != null) ?? st));
                 }
             }
-            finally { Tokens.TryRemove(token, out _); }
+            finally { Tokens.TryRemove(token, out _); if (viaDns) DnsServer.Txt.TryRemove(txtName, out _); }
         }
         using var certKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         var req = new CertificateRequest("CN=" + host, certKey, HashAlgorithmName.SHA256);
-        var san = new SubjectAlternativeNameBuilder(); san.AddDnsName(host); req.CertificateExtensions.Add(san.Build());
+        var san = new SubjectAlternativeNameBuilder(); foreach (var n in all) san.AddDnsName(n); req.CertificateExtensions.Add(san.Build());
         var (fin, _) = await Post((string)order["finalize"]!, new JsonObject { ["csr"] = B64u.Encode(req.CreateSigningRequest()) });
         for (int i = 0; (string?)fin!["status"] != "valid"; i++)
         {

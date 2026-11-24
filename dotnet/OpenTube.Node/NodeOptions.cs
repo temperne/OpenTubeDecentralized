@@ -35,6 +35,14 @@ public sealed class NodeOptions
     public string? TunnelToken { get; set; }
     public string? FixedPublicUrl { get; set; }
     public string? Email { get; set; }
+    /// <summary>--dns=DOMAIN: answer DNS for a domain whose name servers point here (its subdomains from its zone on
+    /// the network); with it, this computer serves the site as DOMAIN with a certificate for every wildcard namespace.</summary>
+    public string? Dns { get; set; }
+    /// <summary>--dns-zone=CHAIN: the zone chain to use for it (default: the oldest registered zone with that name).</summary>
+    public string? DnsZone { get; set; }
+    public int DnsPort { get; set; } = 53;
+    /// <summary>--dns-ip=IP[,IP6]: this computer's public addresses for the answers (default: its public IPv4).</summary>
+    public string? DnsIp { get; set; }
     public int HttpPort { get; set; } = 80;
     public int HttpsPort { get; set; } = 443;
     public string? AcmeDirectory { get; set; }
@@ -107,6 +115,10 @@ public sealed class NodeOptions
         if (int.TryParse(Get("http-port", "PUBLIC_HTTP_PORT"), out var hp)) o.HttpPort = hp;
         if (int.TryParse(Get("https-port", "PUBLIC_HTTPS_PORT"), out var hsp)) o.HttpsPort = hsp;
         o.AcmeDirectory = Get("acme-directory", "ACME_DIRECTORY");
+        o.Dns = Get("dns", "DNS_DOMAIN")?.Trim().TrimEnd('.').ToLowerInvariant() is { Length: > 0 } dd ? dd : null;
+        o.DnsZone = Get("dns-zone", "DNS_ZONE"); o.DnsIp = Get("dns-ip", "DNS_IP");
+        if (int.TryParse(Get("dns-port", "DNS_PORT"), out var dp)) o.DnsPort = dp;
+        if (o.Dns != null && o.Public == "auto") o.Public = o.Dns;   // serve the site as the domain itself
         return o;
     }
     /// <summary>"1.2.3.4", "1.2.3.4:8080", "https://x.example" or "ws://x/ot" — all become a WebSocket peer address.</summary>

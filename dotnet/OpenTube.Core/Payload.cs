@@ -46,6 +46,14 @@ public static partial class Payload
                 default: return false;
             }
         }
+        // a zone (a domain's subdomains): the owner writes records; anyone may claim a name for the owner to approve
+        if (kind == "zone" && type is "record" or "claim")
+        {
+            bool shape(bool asOwner) => Rules.ZoneLabel(Str(Get(p, "label")), asOwner) && Rules.ZoneTarget(Str(OrEmpty(p, "target"))) && Rules.ZonePage(Str(OrEmpty(p, "page"))) && IsStr(OrEmpty(p, "note"), Limits.Comment);
+            if (type == "record") return owner && shape(true) && (Undef(p, "on") || IsBool(Get(p, "on"))) && (Undef(p, "claim") || IsHex(Get(p, "claim"), 64));
+            return !owner && work >= commentDifficulty && shape(false);
+        }
+        if (kind == "zone" && !owner) return false;
         // child chains: an org's owner adds sub-jurisdictions and cases; its clerks open cases
         if (type == "child")
         {

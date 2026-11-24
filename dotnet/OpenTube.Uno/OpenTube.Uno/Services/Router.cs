@@ -33,6 +33,7 @@ public static class Router
             case "market": App.Open(typeof(MarketPage), p.Length >= 2 ? p[1] : null); break;
             case "exchange": App.Open(typeof(ExchangePage), p.Length >= 2 ? p[1] : null); break;
             case "orgs": App.Open(typeof(OrgsPage)); break;
+            case "domains": App.Open(typeof(DomainsPage), p.Length >= 2 ? p[1] : null); break;
             case "map": case "places": App.Open(typeof(PlacesPage)); break;
             default: App.Open(typeof(ComingPage), p[0]); break;
         }

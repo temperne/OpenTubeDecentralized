@@ -42,7 +42,7 @@ public sealed partial class YouPage : Page
         starterBtn = Btn("Get starter coins", () => _ = headerStatus.Do("Earning starter coins (a little proof of work)…", () => S.Engine.SubmitTx(new JsonObject { ["starter"] = true }, S.Me), "Starter coins on the way: they count once the next main-chain block includes them."), primary: true, id: "you-starter");
         col.Children.Add(Card(nameText, Row(Sub("Your user ID"), Btn("Copy", () => Copy(S.Me.pub), id: "you-copy-id")), idText, Row(coinsText, starterBtn), headerStatus));
         var (bar, _) = Segments([("profile", "Profile"), ("channels", "Channels"), ("wallet", "Wallet"), ("keys", "Keys & backup"), ("settings", "Settings")], section, s => { section = s; Show(); });
-        col.Children.Add(Row(Btn("Friends", () => App.Open(typeof(FriendsPage)), id: "you-friends"), Btn("Notifications", () => App.Open(typeof(NotificationsPage))), Btn("Messages", () => App.Open(typeof(MessagesPage))), Btn("Devices", () => App.Open(typeof(DevicesPage)), id: "you-devices"), Btn("Network", () => App.Open(typeof(NetworkPage))), Btn("My profile", () => ProfilePage.Open(Svc.S.Me.pub))));
+        col.Children.Add(Row(Btn("Friends", () => App.Open(typeof(FriendsPage)), id: "you-friends"), Btn("Notifications", () => App.Open(typeof(NotificationsPage))), Btn("Messages", () => App.Open(typeof(MessagesPage))), Btn("Devices", () => App.Open(typeof(DevicesPage)), id: "you-devices"), Btn("Network", () => App.Open(typeof(NetworkPage))), Btn("My profile", () => ProfilePage.Open(Svc.S.Me.pub)), Btn("Domains", () => App.Open(typeof(DomainsPage)))));
         col.Children.Add(bar); col.Children.Add(body);
         RefreshHeader(); Show();
     }

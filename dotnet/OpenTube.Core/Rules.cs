@@ -12,7 +12,7 @@ namespace OpenTube.Core;
 /// </summary>
 public static partial class Rules
 {
-    public static readonly string[] GenesisKinds = ["channel", "list", "group", "circle", "square", "mail", "org", "case"];
+    public static readonly string[] GenesisKinds = ["channel", "list", "group", "circle", "square", "mail", "org", "case", "zone"];
     public static readonly string[] OrgTypes = ["corporation", "llc", "partnership", "sole", "nonprofit", "cooperative", "government", "club", "arbitration", "other"];
     /// <summary>SQUARE.key: the monthly public-feed and mail chains have this fixed author.</summary>
     public static readonly string SquareKey = new('A', 43);
@@ -66,6 +66,7 @@ public static partial class Rules
         if (kind == "group" && (!IsImg(Get(p, "avatar")) || Str(Get(p, "join")) is not ("open" or "approved"))) return false;
         if (kind == "org" && (!IsImg(Get(p, "avatar")) || !(Get(p, "jurisdiction") is null || IsStr(Get(p, "jurisdiction"), 120))
             || !(Undef(p, "orgType") || (Str(Get(p, "orgType")) is { } t && OrgTypes.Contains(t))) || !DetailsShape(p, "details") || !PeopleShape(p, "people"))) return false;
+        if (kind == "zone" && (!DomainRe().IsMatch(JsString(Get(p, "name"))) || !IsImg(Get(p, "avatar")))) return false;
         if (kind == "case" && (!(Undef(p, "listing") || IsHex(Get(p, "listing"), 64)) || Trim(Str(Get(p, "about"))!).Length == 0)) return false;
         if (kind == "circle" && !(Str(Get(p, "enc")) is { } enc && EncRe().IsMatch(enc))) return false;
         return true;
@@ -125,6 +126,16 @@ public static partial class Rules
     }
 
     [GeneratedRegex("^[0-9]{4}-[0-9]{2}$")] private static partial Regex MonthRe();
+    // ---- zones: a domain's registry of subdomains (see Payload's zone rules)
+    [GeneratedRegex(@"^(?=.{3,200}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")] private static partial Regex DomainRe();
+    [GeneratedRegex("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")] private static partial Regex LabelRe();
+    [GeneratedRegex(@"^[A-Za-z0-9@~/_.:#?=&%+-]{0,200}$")] private static partial Regex PageRe();
+    /// <summary>A subdomain label: letters, digits and hyphens (one letter is a wildcard namespace: only the owner sets those).</summary>
+    public static bool ZoneLabel(string? s, bool owner) => s != null && LabelRe().IsMatch(s) && (owner || s.Length > 1);
+    /// <summary>Where a subdomain points: an IPv4/IPv6 address or a host name; empty means the zone's own node.</summary>
+    public static bool ZoneTarget(string? s) => s != null && (s.Length == 0 || (s.Length <= 200 && (System.Net.IPAddress.TryParse(s, out _) && s.Contains(s.Contains(':') ? ':' : '.') || DomainRe().IsMatch(s))));
+    /// <summary>The page a subdomain opens (a route such as "c/{chain}", "n/@name", "v/{chain}/{video}"); empty is the home page.</summary>
+    public static bool ZonePage(string? s) => s != null && PageRe().IsMatch(s);
     [GeneratedRegex("^[a-z][a-zA-Z]{0,23}$")] private static partial Regex DetailKeyRe();
     [GeneratedRegex("^[A-Za-z0-9_-]{80,100}$")] private static partial Regex EncRe();
 }

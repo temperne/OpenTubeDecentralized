@@ -105,6 +105,7 @@ public sealed partial class NodeServer : IAsyncDisposable
     async Task StartWebLocked()
     {
         ReachMode = "checking"; ReachWhy = null;
+        await StartDns();
         var direct = await PlanDirect();
         var b = WebApplication.CreateSlimBuilder();
         b.Logging.SetMinimumLevel(LogLevel.Warning);
@@ -129,6 +130,21 @@ public sealed partial class NodeServer : IAsyncDisposable
                 }
                 await next();
             });
+        app.Use(async (ctx, next) =>
+        {   // tucson.opentuber.com, alice.c.opentuber.com…: the home page opens the page the network names for it
+            var p = ctx.Request.Path.Value ?? "";
+            if (ctx.Request.Method == "GET" && p is "/" or "/index.html" && !ctx.Request.Query.ContainsKey("classic"))
+            {
+                var domain = Node.Options.Dns ?? OpenTube.Core.Network.Domain;
+                try
+                {
+                    if (OpenTube.Client.Zones.RouteFor(Node.Engine, ctx.Request.Host.Host, domain, Node.Options.DnsZone) is { } route)
+                    { ctx.Response.Redirect("/app/" + route.TrimStart('/')); return; }
+                }
+                catch { }
+            }
+            await next();
+        });
         app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(30) });
         app.Use(async (ctx, next) =>
         {
@@ -184,6 +200,22 @@ public sealed partial class NodeServer : IAsyncDisposable
 
     // ---- reachable directly: our own HTTPS ----
     Acme? acme; System.Security.Cryptography.X509Certificates.X509Certificate2? cert; Timer? renew;
+    public DnsServer? Dns { get; private set; }
+    /// <summary>--dns: this computer answers DNS for the domain (once; it keeps running when public access changes).</summary>
+    async Task StartDns()
+    {
+        var o = Node.Options; if (o.Dns == null || Dns != null) return;
+        var ips = new List<System.Net.IPAddress>();
+        foreach (var x in (o.DnsIp ?? o.PublicIp ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)) if (System.Net.IPAddress.TryParse(x, out var ip)) ips.Add(ip);
+        if (ips.Count == 0 && await Internet.PublicIPv4() is { } pub) ips.Add(pub);
+        if (ips.Count == 0) { Node.Log("[dns] couldn't find this computer's public IP: give it with --dns-ip=…"); return; }
+        try { Dns = new DnsServer(Node, o.Dns, o.DnsZone, [.. ips], o.DnsPort, Node.Log); Dns.Start(); }
+        catch (Exception e) { Dns = null; Node.Log($"[dns] couldn't listen on port {o.DnsPort}: {e.Message} (port 53 needs administrator rights; or another DNS server uses it)"); }
+    }
+    /// <summary>The names the certificate covers: the domain, www and every wildcard namespace (with --dns).</summary>
+    string[]? CertNames(string host) => Dns != null && host == Dns.Domain
+        ? [host, "*." + host, .. OpenTube.Client.Zones.Wildcards.Select(w => $"*.{w.Letter}.{host}")]
+        : null;
 
     /// <summary>The name to serve HTTPS as, if this computer is directly on the internet and ports 80/443 are ours; else null (with why).</summary>
     async Task<string?> PlanDirect()
@@ -223,7 +255,7 @@ public sealed partial class NodeServer : IAsyncDisposable
         if (Acme.NeedsRenewal(cert))
         {
             Node.Log($"[https] getting a certificate for {host} from Let's Encrypt…");
-            try { cert = await acme.Issue(host, Node.Options.Email); }
+            try { cert = await acme.Issue(host, Node.Options.Email, CertNames(host)); }
             catch (Exception e)
             {
                 Node.Log($"[https] couldn't get a certificate: {e.Message}");
@@ -236,7 +268,7 @@ public sealed partial class NodeServer : IAsyncDisposable
         renew = new Timer(async _ =>
         {
             if (!Acme.NeedsRenewal(cert)) return;
-            try { cert = await acme.Issue(host, Node.Options.Email); } catch (Exception e) { Node.Log($"[https] renewing the certificate failed: {e.Message}"); }
+            try { cert = await acme.Issue(host, Node.Options.Email, CertNames(host)); } catch (Exception e) { Node.Log($"[https] renewing the certificate failed: {e.Message}"); }
         }, null, TimeSpan.FromHours(12), TimeSpan.FromHours(12));
         return true;
     }

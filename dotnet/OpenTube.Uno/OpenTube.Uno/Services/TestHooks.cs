@@ -39,6 +39,14 @@ public static class TestHooks
                     await S.AddReview(pid, 4, "Good coffee, friendly staff.");
                     Console.WriteLine("[test] place " + pid);
                 }
+                if (opts.Contains("zone") && S.ZoneOf("example.test") == null)
+                {
+                    var zid = await S.CreateZone("example.test", "test zone");
+                    while (S.Chain(zid) == null) await Task.Delay(1000);
+                    await S.SetRecord(zid, "tucson", "5.6.7.8", "c/" + chain);
+                    await S.SetRecord(zid, "home", "", "");
+                    Console.WriteLine("[test] zone " + zid);
+                }
                 if (opts.Contains("market") && !S.Trade.Listings().Any(l => S.IsMine(l.Seller)))
                 {
                     while (S.Trade.Balance < S.Trade.Price("list") + 500) await Task.Delay(1000);
