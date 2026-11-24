@@ -14,7 +14,16 @@ namespace OpenTube.Uno.Pages;
 /// </summary>
 public sealed partial class DevicesPage : DataPage
 {
-    string? openNode, openWhat; JsonObject? view; string? grant;
+    string? openNode, openWhat; JsonObject? view; string? grant; string? domainFor;
+    /// <summary>A computer of yours answering DNS for a domain (its name servers point at it): set it from here.</summary>
+    UIElement DomainForm(string node)
+    {
+        var S = Svc.S; var dom = Input("Domain, e.g. opentuber.com (empty: DNS off)", "", 200); var zone = Input("Zone chain (empty: the oldest zone with that name)", S.ZoneOf(OpenTube.Core.Network.Domain) ?? "", 64);
+        var ip = Input("Its public IP(s) (empty: found automatically)", "", 100); var email = Input("Email for Let’s Encrypt (optional)", "", 200);
+        return Card(H("Domain", 15), Sub("At your registrar, set the domain’s name servers to ns1.DOMAIN and ns2.DOMAIN with glue records = this computer’s public IP. Ports 53, 80 and 443 must reach it."),
+            dom, zone, ip, email,
+            Btn("Save and apply", () => _ = Status.Do("Asking the computer…", () => S.NodeCtl(node, "domain.set", new JsonObject { ["domain"] = dom.Text.Trim(), ["zone"] = zone.Text.Trim(), ["ip"] = ip.Text.Trim(), ["email"] = email.Text.Trim() }), "Applying: it answers DNS in a few seconds (see its Log)."), primary: true));
+    }
     readonly Dictionary<string, string> tests = [];
     public DevicesPage() : base("Devices") { }
     protected override string Key() => string.Join(",", Svc.S.MyNodes().Select(n => n.Node + (Svc.S.Info(n.Node)?.ToJsonString().GetHashCode() ?? 0))) + $"|{openNode}{openWhat}{view?.ToJsonString().GetHashCode()}|{string.Join(",", tests.Values)}|{grant}|{Svc.S.Earnings().Count}";
@@ -48,10 +57,12 @@ public sealed partial class DevicesPage : DataPage
                 var pubMode = Pick([("", "Public access…"), ("auto", "Auto (own HTTPS, else a tunnel)"), ("tunnel", "Always a tunnel"), ("off", "Off")]); pubMode.MinWidth = 200; pubMode.HorizontalAlignment = HorizontalAlignment.Left;
                 pubMode.SelectionChanged += (_, _) => { if (pubMode.Value().Length > 0) _ = Status.Do("Asking the computer…", () => S.NodeCtl(node, "public.set", new JsonObject { ["mode"] = pubMode.Value() })); };
                 acts.Children.Add(pubMode);
+                acts.Children.Add(Btn("Domain…", () => { domainFor = domainFor == n ? null : n; Redraw(); }));
             }
             items.Add(acts);
             if (tests.TryGetValue(n, out var tr)) items.Add(Sub(tr));
             if (openNode == n && view != null) items.Add(ViewOf(node));
+            if (owner && domainFor == n) items.Add(DomainForm(node));
             Col.Children.Add(Card([.. items]));
         }
         Col.Children.Add(Status);

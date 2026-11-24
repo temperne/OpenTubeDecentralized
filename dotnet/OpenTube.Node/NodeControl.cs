@@ -82,6 +82,18 @@ public sealed class NodeControl(OpenTubeNode node)
                     _ = Task.Run(async () => { await Task.Delay(500); try { await node.SetPublic(mode); } catch (Exception e) { node.Log("[internet] " + e.Message); } });
                     return Reply(c, true, new JsonObject { ["applying"] = mode });
                 }
+                case "domain.set":
+                {   // answer DNS for a domain whose name servers point at this computer (domain empty: off)
+                    if (!owner) return Fail("only the owner can change this");
+                    if (node.SetDomain == null) return Fail("not available");
+                    var dom = Js.Str(a["domain"])?.Trim().ToLowerInvariant() ?? "";
+                    if (dom.Length > 0 && !System.Text.RegularExpressions.Regex.IsMatch(dom, @"^([a-z0-9-]+\.)+[a-z]{2,63}$")) return Fail("that isn’t a domain name");
+                    var zone = Js.Str(a["zone"]); if (zone is { Length: > 0 } && !Js.IsHex(zone, 64)) return Fail("bad zone");
+                    node.Log($"[control] domain: {(dom.Length > 0 ? dom : "off")}, from the owner's console");
+                    var port = (int)(Js.Num(a["port"]) ?? 53); var ip = Js.Str(a["ip"]); var email = Js.Str(a["email"]);
+                    _ = Task.Run(async () => { await Task.Delay(500); try { await node.SetDomain(dom.Length > 0 ? dom : null, zone, port, ip, email); } catch (Exception e) { node.Log("[dns] " + e.Message); } });
+                    return Reply(c, true, new JsonObject { ["applying"] = dom });
+                }
                 case "relay":
                 {   // "I just went live: help serve it" (from the owner's or a sharing person's browser)
                     if (!May(user, "host")) return Fail("you may not use this computer for relaying");
@@ -98,7 +110,7 @@ public sealed class NodeControl(OpenTubeNode node)
                     catch (Exception e) { return Fail(e.Message); }
                 }
                 case "status":
-                    data = node.Status.DeepClone(); if (data is JsonObject so) so["host"] = node.Hosting?.Status(); break;
+                    data = node.Status.DeepClone(); if (data is JsonObject so) { so["host"] = node.Hosting?.Status(); so["domain"] = node.DomainText?.Invoke(); so["dns"] = node.Options.Dns; } break;
                 case "store": case "store.status":
                 {   // keep a video someone uploaded from a browser (their storage is this computer)
                     if (!May(user, "host")) return Fail("you may not store videos on this computer");

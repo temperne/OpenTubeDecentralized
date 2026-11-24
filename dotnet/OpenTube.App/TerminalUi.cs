@@ -32,6 +32,24 @@ public static class TerminalUi
             if (pick is < 0 or > 2 || choices[pick].Setting == server.PublicSetting) return;
             _ = Task.Run(() => server.SetPublic(choices[pick].Setting));
         }
+        void PickDomain()
+        {   // answer DNS for a domain whose name servers point at this computer
+            var (dom, zone, port, ip, _) = server.DomainSetting;
+            var fd = new TextField(dom ?? "") { X = 14, Y = 2, Width = Dim.Fill(1) }; var fz = new TextField(zone ?? "") { X = 14, Y = 3, Width = Dim.Fill(1) };
+            var fi = new TextField(ip ?? "") { X = 14, Y = 4, Width = Dim.Fill(1) }; var fp = new TextField(port.ToString()) { X = 14, Y = 5, Width = 8 };
+            var ok = new Button("Save and apply", is_default: true); var cancel = new Button("Cancel");
+            var d = new Dialog("Domain", Math.Min(100, Application.Driver.Cols - 4), 12, ok, cancel);
+            d.Add(new Label(server.DescribeDomain()) { X = 1, Y = 0, Width = Dim.Fill(1) },
+                new Label("Domain:") { X = 1, Y = 2 }, fd, new Label("Zone chain:") { X = 1, Y = 3 }, fz, new Label("Public IP(s):") { X = 1, Y = 4 }, fi, new Label("DNS port:") { X = 1, Y = 5 }, fp,
+                new Label("Empty domain: DNS off. Point the domain's name servers (ns1/ns2.DOMAIN) at this computer.") { X = 1, Y = 7, Width = Dim.Fill(1) });
+            ok.Clicked += () =>
+            {
+                var dd = fd.Text.ToString()?.Trim(); var zz = fz.Text.ToString(); var ii = fi.Text.ToString(); var pp = int.TryParse(fp.Text.ToString(), out var x) ? x : 53;
+                _ = Task.Run(() => server.SetDomain(string.IsNullOrEmpty(dd) ? null : dd, zz, pp, ii, null)); Application.RequestStop();
+            };
+            cancel.Clicked += () => Application.RequestStop();
+            fd.SetFocus(); Application.Run(d);
+        }
         void Message(string title, string text) => MessageBox.Query(Math.Min(100, Application.Driver.Cols - 4), Math.Min(30, Application.Driver.Rows - 4), title, text, "OK");
         void AddPeer()
         {
@@ -55,6 +73,7 @@ public static class TerminalUi
                 new MenuItem("_Website address", "", () => Message("Open in a browser", $"This computer:  http://localhost:{server.Node.Options.Port}\n" +
                     (server.Node.PublicUrl is { } u ? $"Anywhere:       {u}" : "No public address yet.") + "\n\n" + server.Describe())),
                 new MenuItem("_Public address…", "", PickPublic),
+                new MenuItem("_Domain…", "", PickDomain),
                 null!,
                 new MenuItem("_Quit", "Ctrl+Q", () => Application.RequestStop()),
             ]),

@@ -26,7 +26,7 @@ public sealed partial class NodeServer : IAsyncDisposable
         await Node.StartAsync();
         LoadSaved();
         Node.ReachInfo = ReachJson;
-        Node.SetPublic = SetPublic;
+        Node.SetPublic = SetPublic; Node.SetDomain = SetDomain; Node.DomainText = DescribeDomain;
         await StartWeb();
     }
 
@@ -51,8 +51,50 @@ public sealed partial class NodeServer : IAsyncDisposable
         ["mode"] = ReachMode, ["why"] = ReachWhy, ["setting"] = PublicSetting, ["tunnelUrl"] = tunnelUrl, ["tunnelError"] = TunnelError, ["text"] = Describe(),
     };
     string SavedFile => Path.Combine(Node.Options.DataDir, "public.json");
+    string DomainFile => Path.Combine(Node.Options.DataDir, "domain.json");
+    /// <summary>The domain settings this node uses (from --dns or saved from the window): domain, zone, port, addresses, email.</summary>
+    public (string? Domain, string? Zone, int Port, string? Ip, string? Email) DomainSetting => (Node.Options.Dns, Node.Options.DnsZone, Node.Options.DnsPort, Node.Options.DnsIp, Node.Options.Email);
+    void LoadSavedDomain()
+    {
+        try
+        {
+            if (Node.Options.Dns != null || !File.Exists(DomainFile)) return;   // (the command line wins)
+            var j = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(DomainFile));
+            ApplyDomain((string?)j?["domain"], (string?)j?["zone"], (int?)j?["port"] ?? 53, (string?)j?["ip"], (string?)j?["email"]);
+            if (Node.Options.Dns != null) Node.Log($"[dns] domain setting from {DomainFile}: {Node.Options.Dns}");
+        }
+        catch (Exception e) { Node.Log("[dns] couldn't read the saved domain setting: " + e.Message); }
+    }
+    void ApplyDomain(string? domain, string? zone, int port, string? ip, string? email)
+    {
+        var o = Node.Options; var was = o.Dns;
+        o.Dns = domain?.Trim().TrimEnd('.').ToLowerInvariant() is { Length: > 0 } d ? d : null;
+        o.DnsZone = zone?.Trim() is { Length: > 0 } z ? z : null; o.DnsPort = port is > 0 and < 65536 ? port : 53;
+        o.DnsIp = ip?.Trim() is { Length: > 0 } i ? i : null; if (email?.Trim() is { Length: > 0 } em) o.Email = em;
+        if (o.Dns != null && o.Public is "auto" || o.Public == was) o.Public = o.Dns ?? "auto";
+    }
+    /// <summary>Answer DNS for a domain (or stop: domain empty), from the window or the site: saved, and applied now.</summary>
+    public async Task SetDomain(string? domain, string? zone, int port, string? ip, string? email)
+    {
+        await webLock.WaitAsync();
+        try
+        {
+            Dns?.Stop(); Dns = null;
+            ApplyDomain(domain, zone, port, ip, email);
+            Directory.CreateDirectory(Node.Options.DataDir);
+            File.WriteAllText(DomainFile, new System.Text.Json.Nodes.JsonObject { ["domain"] = Node.Options.Dns, ["zone"] = Node.Options.DnsZone, ["port"] = Node.Options.DnsPort, ["ip"] = Node.Options.DnsIp, ["email"] = Node.Options.Email }.ToJsonString());
+            Node.Log(Node.Options.Dns != null ? $"[dns] domain setting: {Node.Options.Dns}; applying it" : "[dns] no domain: DNS off");
+            await StopWeb(); await StartWebLocked(); Node.AnnounceSoon();
+        }
+        finally { webLock.Release(); }
+    }
+    /// <summary>One line on the domain: what DNS answers, the zone, and the certificate.</summary>
+    public string DescribeDomain() => Node.Options.Dns == null ? "no domain (Domain… to answer DNS for one)"
+        : Dns == null ? $"{Node.Options.Dns}: not answering DNS (see the log)"
+        : $"answering DNS for {Dns.Domain} on port {Node.Options.DnsPort} · zone {Dns.ZoneId?[..12] ?? "not found yet"}" + (Node.PublicUrl?.Contains(Dns.Domain) == true ? $" · serving {Node.PublicUrl}" : "");
     void LoadSaved()
     {
+        LoadSavedDomain();
         try
         {
             if (!File.Exists(SavedFile)) return;

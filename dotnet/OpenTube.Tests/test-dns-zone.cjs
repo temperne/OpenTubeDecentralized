@@ -1,5 +1,5 @@
 // Run: node dotnet/OpenTube.Tests/test-dns-zone.cjs   (needs Xvfb for the desktop app, and a built OpenTube.App and OpenTube.Uno desktop)
-// Domains: the app starts a zone for example.test and approves names; a node answering DNS for it (--dns) gives the
+// Domains (the setting saved by the node's window): the app starts a zone for example.test and approves names; a node answering DNS for it (--dns) gives the
 // zone's names, the wildcard namespaces, the zone's TXT and NXDOMAIN for the rest; and a subdomain's home page on the
 // node opens the page its record names.
 const { spawn, execSync } = require('child_process'); const fs = require('fs'), path = require('path'), os = require('os'), dns = require('dns'), http = require('http');
@@ -8,8 +8,10 @@ const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 let fail = 0; const check = (ok, what) => { log(ok ? 'ok  ' : 'FAIL', what); if (!ok) fail = 1; };
 const procs = []; process.on('exit', () => { for (const p of procs) try { p.kill(); } catch {} });
 const SITE = W + '/site'; fs.mkdirSync(SITE); for (const f of ['index.html', 'sw.js']) fs.copyFileSync(path.join(REPO, f), path.join(SITE, f));
+// the domain setting as the node's window saves it (Domain… → Save): DATA/domain.json
+fs.mkdirSync(W + '/node', { recursive: true }); fs.writeFileSync(W + '/node/domain.json', JSON.stringify({ domain: 'example.test', port: DP, ip: '1.2.3.4' }));
 const P = spawn('dotnet', [REPO + '/dotnet/OpenTube.App/bin/Debug/net10.0/opentube.dll', '--service', `--port=${N}`, `--data=${W}/node`, `--videos=${W}/videos`, '--mine=all', '--no-tunnel', '--public=off', '--no-ranking', '--no-mesh',
-  '--site-dir=' + SITE, '--dns=example.test', `--dns-port=${DP}`, '--dns-ip=1.2.3.4']); procs.push(P);
+  '--site-dir=' + SITE]); procs.push(P);
 let nodeLog = ''; P.stdout.on('data', d => { nodeLog += d; for (const l of String(d).split('\n')) if (/\[dns\]|rror/.test(l)) log('[node]', l.trim().slice(0, 160)); });
 for (let i = 0; i < 60; i++) { try { execSync(`curl -sf localhost:${N}/status`); break; } catch { execSync('sleep 0.5'); } }
 // the app (desktop, on a virtual screen): its test setup makes a channel, then the zone with two names

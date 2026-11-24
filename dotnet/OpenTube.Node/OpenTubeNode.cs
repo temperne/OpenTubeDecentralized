@@ -29,6 +29,9 @@ public sealed class OpenTubeNode : IAsyncDisposable
     /// <summary>How this node is reachable (set by the web server): shown on the site and answering public.set.</summary>
     public Func<JsonObject>? ReachInfo { get; set; }
     public Func<string, Task>? SetPublic { get; set; }
+    /// <summary>Answer DNS for a domain (domain, zone, port, IPs, email; domain null: off), and what it does now.</summary>
+    public Func<string?, string?, int, string?, string?, Task>? SetDomain { get; set; }
+    public Func<string>? DomainText { get; set; }
     public DateTime Started { get; } = DateTime.UtcNow;
 
     readonly ConcurrentDictionary<string, Peer> peers = new();
