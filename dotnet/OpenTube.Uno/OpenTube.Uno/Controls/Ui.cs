@@ -22,7 +22,7 @@ public static class Ui
     public static TextBlock H(string text, double size = 18) => new() { Text = text, FontSize = size, FontWeight = Microsoft.UI.Text.FontWeights.Bold, TextWrapping = TextWrapping.Wrap };
     public static TextBlock Sub(string text) => new() { Text = text, FontSize = 13, Foreground = Muted, TextWrapping = TextWrapping.Wrap };
     public static TextBlock Text(string text, double size = 15) => new() { Text = text, FontSize = size, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };
-    public static TextBlock Mono(string text) => new() { Text = text, FontFamily = new FontFamily("Consolas, Menlo, monospace"), FontSize = 12, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true, Foreground = Muted };
+    public static TextBlock Code(string text) => new() { Text = text, FontFamily = new FontFamily("Consolas, Menlo, monospace"), FontSize = 12, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true, Foreground = Muted };
     /// <summary>Items side by side, wrapping onto the next line when they don't fit.</summary>
     public static Panel Row(params UIElement[] items)
     {

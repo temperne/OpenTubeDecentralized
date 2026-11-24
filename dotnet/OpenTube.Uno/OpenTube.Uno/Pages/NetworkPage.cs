@@ -59,7 +59,7 @@ public sealed partial class NetworkPage : DataPage
         var main = S.Engine.Read(e => (Tip: (string?)e.Store.MainBest["hash"] ?? "", Blocks: e.Store.Main.Blocks.Count, Orphans: e.Store.Main.Orphans.Count, Pending: e.Store.Mempool.Count, Txs: e.Store.TxPool.Count, Mining: e.Mining, Hashes: e.MinedHashes, Rejected: e.Store.Rejected.ToList(), Sync: e.SyncState(e.Store.Main)));
         var mst = S.Engine.Stat(S.Engine.Read(e => e.Store.Main.Id));
         Col.Children.Add(Card(H("Connection"), Text($"Linked to {S.Peers} node(s): " + string.Join(", ", S.LinkedUrls.Select(u => u.Replace("wss://", "").Replace("ws://", "").Replace("/ot", ""))), 14),
-            Sub($"Last message in: {(S.Engine.LastMsgIn > 0 ? Svc.Ago(S.Engine.LastMsgIn) : "never")} · {S.Engine.MsgsIn:N0} in · {S.Engine.MsgsOut:N0} out"), Sub("The site: " + Svc.Site), Sub("Network ID"), Mono(Network.MainId[..32] + "…")));
+            Sub($"Last message in: {(S.Engine.LastMsgIn > 0 ? Svc.Ago(S.Engine.LastMsgIn) : "never")} · {S.Engine.MsgsIn:N0} in · {S.Engine.MsgsOut:N0} out"), Sub("The site: " + Svc.Site), Sub("Network ID"), Code(Network.MainId[..32] + "…")));
         Col.Children.Add(Card(H("Main chain"), Text($"{main.Sync.State}: {main.Sync.Text}", 14), Sub($"Tip {main.Tip[..Math.Min(16, main.Tip.Length)]}… · {main.Blocks} blocks stored ({main.Orphans} waiting for parents) · last new block {(mst.LastBlock > 0 ? Svc.Ago(mst.LastBlock) : "never")}"),
             Sub($"Mining: {(main.Mining ? $"yes, {main.Hashes:N0} hashes" : "idle")} · pending: {main.Pending} registrations, {main.Txs} transactions · rejected: {(main.Rejected.Count == 0 ? "none" : string.Join(", ", main.Rejected.Select(kv => $"{kv.Value}× {kv.Key}")))}")));
         var chains = S.Engine.Read(e => e.Store.Chains.Values.Where(c => c != e.Store.Main).Select(c => (c.Id, Name: (string?)c.Genesis["payload"]?["name"] ?? (string?)c.Genesis["payload"]?["month"] ?? c.Id[..8], Kind: (string?)c.Genesis["payload"]?["kind"] ?? "", Blocks: c.Blocks.Count, c.Owner, Sync: e.SyncState(c))).ToList());
@@ -74,6 +74,6 @@ public sealed partial class NetworkPage : DataPage
         foreach (var u in S.TrackerUrls()) tl.Children.Add(Text($"{(trackers.TryGetValue(u, out var r) ? (r.Ok ? "✅ " : "⚠️ ") + r.Text : "testing…")} · {u}", 12));
         Col.Children.Add(Card(H("Video trackers"), tl));
         var ev = S.Engine.Events();
-        Col.Children.Add(Card(H("Recent events"), ev.Count == 0 ? Sub("Nothing yet.") : Mono(string.Join("\n", ev.Take(60).Select(e => $"{DateTimeOffset.FromUnixTimeMilliseconds((long)e.Ts).ToLocalTime():HH:mm:ss}  {e.Kind,-6} {e.Text}")))));
+        Col.Children.Add(Card(H("Recent events"), ev.Count == 0 ? Sub("Nothing yet.") : Code(string.Join("\n", ev.Take(60).Select(e => $"{DateTimeOffset.FromUnixTimeMilliseconds((long)e.Ts).ToLocalTime():HH:mm:ss}  {e.Kind,-6} {e.Text}")))));
     }
 }

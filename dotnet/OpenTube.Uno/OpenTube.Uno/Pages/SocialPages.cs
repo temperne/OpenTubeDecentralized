@@ -145,7 +145,7 @@ public sealed partial class FriendsPage : DataPage
         }
         if (friends?.Count == 0) list.Children.Add(Sub("No friends added yet."));
         var addKey = Input("A friend’s user ID", max: 43); var addName = Input("Their name (for you)", max: 60);
-        Col.Children.Add(Card(H("Your friends"), Sub("Only the friends you add can read what you share with them, once they add you too. Your user ID (give it to your friends):"), Mono(S.Me.pub), list,
+        Col.Children.Add(Card(H("Your friends"), Sub("Only the friends you add can read what you share with them, once they add you too. Your user ID (give it to your friends):"), Code(S.Me.pub), list,
             addKey, addName, Btn("Add friend", () => _ = Status.Do("Adding…", async () => { await S.Social.AddFriend(addKey.Text.Trim(), addName.Text.Trim()); addKey.Text = addName.Text = ""; await Load(); Redraw(); }, "Added."), id: "friends-add")));
     }
 }

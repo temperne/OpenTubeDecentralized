@@ -62,8 +62,8 @@ public sealed partial class DevicesPage : DataPage
         if (grant != null)
         {
             var (unix, win) = S.AddCommands(grant);
-            add.Add(Sub("Linux or Mac:")); add.Add(Mono(unix)); add.Add(Btn("Copy (Linux/Mac)", () => { Copy(unix); Status.Say("Command copied. Paste it into a terminal on that computer."); }));
-            add.Add(Sub("Windows (PowerShell):")); add.Add(Mono(win)); add.Add(Btn("Copy (Windows)", () => { Copy(win); Status.Say("Command copied. Paste it into PowerShell on that computer."); }));
+            add.Add(Sub("Linux or Mac:")); add.Add(Code(unix)); add.Add(Btn("Copy (Linux/Mac)", () => { Copy(unix); Status.Say("Command copied. Paste it into a terminal on that computer."); }));
+            add.Add(Sub("Windows (PowerShell):")); add.Add(Code(win)); add.Add(Btn("Copy (Windows)", () => { Copy(win); Status.Say("Command copied. Paste it into PowerShell on that computer."); }));
         }
         Col.Children.Add(Card([.. add]));
         // ---- earnings
@@ -130,7 +130,7 @@ public sealed partial class DevicesPage : DataPage
             var obs = new CheckBox { Content = "obs", IsChecked = true }; var host = new CheckBox { Content = "host" }; var manage = new CheckBox { Content = "manage" };
             sp.Children.Add(who); sp.Children.Add(name); sp.Children.Add(Row(obs, host, manage, Btn("Share", () => _ = Share(n, who.Text.Trim(), name.Text, new[] { (obs, "obs"), (host, "host"), (manage, "manage") }.Where(x => x.Item1.IsChecked == true).Select(x => x.Item2).ToList()), primary: true)));
         }
-        else sp.Children.Add(new ScrollViewer { MaxHeight = 360, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, Content = Mono(string.Join("\n", (view!["lines"] as JsonArray ?? []).Select(x => (string?)x).TakeLast(80))) });
+        else sp.Children.Add(new ScrollViewer { MaxHeight = 360, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, Content = Code(string.Join("\n", (view!["lines"] as JsonArray ?? []).Select(x => (string?)x).TakeLast(80))) });
         return new Border { BorderBrush = Ui.Muted, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), Padding = new Thickness(10), Child = sp };
     }
     Task Share(string n, string key, string name, List<string> can) => Status.Do("Asking the computer…", async () =>

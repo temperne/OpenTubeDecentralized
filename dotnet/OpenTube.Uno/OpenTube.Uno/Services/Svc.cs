@@ -66,6 +66,7 @@ public static class Svc
 
     /// <summary>(tests and screenshots) what to open first: OPENTUBE_START, or ?start= in the browser.</summary>
     public static string? StartOption => Environment.GetEnvironmentVariable("OPENTUBE_START") ?? Query("start");
+    public static string? QueryOption(string name) => Query(name);
     static string? Query(string name)
     {
 #if __WASM__

@@ -123,3 +123,56 @@ globalThis.otThumb = (src) => new Promise((resolve) => {
   v.onseeked = () => { try { const s = Math.min(1, 480 / Math.max(v.videoWidth, v.videoHeight)); const c = document.createElement('canvas'); c.width = Math.max(1, v.videoWidth * s | 0); c.height = Math.max(1, v.videoHeight * s | 0); c.getContext('2d').drawImage(v, 0, 0, c.width, c.height); done(c.toDataURL('image/jpeg', 0.8)); } catch { done(''); } };
   v.onerror = () => done('');
 });
+// ---- the camera in the browser (Go live): the preview is drawn by the app itself from small frames sent here (an
+// HTML video over the app's canvas leaves a blank patch elsewhere on it in Chrome), the cameras and microphones to
+// choose from, and the recorder whose chunks go to C# (LiveBroadcast)
+(() => {
+  let media = null, rec = null, cam = null, timer = 0, q = Promise.resolve(), exp = null;
+  const cs = async () => { const rt = await globalThis.getDotnetRuntime(0); let ex; try { ex = await rt.getAssemblyExports('OpenTube.Uno.dll'); } catch { ex = await rt.getAssemblyExports('OpenTube.Uno'); } return ex.OpenTube.Uno.Services.CameraBridge; };
+  const FW = 384, FH = 216, frame = document.createElement('canvas'); frame.width = FW; frame.height = FH;
+  const g = frame.getContext('2d', { willReadFrequently: true });
+  const send = async () => {
+    if (!cam || !cam.videoWidth) return;
+    g.fillStyle = '#000'; g.fillRect(0, 0, FW, FH);
+    const k = Math.min(FW / cam.videoWidth, FH / cam.videoHeight), dw = cam.videoWidth * k, dh = cam.videoHeight * k;
+    g.drawImage(cam, (FW - dw) / 2, (FH - dh) / 2, dw, dh);
+    const px = g.getImageData(0, 0, FW, FH).data;
+    for (let i = 0; i < px.length; i += 4) { const r = px[i]; px[i] = px[i + 2]; px[i + 2] = r; }   // RGBA → BGRA
+    (exp ||= await cs()).Frame(new Uint8Array(px.buffer), FW, FH);
+  };
+  const ensureView = () => {
+    if (!cam) { cam = document.createElement('video'); cam.muted = true; cam.playsInline = true; cam.autoplay = true; }
+    if (!timer) timer = setInterval(() => { send().catch(() => {}); }, 80); return cam;
+  };
+  globalThis.otCam = {
+    // "id\tlabel" lines: cameras, then a blank line, then microphones (labels show once the browser has allowed them)
+    devices: async () => { const d = await navigator.mediaDevices?.enumerateDevices?.() || []; const f = (k, n) => d.filter(x => x.kind === k).map((x, i) => `${x.deviceId}\t${x.label || n + ' ' + (i + 1)}`).join('\n'); return f('videoinput', 'Camera') + '\n\n' + f('audioinput', 'Microphone'); },
+    // open a source for the preview: cam '' (default), a camera id, or 'screen'; mic '', an id, or 'none'; '' or the error
+    preview: async (cam, mic) => {
+      if (rec) return 'the camera is streaming: end the stream to change it';
+      try {
+        if (media) media.getTracks().forEach(t => t.stop());
+        const audio = mic === 'none' ? null : await navigator.mediaDevices.getUserMedia({ audio: mic ? { deviceId: { exact: mic } } : true }).catch(() => null);
+        const video = cam === 'screen' ? await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30 }, audio: false })
+          : await navigator.mediaDevices.getUserMedia({ video: cam ? { deviceId: { exact: cam }, width: { ideal: 1280 }, height: { ideal: 720 } } : { width: { ideal: 1280 }, height: { ideal: 720 } } });
+        media = new MediaStream([...video.getVideoTracks(), ...(audio?.getAudioTracks() || [])]);
+        const v = ensureView(); v.srcObject = media; v.play().catch(() => {}); return '';
+      } catch (e) { return e.message || String(e); }
+    },
+    // start recording: the mime type, or 'error:…'; each second a chunk goes to C#
+    start: async () => {
+      const mime = ['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9,opus', 'video/webm'].find(m => window.MediaRecorder?.isTypeSupported?.(m));
+      if (!mime) return 'error:This browser can’t record video for streaming. Use Chrome, Edge or Firefox.';
+      if (!media) { const e = await otCam.preview('', ''); if (e) return 'error:' + e; }
+      const c = await cs();
+      rec = new MediaRecorder(media, { mimeType: mime, videoBitsPerSecond: 2_000_000, audioBitsPerSecond: 128_000 });
+      rec.ondataavailable = (e) => { if (e.data.size) q = q.then(async () => c.Chunk(new Uint8Array(await e.data.arrayBuffer()))).catch(() => {}); };
+      rec.start(1000); return mime;
+    },
+    stop: async () => {
+      if (rec) await new Promise((r) => { rec.onstop = r; try { rec.stop(); } catch { r(); } }); rec = null;
+      if (media) media.getTracks().forEach(t => t.stop()); media = null;
+      if (cam) { cam.srcObject = null; cam = null; } clearInterval(timer); timer = 0;
+    },
+  };
+})();

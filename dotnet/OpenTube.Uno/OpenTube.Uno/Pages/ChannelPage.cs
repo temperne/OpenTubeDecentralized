@@ -117,7 +117,7 @@ public sealed partial class ChannelPage : Page
     {
         var S = Svc.S;
         if (d.LiveNow.Count > 0) { var g = new VideoGrid { Items = d.LiveNow.Select(b => VideoItem.From(id, name, (JsonObject)b.DeepClone(), live: true)).ToList() }; body.Children.Add(g); }
-        if (mine) body.Children.Add(Row(Btn("＋ Add video", () => App.Open(typeof(UploadPage), id), primary: true), Btn("● Go live", () => App.Open(typeof(ComingPage), "golive"))));
+        if (mine) body.Children.Add(Row(Btn("＋ Add video", () => App.Open(typeof(UploadPage), id), primary: true), Btn("● Go live", () => App.Open(typeof(GoLivePage), id))));
         var vids = d.Videos.OrderByDescending(v => Js.Num(v["ts"])).ToList();
         if (vids.Count == 0) body.Children.Add(Sub("No videos yet."));
         else body.Children.Add(new VideoGrid { Items = vids.Select(v => VideoItem.From(id, name, (JsonObject)v.DeepClone())).ToList() });
@@ -229,7 +229,7 @@ public sealed partial class ChannelPage : Page
         }
         if (who.Length > 0 && who != d.Owner) items.Add(Sub($"Owned by {S.NameOf(who)} (coins paid to this {d.Kind} go to them)"));
         items.Add(H("Technical details", 14));
-        items.Add(Sub("Chain ID")); items.Add(Mono(id)); items.Add(Sub("Channel key")); items.Add(Mono(d.Owner ?? ""));
+        items.Add(Sub("Chain ID")); items.Add(Code(id)); items.Add(Sub("Channel key")); items.Add(Code(d.Owner ?? ""));
         items.Add(Sub($"Blocks: {d.BlockCount} · Registered: {(registered ? "yes" : "pending")}" + (d.Kind == "channel" ? $" · Default comments: {((string?)d.Profile["comments"] switch { "approved" => "Approved users only", "off" => "Off", _ => "Anyone" })}" : "")));
         body.Children.Add(Card([.. items]));
     }

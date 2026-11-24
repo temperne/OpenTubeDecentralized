@@ -12,7 +12,7 @@ public static class TestHooks
 {
     public static void Start()
     {
-        if (Environment.GetEnvironmentVariable("OPENTUBE_TEST") != "setup") return;
+        if ((Environment.GetEnvironmentVariable("OPENTUBE_TEST") ?? Svc.QueryOption("test")) != "setup") return;
         _ = Task.Run(async () =>
         {
             var S = Svc.S;
@@ -27,7 +27,7 @@ public static class TestHooks
                 }
                 if (!S.Engine.Read(e => e.Store.Ledger.Starters.Contains(S.Me.pub))) await S.Engine.SubmitTx(new JsonObject { ["starter"] = true }, S.Me);
                 var outp = new JsonObject { ["grant"] = S.Trade.Grant("test computer"), ["chain"] = chain, ["user"] = S.Me.pub };
-                File.WriteAllText(Path.Combine(Svc.DataFolder, "test-setup.json"), outp.ToJsonString());
+                try { File.WriteAllText(Path.Combine(Svc.DataFolder, "test-setup.json"), outp.ToJsonString()); } catch { }
                 Console.WriteLine("[test] setup ready: " + chain);
             }
             catch (Exception e) { Console.WriteLine("[test] setup failed: " + e); }

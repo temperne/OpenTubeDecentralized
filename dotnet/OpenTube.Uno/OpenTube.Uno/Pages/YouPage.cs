@@ -38,7 +38,7 @@ public sealed partial class YouPage : Page
         col.Children.Clear();
         var S = Svc.S;
         if (S == null || !S.Ready) { col.Children.Add(Sub("Starting…")); _ = Task.Delay(1500).ContinueWith(_ => DispatcherQueue.TryEnqueue(Build)); return; }
-        nameText = H("", 22); idText = Mono(S.Me.pub); coinsText = Text(""); headerStatus = Status();
+        nameText = H("", 22); idText = Code(S.Me.pub); coinsText = Text(""); headerStatus = Status();
         starterBtn = Btn("Get starter coins", () => _ = headerStatus.Do("Earning starter coins (a little proof of work)…", () => S.Engine.SubmitTx(new JsonObject { ["starter"] = true }, S.Me), "Starter coins on the way: they count once the next main-chain block includes them."), primary: true, id: "you-starter");
         col.Children.Add(Card(nameText, Row(Sub("Your user ID"), Btn("Copy", () => Copy(S.Me.pub), id: "you-copy-id")), idText, Row(coinsText, starterBtn), headerStatus));
         var (bar, _) = Segments([("profile", "Profile"), ("channels", "Channels"), ("wallet", "Wallet"), ("keys", "Keys & backup"), ("settings", "Settings")], section, s => { section = s; Show(); });
@@ -79,7 +79,7 @@ public sealed partial class YouPage : Page
             body.Children.Add(Card(H("Your public profile"), Sub("Your name, picture and a few words about you, plus an @@name people can find you by. It also carries your encryption key, so friends can send you friends-only posts."),
                 Btn("Start my profile", () => _ = ps.Do("Registering your profile (a little proof of work: seconds to a minute)…", async () => { await S.Social.StartPage(); Show(); }, "Your profile is registered."), primary: true, id: "you-start-profile"), ps));
         else if (S.Chain(page) == null) body.Children.Add(Card(H("Your public profile"), Sub("Being registered (a few seconds to a minute)…")));
-        else body.Children.Add(Card(H("Your public profile"), Sub("Your profile is registered. Editing it (picture, about, links) comes with the channel pages."), Mono(page)));
+        else body.Children.Add(Card(H("Your public profile"), Sub("Your profile is registered. Editing it (picture, about, links) comes with the channel pages."), Code(page)));
     }
 
     // ---- channels: make one, and yours
@@ -114,7 +114,7 @@ public sealed partial class YouPage : Page
     void Wallet()
     {
         var S = Svc.S; var accounts = S.MyAccounts();
-        foreach (var k in accounts) body.Children.Add(Card(H(k == S.Me.pub ? "You" : S.NameOf(k)), Mono(k), Text($"{ChainActions.Coins(S.Balance(k))} coins", 20)));
+        foreach (var k in accounts) body.Children.Add(Card(H(k == S.Me.pub ? "You" : S.NameOf(k)), Code(k), Text($"{ChainActions.Coins(S.Balance(k))} coins", 20)));
         var st = Status();
         var from = Pick(accounts.Select(k => (k, $"{(k == S.Me.pub ? "You" : S.NameOf(k))} ({ChainActions.Coins(S.Balance(k))})")), S.Me.pub);
         var to = new TextBox { PlaceholderText = "One per line: a user ID, a channel ID, or a name (@channel, ~list, @@person). Several lines pay each one the amount.", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 80 };
@@ -198,7 +198,7 @@ public sealed partial class YouPage : Page
         foreach (var (pub, published, retired) in await S.Mail.KeyList())
         {
             var p = pub;
-            mk.Children.Add(Row(Mono(p[..24] + "… · " + (retired ? "retired" : published ? "published" : "not published yet")), published && !retired ? Btn("Retire", () => _ = st.Do("Working…", async () => { await S.Mail.RetireKey(p); Show(); })) : null!));
+            mk.Children.Add(Row(Code(p[..24] + "… · " + (retired ? "retired" : published ? "published" : "not published yet")), published && !retired ? Btn("Retire", () => _ = st.Do("Working…", async () => { await S.Mail.RetireKey(p); Show(); })) : null!));
         }
         body.Children.Add(Card(H("Messaging keys"), Sub("Messages to you are encrypted to one of these (the newest is used). Retire one if it may have leaked: new messages then use the others."), mk,
             Btn("New messaging key", () => _ = st.Do("Working (a little proof of work)…", async () => { await S.Mail.NewKey(); Show(); }))));
