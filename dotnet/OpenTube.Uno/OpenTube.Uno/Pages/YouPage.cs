@@ -105,7 +105,7 @@ public sealed partial class YouPage : Page
         var mine = S.Directory().Where(c => S.IsMine(c.Owner) && c.Kind is not ("circle" or "square")).ToList();
         var list = new StackPanel { Spacing = 6 };
         if (mine.Count == 0) list.Children.Add(Sub("None yet."));
-        foreach (var c in mine) list.Children.Add(Row(Text(c.Name, 15), Sub(c.Kind), Btn("Open", () => App.Open(typeof(ComingPage), "channel"))));
+        foreach (var c in mine) { var cid = c.Id; list.Children.Add(Row(Text(c.Name, 15), Sub(c.Kind), Btn("Open", () => ChannelPage.Open(cid), id: "you-open-" + cid[..8]))); }
         body.Children.Add(Card(H("Your channels & lists"), list));
     }
 

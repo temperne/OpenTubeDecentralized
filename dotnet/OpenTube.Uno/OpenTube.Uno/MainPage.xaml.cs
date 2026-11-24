@@ -19,9 +19,11 @@ public sealed partial class MainPage : Page
     void TestStart()
     {
         if (testStart is { } ts && ts.StartsWith("you") && Svc.S is { Ready: true }) { testStart = null; App.Open(typeof(YouPage), ts.Contains(':') ? ts[(ts.IndexOf(':') + 1)..] : "profile"); return; }
-        if (testStart != "first-video" || Svc.S is not { Ready: true } s) return;
+        if (testStart is { } cs && cs.StartsWith("channel:") && Svc.S is { Ready: true }) { testStart = null; ChannelPage.Open(cs[8..]); return; }
+        if (testStart is not ("first-video" or "first-channel") || Svc.S is not { Ready: true } s) return;
         var top = s.Rank(null).Items.OrderByDescending(i => i.Score).FirstOrDefault(i => s.Chain(i.Chain)?.Videos.Any(v => (string?)v["hash"] == i.Video) == true);
         if (top == null) return;
+        if (testStart == "first-channel") { testStart = null; ChannelPage.Open(top.Chain); return; }
         testStart = null; App.Open(typeof(WatchPage), new WatchArgs(top.Chain, top.Video));
     }
     void OnTab(global::Uno.Toolkit.UI.TabBar sender, global::Uno.Toolkit.UI.TabBarSelectionChangedEventArgs e)

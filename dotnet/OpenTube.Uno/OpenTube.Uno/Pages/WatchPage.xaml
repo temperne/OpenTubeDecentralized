@@ -42,7 +42,7 @@
             <Grid ColumnSpacing="12">
               <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
               <StackPanel VerticalAlignment="Center">
-                <TextBlock x:Name="ChannelName" FontSize="15" FontWeight="SemiBold" />
+                <HyperlinkButton x:Name="ChannelLink" Padding="0" Click="OnChannel"><TextBlock x:Name="ChannelName" FontSize="15" FontWeight="SemiBold" /></HyperlinkButton>
                 <TextBlock x:Name="Meta" FontSize="13" Foreground="{ThemeResource OnSurfaceVariantBrush}" />
               </StackPanel>
               <Button x:Name="SubButton" Grid.Column="1" Click="OnSubscribe" Style="{StaticResource FilledButtonStyle}" />

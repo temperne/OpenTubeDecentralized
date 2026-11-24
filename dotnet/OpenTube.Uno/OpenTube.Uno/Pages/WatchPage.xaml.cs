@@ -31,6 +31,7 @@ public sealed partial class WatchPage : Page
         tick.Start(); Fill();
     }
     void OnBack(object sender, RoutedEventArgs e) => App.Back();
+    void OnChannel(object sender, RoutedEventArgs e) => ChannelPage.Open(chain);
     /// <summary>The player is 16:9 of the column it's in (at most 70% of the window's height).</summary>
     void SizePlayer(double pageWidth, double pageHeight, bool wide)
     {

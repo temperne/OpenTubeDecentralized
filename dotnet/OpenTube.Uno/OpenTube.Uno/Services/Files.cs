@@ -30,6 +30,25 @@ public static class Files
         var file = await picker.PickSingleFileAsync(); if (file == null) return null;
         return await FileIO.ReadTextAsync(file);
     }
+    /// <summary>A picture the person picks, made into a small JPEG (max side in pixels) as a data: URI; null when they cancel.</summary>
+    public static async Task<string?> OpenImage(int maxSide = 256)
+    {
+        byte[] bytes;
+        if (TestDir is { } d && Environment.GetEnvironmentVariable("OPENTUBE_OPEN_IMAGE") is { } f) bytes = await File.ReadAllBytesAsync(Path.Combine(d, f));
+        else
+        {
+            var picker = new FileOpenPicker { SuggestedStartLocation = PickerLocationId.PicturesLibrary };
+            foreach (var t in new[] { ".jpg", ".jpeg", ".png", ".webp", ".gif" }) picker.FileTypeFilter.Add(t);
+            Init(picker);
+            var file = await picker.PickSingleFileAsync(); if (file == null) return null;
+            using var s = await file.OpenStreamForReadAsync(); using var ms = new MemoryStream(); await s.CopyToAsync(ms); bytes = ms.ToArray();
+        }
+        using var bmp = SkiaSharp.SKBitmap.Decode(bytes) ?? throw new InvalidOperationException("That isn’t a picture this app can read.");
+        var scale = Math.Min(1.0, (double)maxSide / Math.Max(bmp.Width, bmp.Height));
+        using var small = bmp.Resize(new SkiaSharp.SKImageInfo(Math.Max(1, (int)(bmp.Width * scale)), Math.Max(1, (int)(bmp.Height * scale))), SkiaSharp.SKSamplingOptions.Default) ?? bmp;
+        using var img = SkiaSharp.SKImage.FromBitmap(small); using var jpg = img.Encode(SkiaSharp.SKEncodedImageFormat.Jpeg, 85);
+        return "data:image/jpeg;base64," + Convert.ToBase64String(jpg.ToArray());
+    }
     static void Init(object picker)
     {
 #if WINDOWS
