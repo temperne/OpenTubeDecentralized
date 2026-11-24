@@ -13,6 +13,8 @@ public partial class App : Application
     public App()
     {
         this.InitializeComponent();
+        // an error in a page is reported (and shown on Home), not the end of the app
+        this.UnhandledException += (_, e) => { OpenTube.Uno.Services.Svc.Report(e.Exception); e.Handled = true; };
     }
 
     protected Window? MainWindow { get; private set; }

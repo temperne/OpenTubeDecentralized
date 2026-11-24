@@ -22,8 +22,15 @@ public sealed partial class HomePage : Page
     void OnExplore(object sender, RoutedEventArgs e) => Frame.Navigate(typeof(ExplorePage));
     void OnRefresh(RefreshContainer sender, RefreshRequestedEventArgs args) { using var d = args.GetDeferral(); shown = ""; Fill(); }
 
+    void ShowProblems()
+    {
+        var msg = Svc.StartError != null ? "Something went wrong starting up: " + Svc.StartError : null;
+        if (Svc.LastCrash != null) msg = (msg != null ? msg + "\n\n" : "") + "OpenTube closed on an error last time. Please send this to the developer:\n" + Svc.LastCrash[..Math.Min(1500, Svc.LastCrash.Length)];
+        Problem.Visibility = msg != null ? Visibility.Visible : Visibility.Collapsed; ProblemText.Text = msg ?? "";
+    }
     void Fill()
     {
+        ShowProblems();
         var S = Svc.S;
         if (S == null || !S.Ready) return;
         Loading.IsActive = false; Loading.Visibility = Visibility.Collapsed;

@@ -21,6 +21,8 @@
       UnoFeatures are used to quickly add and manage features enabled for your app.
       https://aka.platform.uno/singleproject-features
     -->
+    <!-- the client's JSON (blocks, keys) uses System.Text.Json's reflection mode, also in trimmed release builds -->
+    <JsonSerializerIsReflectionEnabledByDefault>true</JsonSerializerIsReflectionEnabledByDefault>
     <UnoFeatures>
       Material;
       MediaPlayerElement;
@@ -33,8 +35,6 @@
   <PropertyGroup Condition="'$(TargetFramework)' == 'net10.0-browserwasm'">
     <!-- the app's files (chains, keys) persist in the browser (IndexedDB) -->
     <WasmShellEnableIDBFS>true</WasmShellEnableIDBFS>
-    <!-- the client's JSON (blocks, keys) uses System.Text.Json's reflection mode, as the Blazor site does -->
-    <JsonSerializerIsReflectionEnabledByDefault>true</JsonSerializerIsReflectionEnabledByDefault>
   </PropertyGroup>
   <ItemGroup>
     <!-- keep OpenTube's own code whole when trimming (its JSON records need their constructors' parameter names) -->

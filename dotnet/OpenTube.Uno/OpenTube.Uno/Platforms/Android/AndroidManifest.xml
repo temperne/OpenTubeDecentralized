@@ -1,5 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-  <application android:allowBackup="true" android:supportsRtl="true">
+  <!-- the network (chains, BitTorrent, live), notifications, and the camera and microphone for going live -->
+  <uses-permission android:name="android.permission.INTERNET" />
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+  <uses-permission android:name="android.permission.CAMERA" />
+  <uses-permission android:name="android.permission.RECORD_AUDIO" />
+  <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+  <!-- the player reads videos from the app's own stream at http://127.0.0.1 -->
+  <application android:allowBackup="true" android:supportsRtl="true" android:usesCleartextTraffic="true">
   </application>
 </manifest>

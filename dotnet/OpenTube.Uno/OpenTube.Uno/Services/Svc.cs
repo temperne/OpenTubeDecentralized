@@ -17,19 +17,38 @@ public static class Svc
     public static string Site { get; private set; } = DefaultSite;
     static bool started;
 
+    /// <summary>What went wrong starting up, if anything (shown on Home instead of closing the app).</summary>
+    public static string? StartError { get; private set; }
+    /// <summary>The crash from the last run, if the app closed on an error (shown once, then cleared).</summary>
+    public static string? LastCrash { get; private set; }
+    static string dataDir = "";
+
     public static void Init()
     {
         if (started) return; started = true;
-        Site = Environment.GetEnvironmentVariable("OPENTUBE_SITE") ?? PlatformSite() ?? DefaultSite;
-        var data = DataDir();
-        S = new ClientSession(new FileStore(Path.Combine(data, "chain")), Site) { Log = m => Console.WriteLine("[opentube] " + m) };
+        try { dataDir = DataDir(); } catch (Exception e) { dataDir = Path.GetTempPath(); StartError = "storage: " + e.Message; }
+        var crashFile = Path.Combine(dataDir, "last-crash.txt");
+        try { if (File.Exists(crashFile)) { LastCrash = File.ReadAllText(crashFile); File.Delete(crashFile); } } catch { }
+        AppDomain.CurrentDomain.UnhandledException += (_, e) => { try { File.WriteAllText(crashFile, DateTime.Now + "\n" + e.ExceptionObject); } catch { } };
+        TaskScheduler.UnobservedTaskException += (_, e) => { e.SetObserved(); Console.WriteLine("[opentube] background error: " + e.Exception.GetBaseException().Message); };
+        try
+        {
+            Site = Environment.GetEnvironmentVariable("OPENTUBE_SITE") ?? PlatformSite() ?? DefaultSite;
+            S = new ClientSession(new FileStore(Path.Combine(dataDir, "chain")), Site) { Log = m => Console.WriteLine("[opentube] " + m) };
+            _ = Task.Run(async () => { try { await S.Start(); } catch (Exception e) { StartError = "network: " + e.Message; Console.WriteLine("[opentube] start: " + e); } });
+        }
+        catch (Exception e) { StartError = "network: " + e.Message; Console.WriteLine("[opentube] start: " + e); }
+        Video = new LazyVideoSource(() =>
+        {
 #if __WASM__
-        Video = new BrowserVideoSource();
+            return new BrowserVideoSource();
 #else
-        Video = new NativeVideoSource(S, Path.Combine(data, "videos"));
+            return new NativeVideoSource(S, Path.Combine(dataDir, "videos"));
 #endif
-        _ = Task.Run(async () => { try { await S.Start(); } catch (Exception e) { Console.WriteLine("[opentube] start: " + e.Message); } });
+        });
     }
+    /// <summary>Note an error a page caught, for the crash report.</summary>
+    public static void Report(Exception e) { Console.WriteLine("[opentube] error: " + e); try { File.AppendAllText(Path.Combine(dataDir, "errors.txt"), DateTime.Now + " " + e + "\n"); } catch { } }
 
     static string DataDir()
     {
@@ -79,6 +98,19 @@ public static class Svc
             return img;
         }
         catch { return null; }
+    }
+}
+
+/// <summary>The video source, made when the first video plays (its sockets and the DHT start then, and a failure
+/// there is reported on the watch page instead of stopping the app).</summary>
+sealed class LazyVideoSource(Func<IVideoSource> make) : IVideoSource
+{
+    IVideoSource? inner; string? error;
+    public async Task<Uri?> Play(string infoHash, string file, double size, Action<string> status)
+    {
+        if (inner == null && error == null) try { inner = make(); } catch (Exception e) { error = e.Message; Svc.Report(e); }
+        if (inner == null) { status("Videos can’t play on this device: " + error); return null; }
+        return await inner.Play(infoHash, file, size, status);
     }
 }
 
