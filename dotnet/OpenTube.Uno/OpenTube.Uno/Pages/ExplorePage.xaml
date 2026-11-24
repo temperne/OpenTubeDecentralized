@@ -5,6 +5,11 @@
       Background="{ThemeResource BackgroundBrush}">
   <ScrollViewer>
     <StackPanel Padding="16" Spacing="14" MaxWidth="1400">
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <Button Content="🛍 Market" Style="{StaticResource FilledTonalButtonStyle}" Click="OnMarket" />
+        <Button Content="💱 Exchange" Style="{StaticResource FilledTonalButtonStyle}" Click="OnExchange" />
+        <Button Content="🏛 Organizations" Style="{StaticResource FilledTonalButtonStyle}" Click="OnOrgs" />
+      </StackPanel>
       <AutoSuggestBox x:Name="Search" PlaceholderText="Search videos and channels" QueryIcon="Find" TextChanged="OnSearch" />
       <ScrollViewer HorizontalScrollBarVisibility="Hidden" HorizontalScrollMode="Enabled" VerticalScrollMode="Disabled">
         <StackPanel x:Name="ViewBar" Orientation="Horizontal" Spacing="8" />

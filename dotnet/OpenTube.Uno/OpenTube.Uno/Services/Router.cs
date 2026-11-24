@@ -28,6 +28,11 @@ public static class Router
             case "devices": case "me": App.Open(typeof(DevicesPage)); break;
             case "golive": App.Open(typeof(GoLivePage), p.Length >= 2 ? p[1] : null); break;
             case "network": App.Open(typeof(NetworkPage)); break;
+            case "u" when p.Length >= 2: ProfilePage.Open(p[1]); break;
+            case "market" when p.Length >= 3 && p[1] == "item": App.Open(typeof(MarketItemPage), p[2]); break;
+            case "market": App.Open(typeof(MarketPage), p.Length >= 2 ? p[1] : null); break;
+            case "exchange": App.Open(typeof(ExchangePage), p.Length >= 2 ? p[1] : null); break;
+            case "orgs": App.Open(typeof(OrgsPage)); break;
             default: App.Open(typeof(ComingPage), p[0]); break;
         }
     }
