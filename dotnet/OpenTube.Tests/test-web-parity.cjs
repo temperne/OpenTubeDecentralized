@@ -31,6 +31,9 @@ const waitText = async (p, re, ms = 60000, sel = 'body') => { const t0 = Date.no
   check(await X.waitForSelector('header a[href="mine"]', { timeout: 120000 }).then(() => true, () => false), 'My channel(s) in the header once you have one');
   check(await X.$('header a[href="upload"]') != null && await X.$('header a[href="golive"]') != null, '＋ Add video and ● Go live in the header');
   check(await waitText(X, /nodes|Online|Limited|Problem/, 30000, 'header a.net'), 'network status in the header: ' + (await X.textContent('header a.net').catch(() => '')).trim());
+  check(await X.$('#android-app') == null, 'no Android app link on a desktop browser');
+  { const ap = await cx.newPage(); await ap.setExtraHTTPHeaders({}); await ap.addInitScript(() => Object.defineProperty(navigator, 'userAgent', { get: () => 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/131 Mobile Safari/537.36' }));
+    await ap.setViewportSize({ width: 390, height: 800 }); await ap.goto(BASE + 'app/'); check(await ap.waitForSelector('#android-app', { timeout: 120000 }).then(() => true, () => false) && await ap.isVisible('#android-app'), 'the Android app link shows on an Android phone'); await ap.close(); }
   await X.click('header a[href="mine"]'); check(await waitText(X, /Parity Channel/, 30000, 'main'), 'My channel(s) lists your channel');
   // Devices
   await X.goto(BASE + 'app/devices'); await X.waitForSelector('button:has-text("Test connection")', { timeout: 120000 });

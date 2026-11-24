@@ -19,9 +19,9 @@
         <NavLink href="you" id="nav-you">@if (MyPic() is { } pic) { <img class="avatar xs" src="@pic" alt="" /> } else { <span>👤</span> } You</NavLink>
         <NavLink href="devices" class="desk-only" title="Your computers and the network">Devices</NavLink>
         @if (S.Ready && MyChannelCount() is > 0 and var nch) { <NavLink href="mine" class="desk-only">@(nch > 1 ? "My channels" : "My channel")</NavLink> }
-        @if (Web) { <a href="https://github.com/temperne/OpenTubeDecentralized/releases/download/android-latest/opentube.apk" class="desk-only" title="OpenTube for Android: install opentube.apk on your phone">📱 App</a> }
     </nav>
     <span class="actions">
+        @if (Web && android) { <a class="act app-link" id="android-app" href="https://github.com/temperne/OpenTubeDecentralized/releases/download/android-latest/opentube.apk" title="OpenTube for Android: download opentube.apk and open it to install">📱 App</a> }
         <a class="bell" href="notifications" title="Notifications">🔔@if (S.Ready && S.Notes.Unread > 0) { <span class="bell-n">@(S.Notes.Unread > 99 ? "99+" : S.Notes.Unread.ToString())</span> }</a>
         <a class="act" href="upload" title="Add a video">＋<span class="lbl"> Add video</span></a><a class="act live" href="golive" title="Go live">●<span class="lbl"> Go live</span></a>
     </span>
@@ -41,6 +41,12 @@
 <TermsBanner />
 <main>@Body</main>
 @code {
+    bool android;   // the website on an Android phone: offer the app
+    protected override async Task OnAfterRenderAsync(bool first)
+    {
+        if (!first || !Web) return;
+        try { android = await JS.InvokeAsync<bool>("eval", "/Android/i.test(navigator.userAgent)"); if (android) StateHasChanged(); } catch { }
+    }
     protected override void OnInitialized()
     {
         S.Changed += Poke;

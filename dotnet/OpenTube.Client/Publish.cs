@@ -116,13 +116,18 @@ public sealed class LiveBroadcast : IAsyncDisposable
         var lb = new JsonObject { ["type"] = "live", ["title"] = title.Trim()[..Math.Min(140, Math.Max(1, title.Trim().Length))], ["stream"] = b.Stream, ["mime"] = mime };
         if (hubNode != null) lb["hub"] = hubNode;   // viewers find the stream there
         if (group != null) lb["group"] = group;
-        await Task.Run(() => s.Engine.Append(chain, lb));
+        var asGuest = group != null && s.Chain(chain)?.Kind != "channel";   // a guest without a channel: the stream rides on their profile, only into the group
+        if (!asGuest) await Task.Run(() => s.Engine.Append(chain, lb));
         if (group == null) s.Publish.Relay(chain, b.Stream, title);
         else
         {
             b.Group = group;
-            var args = s.Publish.ChanProof(group, chain); args["stream"] = b.Stream; args["chain"] = chain; args["hub"] = b.HubNode;
-            _ = Task.Run(async () => { try { await s.NodeCtl(group, "group.join", args); b.Say("You’re in the group stream."); } catch (Exception e) { b.Say("Group stream: " + e.Message); } });
+            // your own computer's group stream goes live on this channel: link the computer to it (it writes the live block)
+            var ownGroup = s.MyNodes().Any(n => n.Node == group && !n.Perms.Contains('g'));
+            if (ownGroup && s.Chain(chain)?.Relays.Contains(group) != true)
+                await Task.Run(() => s.Engine.Append(chain, new JsonObject { ["type"] = "relay", ["key"] = group, ["on"] = true }));
+            var args = s.Publish.ChanProof(group, chain); args["stream"] = b.Stream; args["chain"] = chain; args["hub"] = b.HubNode; args["title"] = title.Trim();
+            _ = Task.Run(async () => { try { await s.NodeCtl(group, "group.join", args); b.GroupStatus = "You’re in the group stream."; b.Say("You’re in the group stream."); } catch (Exception e) { b.GroupStatus = "Group stream: " + e.Message; b.Say(b.GroupStatus); } });
         }
         return b;
     }
@@ -164,6 +169,8 @@ public sealed class LiveBroadcast : IAsyncDisposable
         foreach (var (node, url) in cands.DistinctBy(c => c.Item2)) if (await Reachable(url)) return (node, url);
         return (null, siteLive);
     }
+    /// <summary>How joining the group went (kept: the live status changes on).</summary>
+    public string? GroupStatus { get; private set; }
     /// <summary>The computer whose group stream this joined, if any.</summary>
     public string? Group { get; private set; }
     void Say(string st) { Status = st; Changed?.Invoke(); }

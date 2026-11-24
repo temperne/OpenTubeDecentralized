@@ -65,6 +65,18 @@ const waitText = async (p, re, ms = 60000) => { const t0 = Date.now(); while (Da
   check(await waitText(Y, /You’re in the group stream|Live/, 60000), 'the guest goes live into the group: ' + (await Y.textContent('#golive-status').catch(() => '')));
   check(await X.waitForSelector('.group-panel .studio-person:has-text("🌐")', { timeout: 90000 }).then(() => true, () => false), 'the host’s studio lists the guest’s camera (waiting room or on air)');
   await cy.close();
+  // a guest with no channel at all (C# pages only): invited, joins from Go live; their profile carries the stream
+  const cz = await chromium.launchPersistentContext(W + '/z', { headless: true, args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] }); const Z = cz.pages()[0]; Z.on('pageerror', e => errs.push(e.message));
+  await Z.goto(BASE + 'app/you/settings'); await Z.waitForSelector('button:has-text("Copy user ID")', { timeout: 120000 });
+  const z = (await Z.textContent('.row-actions:has(button:has-text("Copy user ID")) .mono')).trim(); log('guest', z.slice(0, 12));
+  await X.fill('.group-panel input[placeholder^="Their"]', z); await X.click('.group-panel button:text-is("Invite")');
+  check(await X.waitForSelector(`.group-panel a[href="u/${z}"]`, { timeout: 30000 }).then(() => true, () => false), 'the host invites a guest who has no channel');
+  await Z.goto(BASE + `app/golive?group=${nodeKey}`); await Z.waitForSelector('text=Joining a group stream on camera', { timeout: 60000 });
+  check(!/don’t have a channel/.test(await Z.textContent('main')), 'Go live doesn’t ask the guest for a channel');
+  await Z.fill('input[maxlength="140"]', 'Guest without channel'); await Z.click('button:has-text("Go live")');
+  check(await waitText(Z, /You’re in the group stream/, 240000, ), 'the channel-less guest goes live into the group: ' + (await Z.textContent('#golive-status').catch(() => '')));
+  check(await X.waitForFunction(() => document.querySelectorAll('.group-panel .studio-person').length >= 2 || /Guest without|\(browser\)/.test(document.querySelector('.group-panel')?.textContent || ''), null, { timeout: 90000 }).then(() => true, () => false), 'the host’s studio lists their camera');
+  await cz.close();
   check(errs.length === 0, 'no page errors' + (errs.length ? ': ' + errs.slice(0, 3).join(' | ') : ''));
   await cx.close(); P.kill(); process.exit(fail);
 })().catch(e => { console.error(e); process.exit(1); });

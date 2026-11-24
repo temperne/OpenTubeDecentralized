@@ -50,7 +50,7 @@ public sealed class GroupStudio(OpenTubeNode node, ObsLive obs, string hostUser)
     List<Input> list = [], all = []; List<Tile> tiles = [];
     (byte[] Buf, int W)? ticker; byte[]? logo;
     readonly HashSet<string> absorbed = []; bool pointing;
-    Timer? startTimer; CancellationTokenSource? clockCts;
+    Timer? startTimer; CancellationTokenSource? clockCts; int startTries;
     void Log(string m) => node.Log("[group] " + m);
     static double Now() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
     JsonObject Profile => obs.ProfileOf(hostUser);
@@ -253,7 +253,12 @@ public sealed class GroupStudio(OpenTubeNode node, ObsLive obs, string hostUser)
             Relayout(); if (all.Count == 0) return;
             var st = Studio(); _ = BuildTicker((string?)st["ticker"]!["text"] ?? ""); _ = BuildLogo(LogoFile());
             var chain = obs.ChannelFor(hostUser, Profile);
-            if (chain == null) { Log("no channel picked for the group stream (Devices → OBS → Channel)"); return; }
+            if (chain == null)
+            {   // the channel's link to this computer may still be on its way: try again for a little while
+                if (startTries++ < 15) { startTimer = new Timer(_ => Start(), null, 2000, Timeout.Infinite); return; }
+                startTries = 0; Log("no channel linked for the group stream (Go live on a channel of yours, or Devices → OBS → Channel)"); return;
+            }
+            startTries = 0;
             var title = Profile["_absorbedTitle"] is JsonNode at ? (string?)at ?? "Live" : (string?)Profile["title"] ?? "Live"; Profile.Remove("_absorbedTitle");
             output = obs.NewSink(chain, title, Profile); encFails = 0; stopping = false;
             EncStart(true);
@@ -637,6 +642,11 @@ public sealed class GroupStudio(OpenTubeNode node, ObsLive obs, string hostUser)
                     ok = key != null && Rules.VerifySig(key, $"opentube-obs-channel:{node.NodeKey}:{user}:{chain}", cs);
                 }
                 if (!ok) throw new Exception("that stream’s channel isn’t yours");
+                if (user == hostUser && (string?)Profile["channel"] != chain)
+                {   // the host's camera into their own group: the group stream goes live on that channel, with its title
+                    Profile["channel"] = chain; if (Js.Str(a["title"]) is { Length: > 0 } t) Profile["title"] = t.Length > 140 ? t[..140] : t;
+                    obs.Save(); Log($"the group stream goes live on {chain[..8]}");
+                }
                 var hub = Js.IsKey(a["hub"]) ? (string?)a["hub"] : null;   // the hub the browser streams on (its live block may not have reached us yet)
                 if (Pull((string)a["stream"]!, user, Label(user) + " (browser)", chain, hub) is string why) throw new Exception(why);
                 break;

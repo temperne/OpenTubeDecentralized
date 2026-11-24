@@ -9,7 +9,7 @@
 else
 {
     var chans = S.Publish.MyChannels();
-    if (chans.Count == 0) { <p>You don’t have a channel yet. <a href="you">Create one</a> first.</p> }
+    if (chans.Count == 0 && Group == null) { <p>You don’t have a channel yet. <a href="you">Create one</a> first (or join someone’s group stream from their live page: that needs no channel).</p> }
     else
     {
         @if (ended != null)
@@ -32,8 +32,12 @@ else
         }
         <div class="panel">
             <h3>With this device’s camera</h3>
-            <label>Channel</label>
-            <select @bind="chain" disabled="@(live != null)">@foreach (var c in chans) { <option value="@c.Id">@c.Name</option> }</select>
+            @if (chans.Count > 0)
+            {
+                <label>Channel</label>
+                <select @bind="chain" disabled="@(live != null)">@foreach (var c in chans) { <option value="@c.Id">@c.Name</option> }</select>
+            }
+            else { <p class="sub">You’re joining as a guest: your camera goes only into the host’s group stream (no channel needed; it uses your profile).</p> }
             <label>Title</label>
             <input @bind="title" maxlength="140" disabled="@(live != null)" />
             @if (live == null)
@@ -55,7 +59,7 @@ else
                 @if (live == null) { <button class="primary" disabled="@busy" @onclick="Start">● Go live</button> }
                 else { <button class="primary" @onclick="Stop">■ End stream</button> <a href="live/@live.Chain/@live.Stream" target="_blank">Open the viewer page</a> }
             </div>
-            <div class="sub" id="golive-status">@(live != null ? $"{live.Status} · {Bytes(live.Bytes)} sent · {live.Viewers} watching · hub: {(live.HubNode != null ? NodeName(live.HubNode) : "the site")}" : msg)</div>
+            <div class="sub" id="golive-status">@(live != null ? $"{(live.GroupStatus != null ? live.GroupStatus + " · " : "")}{live.Status} · {Bytes(live.Bytes)} sent · {live.Viewers} watching · hub: {(live.HubNode != null ? NodeName(live.HubNode) : "the site")}" : msg)</div>
             <p class="sub">Your computers relay it to viewers, and one records it so you can publish it afterwards.</p>
         </div>
         <div class="panel">
@@ -119,7 +123,15 @@ else
     string NodeName(string n) => S.Engine.Read(e => e.Nodes.TryGetValue(n, out var x) ? (string?)x["info"]?["name"] : null) ?? "your computer";
     async Task Start()
     {
-        busy = true; msg = "Starting the camera…";
+        busy = true;
+        if (S.Publish.MyChannels().Count == 0 && where.Length > 0)
+        {   // a guest without a channel: the stream rides on their profile
+            if (S.Social.MyPage == null) { msg = "Starting your profile (a few seconds to a minute)…"; StateHasChanged(); try { await S.Social.StartPage(); } catch (Exception e) { msg = "Couldn’t start your profile: " + e.Message; busy = false; return; } }
+            for (int i = 0; i < 120 && (S.Social.MyPage is not { } pg || S.Chain(pg) == null); i++) { msg = "Waiting for your profile to be registered…"; StateHasChanged(); await Task.Delay(1000); }
+            chain = S.Social.MyPage ?? "";
+            if (chain.Length == 0 || S.Chain(chain) == null) { msg = "Your profile isn’t registered yet: try again in a minute."; busy = false; return; }
+        }
+        msg = "Starting the camera…";
         self ??= Microsoft.JSInterop.DotNetObjectReference.Create(this);
         var r = await JS.InvokeAsync<System.Text.Json.Nodes.JsonObject>("otUi.camStart", self, "cam-preview");
         if ((string?)r["error"] is { } err) { msg = err; busy = false; return; }

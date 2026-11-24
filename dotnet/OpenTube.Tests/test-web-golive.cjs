@@ -48,6 +48,18 @@ const waitText = async (p, re, ms = 60000, sel = 'main') => { const t0 = Date.no
   check(await waitText(X, /published as a video/, 120000), 'publishing it');
   const vid = await XJ.evaluate(async ({ c, s }) => { for (let i = 0; i < 60; i++) { const v = opentube.engine.derive(c).videos.find(v => v.payload.stream === s); if (v) return v.payload.title; await new Promise(r => setTimeout(r, 1000)); } return null; }, { c: chain, s: lb?.stream });
   check(!!vid, 'the channel has a video of the stream: ' + vid);
+  // into your own computer's group stream, from a channel not linked to it yet: the computer's combined stream goes live on it
+  await XJ.goto(BASE + '?folder=browser#/you/channels'); await XJ.waitForTimeout(800);
+  await XJ.fill('input[placeholder=Name]', 'Group Channel'); await XJ.click('text=Create & register');
+  await XJ.waitForFunction(() => location.hash.startsWith('#/c/') && location.hash.split('/')[2] !== window.__c1, null, { timeout: 180000 });
+  const chain2 = await XJ.evaluate(() => location.hash.split('/')[2]); await XJ.waitForFunction((c) => opentube.engine.directory.has(c), chain2, { timeout: 180000 });
+  await X.goto(BASE + 'app/golive/' + chain2); await X.waitForSelector('#golive-where', { timeout: 60000 });
+  await X.selectOption('#golive-where', nodeKey); await X.fill('input[maxlength="140"]', 'Group show'); await X.click('button:has-text("● Go live")');
+  check(await waitText(X, /You’re in the group stream|Live ·/, 60000), 'into my group stream: ' + (await X.textContent('#golive-status').catch(() => '')));
+  const glb = await XJ.evaluate(async ({ c, k }) => { for (let i = 0; i < 120; i++) { const d = opentube.engine.derive(c); const b = (d.liveNow || []).find(b => b.author === k); if (b) return b.payload; await new Promise(r => setTimeout(r, 1000)); } return null; }, { c: chain2, k: nodeKey });
+  check(!!glb, 'the computer’s group stream shows as live on the channel: ' + JSON.stringify(glb && { title: glb.title }));
+  check(glb?.title === 'Group show', 'with the title given on Go live');
+  await X.goto(BASE + 'app/c/' + chain2); check(await waitText(X, /LIVE|Live now|● Live/i, 30000), 'the channel page shows it live');
   check(errs.length === 0, 'no page errors' + (errs.length ? ': ' + errs.slice(0, 3).join(' | ') : ''));
   await cx.close(); P.kill(); process.exit(fail);
 })().catch(e => { console.error(e); process.exit(1); });
