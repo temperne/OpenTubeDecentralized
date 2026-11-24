@@ -18,7 +18,7 @@
   if (name) { base = base.replace(/[^/]*\/$/, ''); to = 'n/' + encodeURIComponent(name[0].replace(/\/$/, '')); }
   else if (p[0] === 'live' && p[1]) to = 'c/' + p[1];
   else if (p[0] === 'square') to = 'posts' + (p[1] ? '/' + p[1] : '') + (p[2] ? '/' + p[2] : '');
-  else if (p[0] === 'me' || p[0] === 'network') to = 'devices';
+  else if (p[0] === 'me') to = 'devices';
   else if (p[0] === 'new') to = p[1] === 'live' ? 'golive' : 'upload';
   else if (p[0] === 'tag' || p[0] === 'mine') to = p[0] === 'mine' ? 'you/channels' : 'explore';
   else if (p[0] === 'terms') to = '';

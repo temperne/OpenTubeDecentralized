@@ -57,6 +57,9 @@ public sealed class BrowserTorrents : IVideoPlayer
     }
 
 
+
+    public IReadOnlyList<Transfer> Transfers() => bt.Torrents.Values.Select(t => new Transfer(t.InfoHashHex, t.Meta?.Name ?? "", t.Have.Length == 0 ? 0 : (double)t.HaveCount / t.Have.Length, bt.PeersOf(t.InfoHashHex), t.Complete, t.Meta?.Length ?? 0)).ToList();
+    public IReadOnlyList<string> TrackerList() => Trackers();
     public async Task<byte[]?> Fetch(string infoHash, string file, double size, TimeSpan timeout)
     {
         var name = string.Concat(Path.GetFileName(file).Select(c => char.IsLetterOrDigit(c) || c is '.' or '-' or '_' ? c : '_')); if (name.Length == 0) name = "ad.mp4";

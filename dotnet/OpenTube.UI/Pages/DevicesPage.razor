@@ -1,7 +1,7 @@
 @page "/devices"
 @inherits Live
 @using System.Text.Json.Nodes
-<h2>Devices</h2>
+<div class="head-row"><h2>Devices</h2><a href="network">📡 Network &amp; diagnostics</a></div>
 <p class="sub">Your computers run OpenTube: they keep the network, host your videos, receive OBS, and watch for you while your phone sleeps.</p>
 @foreach (var (n, perms, at) in S.MyNodes())
 {

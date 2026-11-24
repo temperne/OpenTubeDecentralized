@@ -1,0 +1,110 @@
+@page "/network"
+@inherits Live
+@inject IVideoPlayer Player
+@inject IJSRuntime JS
+@inject UiPlatform Platform
+<div class="head-row"><h2>Network & diagnostics</h2><button @onclick="Retest">Re-test</button></div>
+@if (!S.Ready) { <p class="sub">Starting…</p> }
+else
+{
+    var main = S.Engine.Read(e => (Height: Js.Num(e.Store.MainBest["height"]) ?? 0, Tip: (string?)e.Store.MainBest["hash"] ?? "", Blocks: e.Store.Main.Blocks.Count, Orphans: e.Store.Main.Orphans.Count, Pending: e.Store.Mempool.Count, Txs: e.Store.TxPool.Count, Directory: e.Store.Directory.Count, Mining: e.Mining));
+    var checks = Checks(main.Height);
+    <div class="panel">
+        @foreach (var (level, name, text) in checks) { <div class="check"><span class="pill @level">@(level == "ok" ? "✅" : level == "warn" ? "⚠️" : "❌")</span> <b>@name</b> — @text</div> }
+    </div>
+    <div class="split">
+        <div class="panel"><h3>Connection</h3>
+            <div class="kv">
+                <div>Runs as</div><div>@Platform.Label</div>
+                <div>Nodes linked</div><div>@S.Peers</div>
+                <div>Ways in</div><div class="mono">@foreach (var u in S.LinkedUrls) { <div>@u.Replace("wss://", "").Replace("ws://", "")</div> }</div>
+                <div>The site</div><div class="mono">@S.Site</div>
+                <div>Network ID</div><div class="mono">@Network.MainId[..32]…</div>
+            </div>
+        </div>
+        <div class="panel"><h3>Main chain</h3>
+            <div class="kv">
+                <div>Height / tip</div><div>#@main.Height · <span class="mono">@(main.Tip.Length > 16 ? main.Tip[..16] : main.Tip)…</span></div>
+                <div>Blocks stored</div><div>@main.Blocks (@main.Orphans waiting for parents)</div>
+                <div>Registered</div><div>@main.Directory channels, lists and more</div>
+                <div>Pending</div><div>@main.Pending registrations · @main.Txs transactions</div>
+                <div>Mining</div><div>@(main.Mining ? "yes (your own registrations and transactions)" : "idle")</div>
+            </div>
+        </div>
+    </div>
+    var live = S.LiveEverywhere();
+    <div class="panel"><h3>Live streams (@live.Count)</h3>
+        @if (live.Count == 0) { <div class="sub">None of the channels this device has loaded says it’s live.</div> }
+        @foreach (var (c, n, lb) in live) { <div><a href="live/@c/@lb["payload"]!["stream"]">@n: @((string?)lb["payload"]?["title"])</a> <span class="sub">· @Ago(Js.Num(lb["ts"]) ?? 0)</span></div> }
+    </div>
+    var chains = S.Engine.Read(e => e.Store.Chains.Values.Where(c => c != e.Store.Main).Select(c => (c.Id, Kind: (string?)c.Genesis["payload"]?["kind"] ?? "", Name: (string?)c.Genesis["payload"]?["name"] ?? (string?)c.Genesis["payload"]?["month"] ?? c.Id[..8], Blocks: c.Blocks.Count, Orphans: c.Orphans.Count, Owner: c.Owner)).ToList());
+    <div class="panel"><h3>Chains (@chains.Count)</h3>
+        <div class="tablewrap"><table class="diag">
+            <tr><th>Chain</th><th>Your role</th><th>Blocks</th><th>Missing</th></tr>
+            @foreach (var c in chains.OrderByDescending(c => S.Notes.Subscription(c.Id) != null).ThenByDescending(c => c.Blocks).Take(200))
+            {
+                <tr><td><a href="c/@c.Id">@c.Name</a><div class="sub">@c.Kind</div></td><td>@Role(c.Id, c.Owner)</td><td>@c.Blocks</td><td>@c.Orphans</td></tr>
+            }
+        </table></div>
+    </div>
+    var transfers = Player.Transfers();
+    <div class="panel"><h3>Video peer-to-peer</h3>
+        <h4>Trackers (meet places)</h4>
+        <div class="tablewrap"><table class="diag"><tr><th>Tracker</th><th>Status</th></tr>
+            @foreach (var u in Player.TrackerList()) { <tr><td class="mono">@u</td><td>@(trackers.TryGetValue(u, out var r) ? r : "testing…")</td></tr> }
+        </table></div>
+        <h4>Transfers (@transfers.Count)</h4>
+        @if (transfers.Count == 0) { <div class="sub">No video transfers right now.</div> }
+        else
+        {
+            <div class="tablewrap"><table class="diag"><tr><th>File</th><th>Have</th><th>Peers</th><th>Status</th></tr>
+                @foreach (var t in transfers) { <tr><td>@(t.Name.Length > 0 ? t.Name : t.InfoHash[..12])<div class="sub mono">@t.InfoHash[..16]</div></td><td>@((t.Progress * 100).ToString("0"))%</td><td>@t.Peers</td><td>@(t.Complete ? (t.Peers > 0 ? $"sharing with {t.Peers} peer(s)" : "complete") : t.Peers > 0 ? $"downloading from {t.Peers} peer(s)" : "looking for peers…")</td></tr> }
+            </table></div>
+        }
+    </div>
+    <div class="split">
+        <div class="panel"><h3>Storage</h3>
+            <div class="kv"><div>Used</div><div>@(storage ?? "…")</div></div>
+        </div>
+        <div class="panel"><h3>Hosting for you elsewhere</h3>
+            @{ var m = S.Engine.Read(e => e.Memberships.TryGetValue(S.Me.pub, out var x) ? (JsonObject)x.DeepClone() : null); }
+            <div class="kv">
+                <div>Joined channels</div><div>@S.Notes.Joined.Count</div>
+                <div>List published</div><div>@(m != null ? Ago(Js.Num(m["at"]) ?? 0) : "not yet")</div>
+                <div>Your computers</div><div>@S.MyNodes().Count (<a href="devices">Devices</a>)</div>
+            </div>
+        </div>
+    </div>
+}
+@code {
+    readonly Dictionary<string, string> trackers = []; string? storage;
+    protected override async Task OnInitializedAsync() { base.OnInitialized(); Retest(); try { storage = await JS.InvokeAsync<string>("otUi.storage"); } catch { storage = "unknown"; } }
+    string Role(string id, string? owner) => S.IsMine(owner) ? "owner" : S.Notes.Subscription(id) switch { "join" => "joined (hosted by your computers)", "sub" => "subscribed", _ => "viewed" };
+    List<(string, string, string)> Checks(double height)
+    {
+        var outp = new List<(string, string, string)>();
+        outp.Add(S.Peers > 0 ? ("ok", "Network", $"linked to {S.Peers} node{(S.Peers == 1 ? "" : "s")}") : ("error", "Network", "not linked to any node: nothing new arrives. Check your connection, or reload."));
+        outp.Add(height > 0 ? ("ok", "Main chain", $"at block #{height}") : ("warn", "Main chain", "only the first block so far: still syncing"));
+        var bad = trackers.Values.Count(v => v.StartsWith("✗")); var good = trackers.Values.Count(v => v.StartsWith("✓"));
+        outp.Add(trackers.Count == 0 ? ("warn", "Video meet places", "testing…") : good > 0 ? ("ok", "Video meet places", $"{good} of {trackers.Count} reachable") : ("error", "Video meet places", "none reachable: videos can’t find peers"));
+        var nodes = S.MyNodes(); var online = nodes.Count(n => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - n.At < 10 * 60000);
+        outp.Add(nodes.Count == 0 ? ("warn", "Your computers", "none yet: run OpenTube on a computer (Devices) to keep your videos online") : online > 0 ? ("ok", "Your computers", $"{online} of {nodes.Count} online") : ("warn", "Your computers", "none online right now"));
+        return outp;
+    }
+    void Retest()
+    {
+        foreach (var u in Player.TrackerList())
+            _ = Task.Run(async () =>
+            {
+                var t0 = DateTime.UtcNow;
+                try
+                {
+                    using var ws = new System.Net.WebSockets.ClientWebSocket(); using var cts = new CancellationTokenSource(8000);
+                    await ws.ConnectAsync(new Uri(u), cts.Token); trackers[u] = $"✓ reachable · {(DateTime.UtcNow - t0).TotalMilliseconds:0} ms";
+                    try { await ws.CloseAsync(System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, "", CancellationToken.None); } catch { }
+                }
+                catch (Exception e) { trackers[u] = "✗ " + (e is OperationCanceledException ? "timed out" : "unreachable"); }
+                await InvokeAsync(StateHasChanged);
+            });
+    }
+}

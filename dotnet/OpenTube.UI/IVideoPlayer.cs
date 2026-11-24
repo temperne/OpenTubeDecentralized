@@ -14,5 +14,10 @@ public interface IVideoPlayer
     Task<OpenTube.Core.BitTorrent.TorrentMeta> Share(string path, string name);
     /// <summary>A whole (small) file from the network, e.g. an ad, once every piece is here; null if it doesn't arrive in time.</summary>
     Task<byte[]?> Fetch(string infoHash, string file, double size, TimeSpan timeout);
+    /// <summary>What this device's BitTorrent client is moving right now (for the network page).</summary>
+    IReadOnlyList<Transfer> Transfers() => [];
+    /// <summary>The trackers (meet places) this device announces to.</summary>
+    IReadOnlyList<string> TrackerList() => [];
 }
 public sealed record Playback(string? Src, string? Status);
+public sealed record Transfer(string InfoHash, string Name, double Progress, int Peers, bool Complete, long Size);

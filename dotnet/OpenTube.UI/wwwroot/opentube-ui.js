@@ -67,3 +67,10 @@ window.otUi.thumbOf = (bytes, mime) => new Promise((res) => {
   v.onseeked = () => done(draw(v, v.videoWidth, v.videoHeight)); v.onerror = () => done(''); setTimeout(() => done(''), 8000);
   v.src = url;
 });
+// How much this site keeps on this device, and whether the browser keeps it for good.
+window.otUi.storage = async () => {
+  if (!navigator.storage?.estimate) return 'unknown';
+  const e = await navigator.storage.estimate(), p = await navigator.storage.persisted?.();
+  const mb = (n) => (n / 1e6).toFixed(n < 1e8 ? 1 : 0) + ' MB';
+  return `${mb(e.usage || 0)} of ${mb(e.quota || 0)} · ${p ? 'kept for good' : 'the browser may clear it when space runs low'}`;
+};
