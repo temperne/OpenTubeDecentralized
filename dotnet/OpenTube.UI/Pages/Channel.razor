@@ -169,9 +169,10 @@ else
                 @if (d.Kind == "org")
                 {
                     <div class="kv">
-                        @if ((string?)d.Profile["orgType"] is { } ot) { <div>Type</div><div>@ot</div> }
+                        @{ var ok = OrgKinds.Of((string?)d.Profile["orgType"]); }
+                        <div>Type</div><div>@ok.Name</div>
                         @if ((string?)d.Profile["jurisdiction"] is { } jur) { <div>Jurisdiction</div><div>@jur</div> }
-                        @foreach (var (k, v) in d.Profile["details"] as JsonObject ?? []) { <div>@k</div><div>@v?.ToString()</div> }
+                        @foreach (var f in ok.Fields) { var fv = d.Profile["details"]?[f.Key]; if (fv == null) continue; <div>@f.Label</div><div>@if (f.Key == "website" && fv.ToString().StartsWith("https://")) { <a href="@fv.ToString()" target="_blank" rel="noopener noreferrer nofollow">@fv.ToString()</a> } else { @OrgKinds.Show(f, fv) }</div> }
                     </div>
                     @foreach (var pp in (d.Profile["people"] as JsonArray ?? []).OfType<JsonObject>()) { <div><a class="person" href="u/@((string?)pp["key"])">@S.NameOf((string?)pp["key"] ?? "")</a> · @((string?)pp["role"])@(Js.Num(pp["share"]) is double sh ? $" · {sh}%" : "")</div> }
                 }

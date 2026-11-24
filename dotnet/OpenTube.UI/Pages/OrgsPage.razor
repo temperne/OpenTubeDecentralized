@@ -14,18 +14,18 @@
 <div class="panel">
     <h3>Create an organization</h3>
     <input placeholder="Name" @bind="name" maxlength="60" />
-    <select @bind="type">@foreach (var t in Trade.OrgTypes) { <option value="@t">@t</option> }</select>
     <input placeholder="Jurisdiction (optional)" @bind="jur" maxlength="120" />
     <textarea placeholder="What it does" @bind="about" rows="2"></textarea>
+    <OrgDetails @ref="details" OrgType="arbitration" />
     <div class="row-actions"><button class="primary" disabled="@busy" @onclick="Create">Create</button></div>
     @if (msg != null) { <div class="sub" id="orgs-status">@msg</div> }
 </div>
 @code {
-    string name = "", type = "arbitration", jur = "", about = ""; string? msg; bool busy;
+    OrgDetails? details; string name = "", jur = "", about = ""; string? msg; bool busy;
     async Task Create()
     {
         busy = true; msg = "Registering (proof of work on the main chain)…"; StateHasChanged();
-        try { var id = await S.Trade.CreateOrg(name, about, type, jur); Nav.NavigateTo("c/" + id); }
+        try { var x = details!.Value(); var id = await S.Trade.CreateOrg(name, about, (string)x["orgType"]!, jur, x); Nav.NavigateTo("c/" + id); }
         catch (Exception e) { msg = e.Message; busy = false; }
     }
 }

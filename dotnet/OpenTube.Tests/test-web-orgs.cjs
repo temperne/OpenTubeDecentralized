@@ -23,9 +23,15 @@ const waitText = async (p, re, ms = 120000) => { const t0 = Date.now(); while (D
   const video = await O.evaluate(async (c) => (await opentube.engine.append(c, { type: 'video', title: 'Spammy clip', desc: '', infohash: '12'.repeat(20), file: 'v.mp4', size: 10, thumb: '' })).hash, chain);
   const OC = await co.newPage(); OC.on('pageerror', e => errs.push(e.message));
   await OC.goto(BASE + 'app/orgs'); await OC.waitForSelector('input[placeholder=Name]', { timeout: 60000 });
-  await OC.fill('input[placeholder=Name]', 'Fair Court'); await OC.click('button:has-text("Create")');
+  await OC.fill('input[placeholder=Name]', 'Fair Court');
+  await OC.fill('.fields div:has(label:text-is("Rules it follows")) input', 'UNCITRAL'); await OC.fill('.fields div:has(label:text-is("Website")) input', 'https://court.example');
+  const me0 = await O.evaluate(() => opentube.me.pub);
+  await OC.fill('input[placeholder="Their user ID"]', me0); await OC.fill('input[placeholder^="Title, e.g."]', 'Chief arbitrator'); await OC.click('.panel button:has-text("Add")');
+  await OC.click('button:has-text("Create")');
   await OC.waitForURL(/\/app\/c\//, { timeout: 180000 }); const org = OC.url().split('/c/')[1].split('/')[0];
   check(await until(O, (g) => opentube.engine.directory.get(g)?.genesis.payload.orgType === 'arbitration', org, 180000), 'an arbitration body created in C# is registered (the JavaScript page sees it)');
+  check(await O.evaluate((g) => { const p = opentube.engine.directory.get(g).genesis.payload; return p.details?.rules === 'UNCITRAL' && p.details?.website === 'https://court.example' && p.people?.[0]?.role === 'Chief arbitrator'; }, org), 'with its details and people');
+  await OC.goto(BASE + `app/c/${org}/about`); check(await OC.waitForSelector('text=Rules it follows', { timeout: 60000 }).then(() => true, () => false) && /Chief arbitrator/.test(await OC.textContent('main')), 'the About tab shows them');
   // classifications
   await OC.goto(BASE + `app/c/${org}/rules`); await OC.waitForSelector('input[placeholder^="short-id"]', { timeout: 120000 });
   await OC.fill('input[placeholder^="short-id"]', 'spam'); await OC.fill('input[placeholder^="Name, e.g. Adult"]', 'Spam'); await OC.fill('input[placeholder="What it covers"]', 'Junk and scams');

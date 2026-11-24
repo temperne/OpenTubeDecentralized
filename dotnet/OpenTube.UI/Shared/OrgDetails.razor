@@ -1,0 +1,38 @@
+@inject OpenTube.Client.ClientSession S
+@* An organization's type, its fields, and the people behind it *@
+<label>Type</label>
+<select value="@OrgType" @onchange="e => { OrgType = (string)e.Value!; }">@foreach (var k in OrgKinds.All) { <option value="@k.Key">@k.Name</option> }</select>
+<div class="fields">
+    @foreach (var f in OrgKinds.Of(OrgType).Fields)
+    {
+        <div><label>@f.Label</label>
+            @if (f.Choices != null) { <select value="@Values.GetValueOrDefault(f.Key)" @onchange="e => Values[f.Key] = (string)e.Value!"><option value="">@f.Label…</option>@foreach (var o in f.Choices) { <option value="@o">@o</option> }</select> }
+            else { <input type="@(f.Type is "number" or "date" ? f.Type : "text")" value="@Values.GetValueOrDefault(f.Key)" @onchange="e => Values[f.Key] = (string?)e.Value ?? string.Empty" /> }
+        </div>
+    }
+</div>
+<label>@OrgKinds.Of(OrgType).People</label>
+@foreach (var q in People.ToList()) { <div class="row-item"><span class="grow"><a class="person" href="u/@q.Key">@S.NameOf(q.Key)</a> · @q.Role@(q.Share != null ? $" · {q.Share}%" : "")</span><button type="button" @onclick="() => People.Remove(q)">Remove</button></div> }
+<div class="row-actions"><input class="grow-input" @bind="pKey" placeholder="Their user ID" /><input @bind="pRole" maxlength="60" placeholder="Title, e.g. CEO, partner" style="width:180px" /><input type="number" min="0" max="100" @bind="pShare" placeholder="Share %" style="width:100px" /><button type="button" @onclick="Add">Add</button></div>
+@if (msg != null) { <div class="sub">@msg</div> }
+@code {
+    public sealed record Person(string Key, string Role, double? Share);
+    [Parameter] public string OrgType { get; set; } = "other";
+    [Parameter] public Dictionary<string, string> Values { get; set; } = [];
+    [Parameter] public List<Person> People { get; set; } = [];
+    string pKey = "", pRole = ""; double? pShare; string? msg;
+    void Add()
+    {
+        if (!System.Text.RegularExpressions.Regex.IsMatch(pKey.Trim(), "^[A-Za-z0-9_-]{43}$")) { msg = "Paste their user ID"; return; }
+        if (pRole.Trim().Length == 0) { msg = "Give a title"; return; }
+        People.Add(new(pKey.Trim(), pRole.Trim(), pShare is double v ? Math.Clamp(v, 0, 100) : null)); pKey = pRole = ""; pShare = null; msg = null;
+    }
+    /// <summary>{ orgType, details?, people? } as on the chain.</summary>
+    public JsonObject Value()
+    {
+        var o = new JsonObject { ["orgType"] = OrgType };
+        var d = OrgKinds.Details(OrgType, Values); if (d.Count > 0) o["details"] = d;
+        if (People.Count > 0) o["people"] = new JsonArray(People.Select(q => { var p = new JsonObject { ["key"] = q.Key, ["role"] = q.Role }; if (q.Share != null) p["share"] = q.Share; return (JsonNode?)p; }).ToArray());
+        return o;
+    }
+}

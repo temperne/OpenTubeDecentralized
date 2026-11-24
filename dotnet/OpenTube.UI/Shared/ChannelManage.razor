@@ -26,6 +26,11 @@
             <label>Avatar</label>
             <div class="row-actions">@if ((avatar ?? (string?)d.Profile["avatar"]) is { Length: > 0 } av) { <img class="avatar" src="@av" alt="" /> }<InputFile OnChange="PickAvatar" accept="image/*" /></div>
         }
+        @if (d.Kind == "org")
+        {
+            <label>Jurisdiction</label><input @bind="jurisdiction" maxlength="120" placeholder="e.g. California, USA" />
+            <OrgDetails @ref="orgDetails" OrgType="@((string?)d.Profile["orgType"] ?? "other")" Values="orgValues" People="orgPeople" />
+        }
         <label>Location</label><input @bind="location" maxlength="100" placeholder="City, country (optional)" />
         @if (d.Kind != "list") { <label>@(d.Kind == "org" ? "On the map (where this organization is)" : "On the map (for a business or venue; optional)")</label><PlacePicker Value="place" ValueChanged="p => { place = p; placeChanged = true; }" /> }
         <label>Links (shown on the About page)</label>
@@ -72,6 +77,7 @@
     [Parameter] public string Id { get; set; } = "";
     string handle = "", name = "", about = "", location = "", policy = "anyone", join = "open", key = "", linkLabel = "", linkUrl = "";
     string? avatar, msg; bool busy, loaded, placeChanged; JsonObject? place;
+    OrgDetails? orgDetails; string jurisdiction = ""; Dictionary<string, string> orgValues = []; List<OrgDetails.Person> orgPeople = [];
     record Link(string Label, string Url);
     List<Link> links = [];
     protected override void OnParametersSet()
@@ -83,6 +89,13 @@
         links = (p["links"] as JsonArray ?? []).OfType<JsonObject>().Select(l => new Link((string?)l["label"] ?? "", (string?)l["url"] ?? "")).ToList();
         handle = (S.NameOfChain(Id) ?? "").TrimStart('@', '~');
         place = p["place"]?.DeepClone() as JsonObject;
+        jurisdiction = (string?)p["jurisdiction"] ?? "";
+        if (d.Kind == "org")
+        {
+            var kind = OrgKinds.Of((string?)p["orgType"]);
+            foreach (var f in kind.Fields) if (p["details"]?[f.Key] is { } v) orgValues[f.Key] = OrgKinds.Show(f, v);
+            orgPeople = (p["people"] as JsonArray ?? []).OfType<JsonObject>().Select(q => new OrgDetails.Person((string?)q["key"] ?? "", (string?)q["role"] ?? "", Js.Num(q["share"]))).ToList();
+        }
     }
     string NameStatus(string space, string? cur)
     {
@@ -124,6 +137,13 @@
         if (about != ((string?)p["about"] ?? "")) ch["about"] = about;
         if (avatar != null) ch["avatar"] = avatar;
         if (placeChanged && place != null) ch["place"] = place.DeepClone();
+        if (d.Kind == "org" && orgDetails != null)
+        {
+            var x = orgDetails.Value(); var before = new JsonObject { ["orgType"] = (string?)p["orgType"] ?? "other" };
+            if (p["details"] is JsonObject bd && bd.Count > 0) before["details"] = bd.DeepClone(); if (p["people"] is JsonArray bp && bp.Count > 0) before["people"] = bp.DeepClone();
+            if (!JsonNode.DeepEquals(x, before)) foreach (var (k, v) in x) ch[k] = v?.DeepClone();
+            if (jurisdiction.Trim() != ((string?)p["jurisdiction"] ?? "")) ch["jurisdiction"] = jurisdiction.Trim();
+        }
         if (location.Trim() != ((string?)p["location"] ?? "")) ch["location"] = location.Trim();
         var cur = (p["links"] as JsonArray ?? []).OfType<JsonObject>().Select(l => new Link((string?)l["label"] ?? "", (string?)l["url"] ?? "")).ToList();
         if (!cur.SequenceEqual(links)) ch["links"] = new JsonArray(links.Select(l => (JsonNode?)new JsonObject { ["label"] = l.Label, ["url"] = l.Url }).ToArray());
