@@ -42,6 +42,7 @@ else
                     @if ((string?)obs["portNote"] is { } pn) { <div class="sub">⚠ @pn</div> }
                     <div class="row-actions"><button @onclick="LinkObs">Go live on “@(chans.FirstOrDefault(c => c.Id == chain)?.Name)” from OBS</button></div>
                 </div>
+                @if (obsNode != null && !S.MyNodes().First(x => x.Node == obsNode).Perms.Contains('g')) { <div class="panel"><GroupPanel Node="@obsNode" Title="true" /></div> }
             }
             @if (obsMsg != null) { <div class="sub">@obsMsg</div> }
         </div>

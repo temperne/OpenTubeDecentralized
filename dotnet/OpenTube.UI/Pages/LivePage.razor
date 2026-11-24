@@ -8,7 +8,7 @@ else
 {
     var hash = (string)lb["hash"]!; var stream = (string?)lb["payload"]?["stream"] ?? ""; var mine = S.IsMine(d!.Owner);
     var ended = d.LiveEnds.ContainsKey(stream) || w?.Ended == true; var stats = d.LiveStats.GetValueOrDefault(stream) as JsonObject;
-    var v = w?.Viewers;
+    var v = w?.Viewers; var host = HostNode(d, lb);
     <div class="watch">
         <div class="watch-main">
             @if (!ended || src != null) { <div class="player">@if (src != null) { <video controls autoplay muted playsinline src="@src" style="width:100%"></video> }</div> }
@@ -48,7 +48,7 @@ else
                     {
                         var now = (v["now"] as JsonArray ?? []).Select(x => (string?)x).OfType<string>().ToList(); var anon = Math.Max(0, (Js.Num(v["viewers"]) ?? 0) - now.Count);
                         <div class="sub">peak @Num(v["peak"] ?? v["viewers"]) · @Num(v["seenCount"]) unique · @Dur(Js.Num(v["watchSecs"]) ?? 0) watched · public</div>
-                        <div class="row-actions">@foreach (var k in now) { <a class="person" href="u/@k">@S.NameOf(k)</a> }</div>
+                        <div class="row-actions">@foreach (var k in now) { <a class="person" href="u/@k">@S.NameOf(k)</a> @if (host != null && !S.IsMine(k)) { <button class="small-btn @(invited.Contains(k) ? "on" : "")" title="Let them join this stream on camera (6 hours)" disabled="@invited.Contains(k)" @onclick="() => Invite(host, k)">🎥 Invite</button> } }</div>
                         @if (anon > 0) { <div class="sub">+ @anon not signed in</div> }
                         @if (now.Count == 0 && anon == 0) { <div class="sub">Nobody watching right now.</div> }
                         <button class="linkish" @onclick="() => showSeen = !showSeen">@(showSeen ? "▾" : "▸") Has been here (@Num(v["seenCount"]))</button>
@@ -61,6 +61,7 @@ else
                 </div>
             }
         </div>
+        @if (host != null && !ended) { <div class="panel watch-main-extra"><GroupPanel Node="@host" Title="true" /></div> }
         <aside class="watch-side">
             <div class="panel chat">
                 <h3>Chat</h3>
@@ -70,7 +71,7 @@ else
                     @foreach (var c in msgs.TakeLast(200))
                     {
                         var a = S.AuthorOf((string)c["author"]!, d, (string?)c["payload"]?["name"] ?? "");
-                        <div class="chat-msg"><a class="person" href="@a.Href"><b>@a.Name</b></a>@if (a.Owner) { <span class="badge ok">host</span> } <Rich Tag="span" Text="@((string?)c["payload"]?["text"])" />
+                        <div class="chat-msg"><a class="person" href="@a.Href"><b>@a.Name</b></a>@if (host != null && !S.IsMine((string)c["author"]!) && !a.Owner) { var ck = a.Key; <button class="tagx" title="Let them join on camera (6 hours)" disabled="@invited.Contains(ck)" @onclick="() => Invite(host, ck)">🎥</button> }@if (a.Owner) { <span class="badge ok">host</span> } <Rich Tag="span" Text="@((string?)c["payload"]?["text"])" />
                             @if (mine && !S.IsMine((string)c["author"]!)) { <button class="tagx" title="Hide this message" @onclick="() => Hide((string)c[HashKey]!)">✕</button> }</div>
                     }
                 </div>
@@ -90,6 +91,23 @@ else
     LiveWatch? w; string? src, started, msg; string say = ""; bool showSeen, sending;
     // by its stream id, or by its live block's hash (notifications link that way, as the JavaScript page does)
     JsonObject? Find(Derived? d) => d?.Streams.FirstOrDefault(b => (string?)b["payload"]?["stream"] == Stream || (string?)b["hash"] == Stream);
+    readonly HashSet<string> invited = [];
+    /// <summary>The computer that combines cameras for this stream, if it's yours to run: the one streaming it, or one of
+    /// your computers linked to the channel that receives OBS.</summary>
+    string? HostNode(Derived d, JsonObject lb)
+    {
+        if (!S.IsMine(d.Owner)) return null;
+        var mine = S.MyNodes().Where(n => n.Perms.Contains('o') && !n.Perms.Contains('g')).Select(n => n.Node).ToHashSet();
+        var author = (string?)lb["author"];
+        if (author != d.Owner && author != null) return mine.Contains(author) ? author : null;
+        return d.Relays.FirstOrDefault(mine.Contains);
+    }
+    async Task Invite(string node, string key)
+    {
+        invited.Add(key);
+        try { await S.NodeCtl(node, "group.invite", new JsonObject { ["key"] = key, ["hours"] = 6, ["name"] = S.NameOf(key) }); msg = $"{S.NameOf(key)} can join on camera now: they get their own stream key for 6 hours."; }
+        catch (Exception e) { invited.Remove(key); msg = "Invite failed: " + e.Message; }
+    }
     static string Num(JsonNode? n) => ((long)(Js.Num(n) ?? 0)).ToString("N0");
     static string Dur(double secs) => secs < 60 ? $"{secs:0} s" : secs < 3600 ? $"{Math.Round(secs / 60)} min" : $"{secs / 3600:0.0} h";
     protected override async Task OnAfterRenderAsync(bool first)

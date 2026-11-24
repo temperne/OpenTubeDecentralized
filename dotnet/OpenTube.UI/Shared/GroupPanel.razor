@@ -1,0 +1,123 @@
+@inherits Live
+@using Microsoft.AspNetCore.Components.Forms
+@* A computer's group stream (the studio): everyone connected combined into one picture; layout, waiting room, who's
+   on air (with previews), mute, disconnect, ticker, logo, and invited guests. Commands go to that computer (group.*). *@
+<div class="group-panel">
+    @if (Title) { <h4>👥 Group stream</h4> }
+    @if (g == null) { <span class="sub">Loading the group stream… @st</span> }
+    else if (!Js.IsTrue(g["host"]))
+    {
+        <div class="sub">@(Js.Num(g["until"]) is double until ? $"You’re invited by {(string?)g["invitedBy"]} until {DateTimeOffset.FromUnixTimeMilliseconds((long)until).LocalDateTime:g}" : $"{(string?)g["invitedBy"]}’s group stream"). Stream with OBS using your own key, or go live from your browser into it.</div>
+    }
+    else
+    {
+        var on = Js.IsTrue(g["on"]); var ff = Js.IsTrue(g["ffmpeg"]);
+        <label class="check"><input type="checkbox" checked="@on" disabled="@(!ff)" @onchange="e => Run(SetKey, new JsonObject { [OnKey] = (bool)e.Value! })" /> @(on ? "On: everyone connected is combined into one picture, arranged by how many are in it (up to 9)" : "Off: one stream")</label>
+        <span class="sub">@st</span>
+        @if (!ff) { <div class="sub">Needs ffmpeg on that computer.</div> }
+        @if (on && g["studio"] is JsonObject S0)
+        {
+            var layout = (string?)S0["layout"] ?? "grid"; var inputs = (g["inputs"] as JsonArray ?? []).OfType<JsonObject>().ToList();
+            var air = inputs.Where(x => Js.IsTrue(x["onAir"])).ToList(); var wait = inputs.Where(x => !Js.IsTrue(x["onAir"])).ToList();
+            <div class="row-actions small-actions"><b>Layout</b>
+                @foreach (var (v, l) in new[] { ("grid", "▦ Grid"), ("spotlight", "◧ Spotlight"), ("solo", "■ Solo") }) { <button class="@(layout == v ? "on" : "")" @onclick="() => Run(StudioKey, new JsonObject { [LayoutKey] = v })">@l</button> }
+                <label class="check sub"><input type="checkbox" checked="@Js.IsTrue(S0["waiting"])" @onchange="e => Run(StudioKey, new JsonObject { [WaitingKey] = (bool)e.Value! })" /> Waiting room (people wait until you put them on air)</label>
+            </div>
+            <div class="sub">@(Js.IsTrue(g["live"]) ? "🔴 Live now · " : Js.IsTrue(g["starting"]) ? "⏳ Going live… · " : "")On air (@air.Count)</div>
+            @if (air.Count == 0) { <div class="sub">Nobody on air.</div> }
+            @foreach (var x in air) { @Person(x, layout, (string?)S0["spot"]) }
+            @if (wait.Count > 0) { <div class="sub">⏳ Waiting room (@wait.Count)</div> foreach (var x in wait) { @Person(x, layout, (string?)S0["spot"]) } }
+            @if (inputs.Count == 0) { <div class="sub">Nobody is connected yet. Start Streaming in OBS (your key; key-2 … key-9 for more cameras), go live from a browser into this group, or invite people from the chat.</div> }
+            var tk = S0["ticker"] as JsonObject; var lg = S0["logo"] as JsonObject;
+            <div class="row-actions"><b>Ticker</b><input class="grow-input" @bind="tickText" maxlength="500" placeholder="Ticker text along the bottom" />
+                <select value="@((int)(Js.Num(tk?["speed"]) ?? 4))" @onchange="e => Run(StudioKey, Ticker(Js.IsTrue(tk?[OnKey]), int.Parse((string)e.Value!)))"><option value="2">slow</option><option value="4">normal</option><option value="7">fast</option></select>
+                <label class="check sub"><input type="checkbox" checked="@Js.IsTrue(tk?["on"])" @onchange="e => Run(StudioKey, Ticker((bool)e.Value!, (int)(Js.Num(tk?[SpeedKey]) ?? 4)))" /> show</label>
+                <button @onclick="() => Run(StudioKey, Ticker(true, (int)(Js.Num(tk?[SpeedKey]) ?? 4)))">Set</button></div>
+            <div class="row-actions"><b>Logo</b><InputFile OnChange="Logo" accept="image/*" />
+                <select value="@((string?)lg?["pos"] ?? "tr")" @onchange="e => Run(StudioKey, new JsonObject { [LogoKey] = new JsonObject { [PosKey] = (string)e.Value! } })"><option value="tl">top left</option><option value="tr">top right</option><option value="bl">bottom left</option><option value="br">bottom right</option></select>
+                <label class="check sub"><input type="checkbox" checked="@(Js.IsTrue(lg?["on"]) && Js.IsTrue(lg?["has"]))" disabled="@(!Js.IsTrue(lg?["has"]))" @onchange="e => Run(StudioKey, new JsonObject { [LogoKey] = new JsonObject { [OnKey] = (bool)e.Value! } })" /> show</label>
+                <span class="sub">@(Js.IsTrue(lg?["own"]) ? "your image" : Js.IsTrue(lg?["has"]) ? "your channel’s avatar" : "no image yet (set a channel avatar, or choose one)")</span>
+                @if (Js.IsTrue(lg?["own"])) { <button @onclick="() => Run(LogoCmd, new JsonObject { [DataKey] = string.Empty })">Use the avatar</button> }</div>
+        }
+        @if (on)
+        {
+            <div><b>Guests</b></div>
+            var guests = (g["guests"] as JsonArray ?? []).OfType<JsonObject>().ToList();
+            @if (guests.Count == 0) { <div class="sub">None invited.</div> }
+            @foreach (var u in guests)
+            {
+                var k = (string?)u["key"] ?? "";
+                <div class="row-item"><a class="grow person" href="u/@k">@((string?)u["name"] is { Length: > 0 } nm ? nm : S.NameOf(k))</a><span class="sub">until @DateTimeOffset.FromUnixTimeMilliseconds((long)(Js.Num(u["until"]) ?? 0)).LocalDateTime.ToString("g")</span><button @onclick="() => Run(UninviteCmd, new JsonObject { [KeyKey] = k })">Cancel invite</button></div>
+            }
+            <div class="row-actions"><input class="grow-input" @bind="who" placeholder="Their @@@@name or user ID" />
+                <select @bind="hours"><option value="2">2 hours</option><option value="6">6 hours</option><option value="24">1 day</option><option value="72">3 days</option><option value="168">1 week</option></select>
+                <button class="primary" @onclick="Invite">Invite</button></div>
+            <div class="sub">Invited people get their own stream key on this computer for that time (it shows on their Devices page), or go live from their browser into your group.</div>
+        }
+    }
+</div>
+@code {
+    [Parameter] public required string Node { get; set; }
+    [Parameter] public bool Title { get; set; }
+    const string OnKey = "on", SetKey = "group.set", StudioKey = "group.studio", LayoutKey = "layout", WaitingKey = "waiting", SpeedKey = "speed", LogoKey = "logo", PosKey = "pos", LogoCmd = "group.logo", DataKey = "data", UninviteCmd = "group.uninvite", KeyKey = "key";
+    JsonObject? g; string? st; string tickText = "", who = ""; int hours = 6; bool tickerSet; readonly CancellationTokenSource cts = new();
+    protected override void OnInitialized()
+    {
+        base.OnInitialized();
+        _ = Task.Run(async () => { while (!cts.IsCancellationRequested) { await InvokeAsync(() => Run("group", new JsonObject { ["thumbs"] = true }, quiet: true)); await Task.Delay(4000, cts.Token).ContinueWith(_ => { }); } });
+    }
+    public override void Dispose() { cts.Cancel(); base.Dispose(); }
+    async Task Run(string cmd, JsonObject args, bool quiet = false)
+    {
+        if (!quiet) { st = "…"; StateHasChanged(); }
+        try
+        {
+            var r = await S.NodeCtl(Node, cmd, args); g = r["data"] as JsonObject ?? r; st = null;
+            if (!tickerSet && g["studio"]?["ticker"]?["text"] is { } t) { tickText = (string?)t ?? ""; tickerSet = true; }
+        }
+        catch (Exception e) { st = "✗ " + e.Message; }
+        StateHasChanged();
+    }
+    JsonObject Ticker(bool on, int speed) => new() { ["ticker"] = new JsonObject { ["on"] = on && tickText.Trim().Length > 0, ["text"] = tickText.Trim(), ["speed"] = speed } };
+    RenderFragment Person(JsonObject x, string layout, string? spot) => __b =>
+    {
+        var id = (string?)x["id"] ?? ""; var onAir = Js.IsTrue(x["onAir"]); var muted = Js.IsTrue(x["muted"]);
+        __b.OpenElement(0, "div"); __b.AddAttribute(1, "class", "row-actions studio-person");
+        if ((string?)x["thumb"] is { Length: > 0 } th) { __b.OpenElement(2, "img"); __b.AddAttribute(3, "src", th); __b.AddAttribute(4, "class", "studio-thumb"); __b.CloseElement(); }
+        else { __b.OpenElement(5, "div"); __b.AddAttribute(6, "class", "studio-thumb"); __b.CloseElement(); }
+        __b.OpenElement(7, "div"); __b.AddAttribute(8, "class", "grow");
+        __b.AddContent(9, ((string?)x["kind"] == "web" ? "🌐 " : "🎥 ") + (string?)x["label"] + (muted ? " 🔇" : ""));
+        __b.OpenElement(10, "div"); __b.AddAttribute(11, "class", "sub"); __b.AddContent(12, (onAir ? (Js.IsTrue(x["shown"]) ? "on air" : "on air (not in this layout)") : "waiting") + " · " + Ago(Js.Num(x["since"]) ?? 0)); __b.CloseElement();
+        __b.CloseElement();
+        void Btn(int seq, string text, string cmd, JsonObject args, bool primary = false)
+        {
+            __b.OpenElement(seq, "button"); if (primary) __b.AddAttribute(seq + 1, "class", "primary");
+            __b.AddAttribute(seq + 2, "onclick", EventCallback.Factory.Create(this, () => Run(cmd, args))); __b.AddContent(seq + 3, text); __b.CloseElement();
+        }
+        Btn(20, onAir ? "Take off air" : "▶ Put on air", "group.air", new JsonObject { ["id"] = id, ["on"] = !onAir }, !onAir);
+        if (layout != "grid") Btn(30, spot == id ? "★ (big)" : "★", "group.studio", new JsonObject { ["spot"] = id });
+        Btn(40, muted ? "Unmute" : "Mute", "group.mute", new JsonObject { ["id"] = id, ["mute"] = !muted });
+        Btn(50, "Disconnect", "group.kick", new JsonObject { ["id"] = id });
+        if (Js.IsTrue(x["guest"])) Btn(60, "Cancel invite", "group.uninvite", new JsonObject { ["key"] = (string?)x["user"] });
+        __b.CloseElement();
+    };
+    async Task Logo(InputFileChangeEventArgs e)
+    {
+        try
+        {
+            var img = await e.File.RequestImageFileAsync("image/png", 320, 180);
+            using var ms = new MemoryStream(); await img.OpenReadStream(2 << 20).CopyToAsync(ms);
+            await Run("group.logo", new JsonObject { ["data"] = "data:image/png;base64," + Convert.ToBase64String(ms.ToArray()) });
+        }
+        catch (Exception ex) { st = "✗ " + ex.Message; }
+    }
+    async Task Invite()
+    {
+        var v = who.Trim(); string? key = null; var name = "";
+        if (System.Text.RegularExpressions.Regex.IsMatch(v, "^[A-Za-z0-9_-]{43}$")) key = S.Engine.Read(e => e.Store.Ledger.Resolve(v));
+        else { var full = "@@" + v.TrimStart('@'); if (S.NameHolder(full.ToLowerInvariant()) is { } c) { key = S.Engine.Read(e => e.Store.Ledger.Resolve((string?)S.Genesis(c)?["author"] ?? "")); name = full; } }
+        if (key == null) { st = "No one is called that. Paste their user ID."; return; }
+        if (name.Length == 0) name = S.NameOf(key).StartsWith("User ") ? "" : S.NameOf(key);
+        await Run("group.invite", new JsonObject { ["key"] = key, ["hours"] = hours, ["name"] = name }); who = "";
+    }
+}
