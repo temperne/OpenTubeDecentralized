@@ -41,7 +41,7 @@ public static class Svc
         Video = new LazyVideoSource(() =>
         {
 #if __WASM__
-            return new BrowserVideoSource();
+            return new BrowserVideoSource(S);
 #else
             return new NativeVideoSource(S, Path.Combine(dataDir, "videos"));
 #endif
@@ -61,6 +61,15 @@ public static class Svc
         Directory.CreateDirectory(root); return root;
     }
 
+    /// <summary>(tests and screenshots) what to open first: OPENTUBE_START, or ?start= in the browser.</summary>
+    public static string? StartOption => Environment.GetEnvironmentVariable("OPENTUBE_START") ?? Query("start");
+    static string? Query(string name)
+    {
+#if __WASM__
+        try { var q = System.Runtime.InteropServices.JavaScript.JSHost.GlobalThis.GetPropertyAsJSObject("location")?.GetPropertyAsString("search") ?? ""; var m = System.Text.RegularExpressions.Regex.Match(q, "[?&]" + name + "=([^&]+)"); if (m.Success) return Uri.UnescapeDataString(m.Groups[1].Value); } catch { }
+#endif
+        return null;
+    }
     static string? PlatformSite()
     {
 #if __WASM__

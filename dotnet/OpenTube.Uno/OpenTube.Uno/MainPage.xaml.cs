@@ -15,7 +15,7 @@ public sealed partial class MainPage : Page
         tick.Tick += (_, _) => { UpdateStatus(); TestStart(); }; tick.Start(); UpdateStatus();
     }
     // (tests and screenshots: OPENTUBE_START=first-video opens the top trending video once the network has it)
-    string? testStart = Environment.GetEnvironmentVariable("OPENTUBE_START");
+    string? testStart = Svc.StartOption;
     void TestStart()
     {
         if (testStart != "first-video" || Svc.S is not { Ready: true } s) return;

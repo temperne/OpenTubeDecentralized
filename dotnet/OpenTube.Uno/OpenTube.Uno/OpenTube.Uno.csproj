@@ -35,12 +35,18 @@
   <PropertyGroup Condition="'$(TargetFramework)' == 'net10.0-browserwasm'">
     <!-- the app's files (chains, keys) persist in the browser (IndexedDB) -->
     <WasmShellEnableIDBFS>true</WasmShellEnableIDBFS>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- (no manifest.webmanifest, so no PWA service worker of Uno's: the site's own sw.js streams videos and must control the page) -->
   </PropertyGroup>
   <ItemGroup>
     <!-- keep OpenTube's own code whole when trimming (its JSON records need their constructors' parameter names) -->
     <TrimmerRootAssembly Include="OpenTube.Core" RootMode="All" />
     <TrimmerRootAssembly Include="OpenTube.Client" RootMode="All" />
     <ProjectReference Include="..\..\OpenTube.Client\OpenTube.Client.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0-browserwasm'">
+    <!-- the browser bindings for videos (WebRTC, the service worker's relay), loaded with the app -->
+    <EmbeddedResource Include="Platforms\WebAssembly\WasmScripts\opentube-bridge.js" />
   </ItemGroup>
   <ItemGroup Condition="'$(TargetFramework)' != 'net10.0-browserwasm'">
     <!-- native BitTorrent (TCP, the DHT, WebRTC) and the local video server -->
