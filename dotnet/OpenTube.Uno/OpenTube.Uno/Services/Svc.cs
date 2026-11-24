@@ -22,6 +22,8 @@ public static class Svc
     /// <summary>The crash from the last run, if the app closed on an error (shown once, then cleared).</summary>
     public static string? LastCrash { get; private set; }
     static string dataDir = "";
+    /// <summary>The app's own data folder (chains, keys, videos).</summary>
+    public static string DataFolder => dataDir;
 
     public static void Init()
     {
@@ -38,6 +40,7 @@ public static class Svc
             _ = Task.Run(async () => { try { await S.Start(); } catch (Exception e) { StartError = "network: " + e.Message; Console.WriteLine("[opentube] start: " + e); } });
         }
         catch (Exception e) { StartError = "network: " + e.Message; Console.WriteLine("[opentube] start: " + e); }
+        TestHooks.Start();
         Video = new LazyVideoSource(() =>
         {
 #if __WASM__
@@ -121,6 +124,10 @@ sealed class LazyVideoSource(Func<IVideoSource> make) : IVideoSource
         if (inner == null) { status("Videos can’t play on this device: " + error); return null; }
         return await inner.Play(infoHash, file, size, status);
     }
+    IVideoSource Inner() { if (inner == null && error == null) try { inner = make(); } catch (Exception e) { error = e.Message; Svc.Report(e); } return inner ?? throw new InvalidOperationException("Videos can’t be shared from this device: " + error); }
+    public Task<OpenTube.Core.BitTorrent.TorrentMeta> Share(string path, string name) => Inner().Share(path, name);
+    public long Uploaded(string infoHash) => inner?.Uploaded(infoHash) ?? 0;
+    public Task<string?> Thumbnail(string path, string infoHash, string name) => Inner().Thumbnail(path, infoHash, name);
 }
 
 /// <summary>Where a video plays from: an address the player control can open.</summary>
@@ -128,4 +135,10 @@ public interface IVideoSource
 {
     /// <summary>Start getting a video (BitTorrent) and return an address to play it from, as it arrives.</summary>
     Task<Uri?> Play(string infoHash, string file, double size, Action<string> status);
+    /// <summary>Share a file from this device over BitTorrent (as a seed); its torrent.</summary>
+    Task<OpenTube.Core.BitTorrent.TorrentMeta> Share(string path, string name);
+    /// <summary>What this device is moving (uploads to your computer: bytes sent).</summary>
+    long Uploaded(string infoHash) => 0;
+    /// <summary>A still from a video this device shares, as a small JPEG data: URI (null when this platform can't).</summary>
+    Task<string?> Thumbnail(string path, string infoHash, string name) => Task.FromResult<string?>(null);
 }

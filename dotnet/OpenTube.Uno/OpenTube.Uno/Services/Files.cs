@@ -49,6 +49,36 @@ public static class Files
         using var img = SkiaSharp.SKImage.FromBitmap(small); using var jpg = img.Encode(SkiaSharp.SKEncodedImageFormat.Jpeg, 85);
         return "data:image/jpeg;base64," + Convert.ToBase64String(jpg.ToArray());
     }
+    public sealed record Picked(string Path, string Name, long Size, string Type);
+    /// <summary>A video the person picks, copied into the app's own folder (where it's shared from), reporting bytes copied.</summary>
+    public static async Task<Picked?> OpenVideo(Action<long, long> progress)
+    {
+        Stream src; string name; string type; long size;
+        if (Environment.GetEnvironmentVariable("OPENTUBE_OPEN_VIDEO") is { } tp) { src = File.OpenRead(tp); name = Path.GetFileName(tp); size = src.Length; type = "video/mp4"; }
+        else
+        {
+            var picker = new FileOpenPicker { SuggestedStartLocation = PickerLocationId.VideosLibrary };
+            foreach (var t in new[] { ".mp4", ".webm", ".mov", ".mkv", ".m4v" }) picker.FileTypeFilter.Add(t);
+            Init(picker);
+            var file = await picker.PickSingleFileAsync(); if (file == null) return null;
+            name = file.Name; type = file.ContentType is { Length: > 0 } ct ? ct : "video/mp4";
+            src = await file.OpenStreamForReadAsync(); size = src.CanSeek ? src.Length : (long)(await file.GetBasicPropertiesAsync()).Size;
+        }
+        var dir = Path.Combine(Path.GetTempPath(), "opentube-upload", Guid.NewGuid().ToString("n")[..8]); Directory.CreateDirectory(dir);
+        var clean = string.Concat(name.Select(c => char.IsLetterOrDigit(c) || c is '.' or '-' or '_' or ' ' ? c : '_'));
+        var path = Path.Combine(dir, clean.Length > 0 ? clean : "video.mp4");
+        await using (src) await using (var dst = File.Create(path))
+        {
+            var buf = new byte[1 << 20]; int n; long done = 0; var shown = DateTime.UtcNow;
+            while ((n = await src.ReadAsync(buf)) > 0)
+            {
+                await dst.WriteAsync(buf.AsMemory(0, n)); done += n;
+                if ((DateTime.UtcNow - shown).TotalMilliseconds > 200) { shown = DateTime.UtcNow; progress(done, size); await Task.Yield(); }
+            }
+            progress(done, done);
+        }
+        return new Picked(path, Path.GetFileName(path), new FileInfo(path).Length, type);
+    }
     static void Init(object picker)
     {
 #if WINDOWS

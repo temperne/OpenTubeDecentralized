@@ -114,3 +114,12 @@
     state: (id) => { const v = vids.get(id); if (!v) return 'None 0 0'; const st = v.ended ? 'Ended' : v.paused ? (v.readyState < 2 ? 'Opening' : 'Paused') : v.readyState < 3 ? 'Buffering' : 'Playing'; return `${st} ${v.currentTime || 0} ${isFinite(v.duration) ? v.duration : 0}`; },
   };
 })();
+// a still from a video (a frame a second in) as a small JPEG data: URI; '' when it can't
+globalThis.otThumb = (src) => new Promise((resolve) => {
+  const v = document.createElement('video'); v.muted = true; v.playsInline = true; v.preload = 'auto'; v.src = src;
+  const done = (r) => { clearTimeout(t); try { v.removeAttribute('src'); v.load(); } catch {} resolve(r); };
+  const t = setTimeout(() => done(''), 20000);
+  v.onloadedmetadata = () => { v.currentTime = Math.min(1, (v.duration || 2) / 2); };
+  v.onseeked = () => { try { const s = Math.min(1, 480 / Math.max(v.videoWidth, v.videoHeight)); const c = document.createElement('canvas'); c.width = Math.max(1, v.videoWidth * s | 0); c.height = Math.max(1, v.videoHeight * s | 0); c.getContext('2d').drawImage(v, 0, 0, c.width, c.height); done(c.toDataURL('image/jpeg', 0.8)); } catch { done(''); } };
+  v.onerror = () => done('');
+});

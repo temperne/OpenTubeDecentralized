@@ -28,6 +28,32 @@ public sealed class NativeVideoSource : IVideoSource
         bt.Listen(0);
         _ = Task.Run(async () => { try { var d = new Dht(); d.Start(0); await d.Bootstrap(); bt.UseDht(d); } catch { } });
     }
+    public Task<TorrentMeta> Share(string path, string name)
+    {
+        var t = bt.Add(TorrentData.Seed(path, name)); web.Announce(t, s.TrackerUrls());
+        return Task.FromResult(t.Meta!);
+    }
+    public long Uploaded(string infoHash) => bt.Torrents.TryGetValue(infoHash, out var t) ? Interlocked.Read(ref t.Uploaded) : 0;
+    public Task<string?> Thumbnail(string path, string infoHash, string name)
+    {
+#if __ANDROID__
+        return Task.Run(() =>
+        {   // Android's own frame grabber: a frame a second in, as a small JPEG
+            try
+            {
+                using var r = new Android.Media.MediaMetadataRetriever(); r.SetDataSource(path);
+                using var frame = r.GetFrameAtTime(1_000_000, Android.Media.Option.ClosestSync); if (frame == null) return null;
+                var scale = Math.Min(1.0, 480.0 / Math.Max(frame.Width, frame.Height));
+                using var small = Android.Graphics.Bitmap.CreateScaledBitmap(frame, Math.Max(1, (int)(frame.Width * scale)), Math.Max(1, (int)(frame.Height * scale)), true);
+                using var ms = new MemoryStream(); small!.Compress(Android.Graphics.Bitmap.CompressFormat.Jpeg!, 80, ms);
+                return (string?)("data:image/jpeg;base64," + Convert.ToBase64String(ms.ToArray()));
+            }
+            catch { return null; }
+        });
+#else
+        return Task.FromResult<string?>(null);
+#endif
+    }
     public Task<Uri?> Play(string infoHash, string file, double size, Action<string> status)
     {
         var name = string.Concat(Path.GetFileName(file).Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));

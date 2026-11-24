@@ -24,6 +24,19 @@ public sealed class BrowserVideoSource : IVideoSource
         this.s = s; Current = this;
         web = new WebTorrentPeers(Bt, BrowserRtc.Instance, m => Console.WriteLine("[bt] " + m));
     }
+    public Task<TorrentMeta> Share(string path, string name)
+    {
+        var t = Bt.Add(TorrentData.Seed(path, name)); web.Announce(t, s.TrackerUrls());
+        return Task.FromResult(t.Meta!);
+    }
+    public long Uploaded(string infoHash) => Bt.Torrents.TryGetValue(infoHash, out var t) ? Interlocked.Read(ref t.Uploaded) : 0;
+    /// <summary>A still from the video, through the same stream the player uses (the service worker): a frame a second in.</summary>
+    public async Task<string?> Thumbnail(string path, string infoHash, string name)
+    {
+        init ??= BrowserBridge.StreamInit();
+        if (!await init || !await BrowserBridge.StreamReady()) return null;
+        try { var r = await BrowserBridge.ThumbJs($"/webtorrent/{infoHash}/{name}"); return string.IsNullOrEmpty(r) ? null : r; } catch { return null; }
+    }
     public async Task<Uri?> Play(string infoHash, string file, double size, Action<string> status)
     {
         init ??= BrowserBridge.StreamInit();
@@ -58,6 +71,7 @@ public static partial class BrowserBridge
     [JSImport("globalThis.otRtc.accept")] internal static partial void RtcAcceptJs(int id, string sdp);
     [JSImport("globalThis.otRtc.send")] internal static partial double RtcSendJs(int id, [JSMarshalAs<JSType.MemoryView>] Span<byte> bytes);
     [JSImport("globalThis.otRtc.close")] internal static partial void RtcCloseJs(int id);
+    [JSImport("globalThis.otThumb")] internal static partial Task<string> ThumbJs(string src);
 
     // ---- WebRTC events
     [JSExport] public static void RtcOpen(int id) => BrowserRtc.Instance.Opened(id);

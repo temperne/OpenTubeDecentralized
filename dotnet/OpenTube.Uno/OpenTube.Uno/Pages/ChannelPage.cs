@@ -117,7 +117,7 @@ public sealed partial class ChannelPage : Page
     {
         var S = Svc.S;
         if (d.LiveNow.Count > 0) { var g = new VideoGrid { Items = d.LiveNow.Select(b => VideoItem.From(id, name, (JsonObject)b.DeepClone(), live: true)).ToList() }; body.Children.Add(g); }
-        if (mine) body.Children.Add(Row(Btn("＋ Add video", () => App.Open(typeof(ComingPage), "upload"), primary: true), Btn("● Go live", () => App.Open(typeof(ComingPage), "golive"))));
+        if (mine) body.Children.Add(Row(Btn("＋ Add video", () => App.Open(typeof(UploadPage), id), primary: true), Btn("● Go live", () => App.Open(typeof(ComingPage), "golive"))));
         var vids = d.Videos.OrderByDescending(v => Js.Num(v["ts"])).ToList();
         if (vids.Count == 0) body.Children.Add(Sub("No videos yet."));
         else body.Children.Add(new VideoGrid { Items = vids.Select(v => VideoItem.From(id, name, (JsonObject)v.DeepClone())).ToList() });
