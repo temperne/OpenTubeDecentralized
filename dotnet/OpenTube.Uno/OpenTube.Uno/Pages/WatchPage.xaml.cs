@@ -14,6 +14,9 @@ public sealed record CommentItem(string Name, string When, string Text);
 public sealed partial class WatchPage : Page
 {
     string chain = "", hash = ""; bool started; string shownComments = "";
+#if __WASM__
+    WebVideo? web;
+#endif
     readonly DispatcherTimer tick = new() { Interval = TimeSpan.FromSeconds(2) };
     public WatchPage()
     {
@@ -28,20 +31,18 @@ public sealed partial class WatchPage : Page
         tick.Start(); Fill();
     }
     void OnBack(object sender, RoutedEventArgs e) => App.Back();
-    void OnPlayerSize(object sender, SizeChangedEventArgs e) { }
     /// <summary>The player is 16:9 of the column it's in (at most 70% of the window's height).</summary>
     void SizePlayer(double pageWidth, double pageHeight, bool wide)
     {
-        var w = wide ? pageWidth - 380 - 20 : pageWidth; var h = Math.Min(w * 9 / 16, pageHeight * 0.7);
+        var w = pageWidth; var h = Math.Min(w * 9 / 16, pageHeight * (wide ? 0.6 : 0.45));
         if (h > 0 && Math.Abs(PlayerBox.Height - h) > 1) PlayerBox.Height = h;
     }
     /// <summary>Wide screens: the channel's other videos in a column beside the video.</summary>
     void Wide(bool wide)
     {
+        // (the panel stays in the one grid: beside the video on a wide screen, below it on a phone)
         SideCol.Width = wide ? new GridLength(380) : new GridLength(0);
-        Grid.SetColumn(More, wide ? 1 : 0); Grid.SetRow(More, 0);
-        if (!wide) { if (!MainCol.Children.Contains(More)) { Layout.Children.Remove(More); MainCol.Children.Add(More); } }
-        else if (MainCol.Children.Contains(More)) { MainCol.Children.Remove(More); Layout.Children.Add(More); Grid.SetColumn(More, 1); }
+        Grid.SetColumn(More, wide ? 1 : 0); Grid.SetRow(More, wide ? 0 : 1);
     }
 
     void Fill()
@@ -57,7 +58,7 @@ public sealed partial class WatchPage : Page
         var mine = S.IsMine(d.Owner); var sub = S.Notes.Subscription(chain);
         SubButton.Visibility = mine ? Visibility.Collapsed : Visibility.Visible; SubButton.Content = sub != null ? "Subscribed" : "Subscribe";
         var votes = S.Votes(d, hash);
-        LikeButton.Content = $"👍 {votes.Up}"; DislikeButton.Content = $"👎 {votes.Down}";
+        LikeButton.Content = IconText("\uE8E1", votes.Up.ToString()); DislikeButton.Content = IconText("\uE8E0", votes.Down.ToString());
         var comments = d.CommentsFor(hash).Where(c => !d.Hidden.Contains((string)c["hash"]!)).OrderByDescending(c => Js.Num(c["ts"]) ?? 0).ToList();
         CommentsHeading.Text = comments.Count == 0 ? "Comments" : $"Comments ({comments.Count})";
         var canComment = mine || d.CanComment(S.Me.pub, hash); CommentBox.Visibility = canComment ? Visibility.Visible : Visibility.Collapsed;
@@ -70,20 +71,39 @@ public sealed partial class WatchPage : Page
         if (!started)
         {
             started = true;
-            MoreGrid.Items = d.Videos.Where(x => (string?)x["hash"] != hash).OrderByDescending(x => Js.Num(x["ts"]) ?? 0).Take(12).Select(x => VideoItem.From(chain, name, (JsonObject)x.DeepClone())).ToList();
+            var more = d.Videos.Where(x => (string?)x["hash"] != hash).OrderByDescending(x => Js.Num(x["ts"]) ?? 0).Take(12).Select(x => VideoItem.From(chain, name, (JsonObject)x.DeepClone())).ToList();
+            More.Visibility = more.Count > 0 ? Visibility.Visible : Visibility.Collapsed;   // (nothing else from the channel: no empty section)
+            if (more.Count > 0) MoreGrid.Items = more;
             _ = StartPlaying((string)p["infohash"]!, (string?)p["file"] ?? "video.mp4", Js.Num(p["size"]) ?? 0);
         }
+    }
+    /// <summary>An icon (from the app's icon font, so it shows on every platform) and a label.</summary>
+    static StackPanel IconText(string glyph, string text)
+    {
+        var p = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        p.Children.Add(new FontIcon { Glyph = glyph, FontSize = 16 }); p.Children.Add(new TextBlock { Text = text });
+        return p;
     }
     async Task StartPlaying(string ih, string file, double size)
     {
         var uri = await Svc.Video.Play(ih, file, size, st => { Console.WriteLine("[watch] " + st); DispatcherQueue.TryEnqueue(() => Status.Text = st); });
         if (uri == null) { NoVideo.Visibility = Visibility.Visible; NoVideo.Text = Status.Text; return; }
+#if __WASM__
+        // in the browser: the browser's own video element over the player's spot (see WebVideo)
+        if (web == null) { web = new WebVideo(); PlayerBox.Children.Remove(Player); PlayerBox.Children.Insert(0, web); }
+        web.Play(uri);
+#else
         Player.Source = Windows.Media.Core.MediaSource.CreateFromUri(uri);
+#endif
         Console.WriteLine("[player] source " + uri);
     }
     void LogPlayer()
     {   // (the player's state and position, for tests and diagnostics)
+#if __WASM__
+        if (web != null) { var (st, pos, dur) = web.Status(); Console.WriteLine($"[player] {st} at {pos:0.0} s of {dur:0.0} s"); }
+#else
         try { var ps = Player.MediaPlayer?.PlaybackSession; if (ps != null) Console.WriteLine($"[player] {ps.PlaybackState} at {ps.Position.TotalSeconds:0.0} s of {ps.NaturalDuration.TotalSeconds:0.0} s"); } catch { }
+#endif
     }
 
     async Task Act(Func<Task> f, string doing)

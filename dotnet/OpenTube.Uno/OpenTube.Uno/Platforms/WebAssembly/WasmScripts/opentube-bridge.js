@@ -98,3 +98,19 @@
     },
   };
 })();
+// ---- the player in the browser: the browser's own <video>, placed over the spot the app keeps for it (its controls,
+// full screen and picture-in-picture are the browser's)
+(() => {
+  const vids = new Map();
+  globalThis.otVideo = {
+    show: (id, src) => {
+      let v = vids.get(id);
+      if (!v) { v = document.createElement('video'); v.controls = true; v.playsInline = true; v.autoplay = true; v.style.cssText = 'position:fixed;z-index:10;background:#000;object-fit:contain;left:0;top:0;width:0;height:0'; document.body.appendChild(v); vids.set(id, v); }
+      if (v.src !== src) { v.src = src; v.play().catch(() => {}); }
+    },
+    place: (id, x, y, w, h, visible) => { const v = vids.get(id); if (!v) return; Object.assign(v.style, { left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px', display: visible ? 'block' : 'none' }); },
+    remove: (id) => { const v = vids.get(id); vids.delete(id); if (v) { try { v.pause(); } catch {} v.removeAttribute('src'); v.load(); v.remove(); } },
+    // "state position duration" for the app's status and tests
+    state: (id) => { const v = vids.get(id); if (!v) return 'None 0 0'; const st = v.ended ? 'Ended' : v.paused ? (v.readyState < 2 ? 'Opening' : 'Paused') : v.readyState < 3 ? 'Buffering' : 'Playing'; return `${st} ${v.currentTime || 0} ${isFinite(v.duration) ? v.duration : 0}`; },
+  };
+})();

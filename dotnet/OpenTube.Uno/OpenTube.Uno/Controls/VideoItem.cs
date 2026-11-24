@@ -25,7 +25,7 @@ public partial class VideoItem : ObservableObject
         var item = new VideoItem
         {
             Chain = chain, Hash = (string)b["hash"]!, Title = (string?)p["title"] ?? "Untitled", Channel = channel, Live = live, Stream = (string?)p["stream"],
-            Meta = live ? $"🔴 Live · started {Svc.Ago(Js.Num(b["ts"]) ?? 0)}" : $"{Svc.Views(Svc.S.Views((string)b["hash"]!))} · {Svc.Ago(Js.Num(b["ts"]) ?? 0)}",
+            Meta = live ? $"Live · started {Svc.Ago(Js.Num(b["ts"]) ?? 0)}" : $"{Svc.Views(Svc.S.Views((string)b["hash"]!))} · {Svc.Ago(Js.Num(b["ts"]) ?? 0)}",
         };
         _ = item.Load((string?)p["thumb"]);
         return item;

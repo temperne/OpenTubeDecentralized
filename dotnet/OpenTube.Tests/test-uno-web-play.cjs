@@ -70,6 +70,8 @@ let fail = 0; const check = (ok, what) => { log(ok ? 'ok  ' : 'FAIL', what); if 
   await B.goto(`http://127.0.0.1:${SP}/?site=${encodeURIComponent('http://localhost:' + N)}&start=first-video`);
   let got = false; for (let i = 0; i < 240 && !got; i++) { await B.waitForTimeout(500); got = blog.some(l => /\[watch\] Downloaded/.test(l)) && blog.some(l => /\[player\] Playing at [1-9]/.test(l)); }
   await B.screenshot({ path: (process.env.SHOTS || W) + '/uno-web-play.png' });
+  log('big elements:', JSON.stringify(await B.evaluate(() => [...document.querySelectorAll('body *')].map(e => { const r = e.getBoundingClientRect(); const cs = getComputedStyle(e); return { t: e.tagName, id: e.id, cls: String(e.className).slice(0, 40), x: r.x | 0, y: r.y | 0, w: r.width | 0, h: r.height | 0, bg: cs.backgroundColor, z: cs.zIndex, pos: cs.position }; }).filter(o => o.h > 100 && o.y > 400))));
+  log('video elements:', JSON.stringify(await B.evaluate(() => [...document.querySelectorAll('video')].map(v => { const r = v.getBoundingClientRect(); return { src: (v.currentSrc || v.src || '').slice(-40), x: r.x | 0, y: r.y | 0, w: r.width | 0, h: r.height | 0, bg: getComputedStyle(v).backgroundColor, vis: getComputedStyle(v).visibility }; }))));
   log('uno log:', blog.filter(l => /\[watch\]|\[bt\]|PAGEERROR|rror|otStream|xception/.test(l)).slice(0, 14).join(' | ').slice(0, 1200));
   check(blog.some(l => /linked to/.test(l)), 'the Uno browser app links to the network');
   check(blog.some(l => /\[watch\] (Downloaded|[1-9]\d*%)/.test(l)), 'its C# BitTorrent client gets the video over WebRTC');

@@ -26,3 +26,6 @@
   src: url(./Uno.Fonts.Roboto/Fonts/Roboto-Medium.ttf) format('truetype');
   font-weight: 500;
 }
+
+/* OpenTube: the page behind the app is dark (never a white flash or gap) */
+html, body { background: #121418; }
