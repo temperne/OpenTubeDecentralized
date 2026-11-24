@@ -12,7 +12,7 @@ namespace OpenTube.Uno.Pages;
 /// people you share it with, its log, public access and updating it; adding a computer (one command); and what your
 /// computers earned.
 /// </summary>
-public sealed partial class DevicesPage : LivePage
+public sealed partial class DevicesPage : DataPage
 {
     string? openNode, openWhat; JsonObject? view; string? grant;
     readonly Dictionary<string, string> tests = [];

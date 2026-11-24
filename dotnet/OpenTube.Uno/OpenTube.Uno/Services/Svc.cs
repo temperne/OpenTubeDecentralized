@@ -126,6 +126,7 @@ sealed class LazyVideoSource(Func<IVideoSource> make) : IVideoSource
     }
     IVideoSource Inner() { if (inner == null && error == null) try { inner = make(); } catch (Exception e) { error = e.Message; Svc.Report(e); } return inner ?? throw new InvalidOperationException("Videos can’t be shared from this device: " + error); }
     public Task<OpenTube.Core.BitTorrent.TorrentMeta> Share(string path, string name) => Inner().Share(path, name);
+    public Task<Uri?> PlayLive(OpenTube.Client.LiveWatch live) => Inner().PlayLive(live);
     public long Uploaded(string infoHash) => inner?.Uploaded(infoHash) ?? 0;
     public Task<string?> Thumbnail(string path, string infoHash, string name) => Inner().Thumbnail(path, infoHash, name);
 }
@@ -135,6 +136,8 @@ public interface IVideoSource
 {
     /// <summary>Start getting a video (BitTorrent) and return an address to play it from, as it arrives.</summary>
     Task<Uri?> Play(string infoHash, string file, double size, Action<string> status);
+    /// <summary>A live stream being watched (LiveWatch), as an address the player opens.</summary>
+    Task<Uri?> PlayLive(OpenTube.Client.LiveWatch live) => Task.FromResult<Uri?>(null);
     /// <summary>Share a file from this device over BitTorrent (as a seed); its torrent.</summary>
     Task<OpenTube.Core.BitTorrent.TorrentMeta> Share(string path, string name);
     /// <summary>What this device is moving (uploads to your computer: bytes sent).</summary>

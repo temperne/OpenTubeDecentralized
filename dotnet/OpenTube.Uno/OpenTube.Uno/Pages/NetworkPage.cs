@@ -10,7 +10,7 @@ namespace OpenTube.Uno.Pages;
 /// Network &amp; diagnostics: an overall verdict, each check in plain words with what to try, the connection, the main
 /// chain, every chain this device keeps, the video trackers, and the recent events.
 /// </summary>
-public sealed partial class NetworkPage : LivePage
+public sealed partial class NetworkPage : DataPage
 {
     readonly Dictionary<string, (bool Ok, string Text)> trackers = []; bool tested;
     public NetworkPage() : base("Network") { }

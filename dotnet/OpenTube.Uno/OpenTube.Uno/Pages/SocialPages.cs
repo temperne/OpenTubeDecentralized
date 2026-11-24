@@ -8,12 +8,12 @@ using static OpenTube.Uno.Controls.Ui;
 namespace OpenTube.Uno.Pages;
 
 /// <summary>A page that redraws when its data changed (not on every tick, so what you're typing stays).</summary>
-public abstract partial class LivePage : Page
+public abstract partial class DataPage : Page
 {
     protected readonly StackPanel Col; protected readonly TextBlock Status = Ui.Status();
     readonly DispatcherTimer tick = new() { Interval = TimeSpan.FromSeconds(3) };
     string shown = ""; readonly string title;
-    protected LivePage(string title, double width = 900)
+    protected DataPage(string title, double width = 900)
     {
         this.title = title;
         Background = Application.Current.Resources["BackgroundBrush"] as Brush;
@@ -39,7 +39,7 @@ public abstract partial class LivePage : Page
 }
 
 /// <summary>Posts: the public feed (a chain per month that everyone keeps), recent or popular, with replies.</summary>
-public sealed partial class PostsPage : LivePage
+public sealed partial class PostsPage : DataPage
 {
     string month = Social.Month(DateTimeOffset.UtcNow); string? post; bool popular;
     public PostsPage() : base("Posts") { }
@@ -90,7 +90,7 @@ public sealed partial class PostsPage : LivePage
 }
 
 /// <summary>Friends: posts sealed to the friends you choose (nobody else can read them), and your friends list.</summary>
-public sealed partial class FriendsPage : LivePage
+public sealed partial class FriendsPage : DataPage
 {
     List<Social.Friend>? friends; List<Social.Sealed>? feed; Dictionary<string, string> names = [];
     public FriendsPage() : base("Friends") { }
@@ -151,7 +151,7 @@ public sealed partial class FriendsPage : LivePage
 }
 
 /// <summary>Messages: encrypted end to end; on the network nobody can see who wrote to whom.</summary>
-public sealed partial class MessagesPage : LivePage
+public sealed partial class MessagesPage : DataPage
 {
     string? who; List<Mail.Message>? all;
     public MessagesPage() : base("Messages") { }
@@ -210,7 +210,7 @@ public sealed partial class MessagesPage : LivePage
 }
 
 /// <summary>Notifications, and what you're told about (by kind, and per channel, group, list and organization).</summary>
-public sealed partial class NotificationsPage : LivePage
+public sealed partial class NotificationsPage : DataPage
 {
     bool settings;
     public NotificationsPage() : base("Notifications") { }

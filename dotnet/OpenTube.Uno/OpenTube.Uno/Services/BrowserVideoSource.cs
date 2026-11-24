@@ -24,6 +24,13 @@ public sealed class BrowserVideoSource : IVideoSource
         this.s = s; Current = this;
         web = new WebTorrentPeers(Bt, BrowserRtc.Instance, m => Console.WriteLine("[bt] " + m));
     }
+    public async Task<Uri?> PlayLive(LiveWatch live)
+    {
+        init ??= BrowserBridge.StreamInit();
+        if (!await init || !await BrowserBridge.StreamReady()) return null;
+        var origin = JSHost.GlobalThis.GetPropertyAsJSObject("location")!.GetPropertyAsString("origin");
+        return new Uri($"{origin}/webtorrent/live/{live.Stream}/live.{(live.Mp4 ? "mp4" : "webm")}");
+    }
     public Task<TorrentMeta> Share(string path, string name)
     {
         var t = Bt.Add(TorrentData.Seed(path, name)); web.Announce(t, s.TrackerUrls());

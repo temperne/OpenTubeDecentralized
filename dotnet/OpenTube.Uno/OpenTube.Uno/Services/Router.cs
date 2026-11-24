@@ -16,6 +16,7 @@ public static class Router
         switch (p[0])
         {
             case "v" when p.Length >= 3: App.Open(typeof(WatchPage), new WatchArgs(p[1], p[2])); break;
+            case "live" when p.Length >= 3: App.Open(typeof(LivePage), new LiveArgs(p[1], p[2])); break;
             case "c" when p.Length >= 2: ChannelPage.Open(p[1], p.Length >= 3 ? p[2] : ""); break;
             case "messages": App.Open(typeof(MessagesPage), p.Length >= 2 ? p[1] : null); break;
             case "posts": case "square": App.Open(typeof(PostsPage), p.Length >= 3 ? p[1] + "/" + p[2] : p.Length == 2 ? p[1] : null); break;

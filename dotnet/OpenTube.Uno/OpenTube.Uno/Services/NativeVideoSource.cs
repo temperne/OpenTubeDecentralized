@@ -28,6 +28,7 @@ public sealed class NativeVideoSource : IVideoSource
         bt.Listen(0);
         _ = Task.Run(async () => { try { var d = new Dht(); d.Start(0); await d.Bootstrap(); bt.UseDht(d); } catch { } });
     }
+    public Task<Uri?> PlayLive(LiveWatch live) => Task.FromResult<Uri?>(new Uri($"http://127.0.0.1:{http.Port}/live/{live.Stream}"));
     public Task<TorrentMeta> Share(string path, string name)
     {
         var t = bt.Add(TorrentData.Seed(path, name)); web.Announce(t, s.TrackerUrls());

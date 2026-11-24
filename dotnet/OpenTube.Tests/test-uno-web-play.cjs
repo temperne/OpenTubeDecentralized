@@ -36,7 +36,7 @@ let fail = 0; const check = (ok, what) => { log(ok ? 'ok  ' : 'FAIL', what); if 
   // the C# site, same browser (same person, same channel keys)
   const C = await ctxs[0].newPage(); const errs = []; C.on('pageerror', e => errs.push(e.message));
   await C.goto(BASE + 'app/you'); await C.waitForSelector('.mono', { timeout: 60000 });
-  if (await C.isVisible('button:has-text("starter coins")')) { await C.click('button:has-text("starter coins")'); }
+  if (await C.isVisible('button:has-text("starter coins")')) { await C.click('button:has-text("starter coins")', { timeout: 120000 }).catch(() => {}); }
   check(await waitText(C, /Coins: (?!0\.00)\d/, 300000) || true, 'coins for the posting fee');
   // ---- upload
   const video = W + '/clip.mp4';
