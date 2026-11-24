@@ -20,6 +20,7 @@ public sealed partial class MainPage : Page
     {
         if (testStart is { } ts && ts.StartsWith("you") && Svc.S is { Ready: true }) { testStart = null; App.Open(typeof(YouPage), ts.Contains(':') ? ts[(ts.IndexOf(':') + 1)..] : "profile"); return; }
         if (testStart is { } us && us.StartsWith("upload") && Svc.S is { Ready: true }) { testStart = null; App.Open(typeof(UploadPage), us.Contains(':') ? us[(us.IndexOf(':') + 1)..] : null); return; }
+        if (testStart is { } rs && rs.StartsWith("go:") && Svc.S is { Ready: true }) { testStart = null; Router.Go(rs[3..]); return; }
         if (testStart is { } cs && cs.StartsWith("channel:") && Svc.S is { Ready: true }) { testStart = null; ChannelPage.Open(cs[8..]); return; }
         if (testStart is not ("first-video" or "first-channel") || Svc.S is not { Ready: true } s) return;
         var top = s.Rank(null).Items.OrderByDescending(i => i.Score).FirstOrDefault(i => s.Chain(i.Chain)?.Videos.Any(v => (string?)v["hash"] == i.Video) == true);
@@ -30,7 +31,7 @@ public sealed partial class MainPage : Page
     void OnTab(global::Uno.Toolkit.UI.TabBar sender, global::Uno.Toolkit.UI.TabBarSelectionChangedEventArgs e)
     {
         var tag = (e.NewItem as FrameworkElement)?.Tag as string;
-        var page = tag switch { "explore" => typeof(ExplorePage), "home" => typeof(HomePage), "you" => typeof(YouPage), _ => typeof(ComingPage) };
+        var page = tag switch { "explore" => typeof(ExplorePage), "home" => typeof(HomePage), "you" => typeof(YouPage), "posts" => typeof(PostsPage), "messages" => typeof(MessagesPage), _ => typeof(ComingPage) };
         TabFrame.Navigate(page, tag);
     }
     void UpdateStatus()
@@ -44,5 +45,5 @@ public sealed partial class MainPage : Page
     }
     void OnUpload(object sender, RoutedEventArgs e) => App.Open(typeof(UploadPage));
     void OnGoLive(object sender, RoutedEventArgs e) => App.Open(typeof(ComingPage), "golive");
-    void OnNotifications(object sender, RoutedEventArgs e) => App.Open(typeof(ComingPage), "notifications");
+    void OnNotifications(object sender, RoutedEventArgs e) => App.Open(typeof(NotificationsPage));
 }
