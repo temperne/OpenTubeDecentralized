@@ -65,7 +65,7 @@ public sealed partial class LivePage : Page
             if (d.LiveStats.GetValueOrDefault(st) is JsonObject stats)
             {
                 var secs = Js.Num(stats["secs"]) ?? 0; var unique = Js.Num(stats["unique"]) ?? 0;
-                after.Children.Add(Card(H("Stream statistics", 15), Text($"{Num(stats["peak"])} peak viewers · {unique} unique · {Dur(secs)} watched in total · {(unique > 0 ? Dur(Math.Round(secs / unique)) : "–")} per viewer", 14), Sub("Public on OpenTube: anyone can see these.")));
+                after.Children.Add(Card(H("Stream statistics", 15), Text($"{Num(stats["peak"])} peak viewers · {unique} unique · {Dur(secs)} watched in total · {(unique > 0 ? Dur(Math.Round(secs / unique)) : "–")} per viewer", 14), Sub("Public on OpenTuber: anyone can see these.")));
             }
         }
         // the chat: comments on the live block

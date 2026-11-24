@@ -92,7 +92,7 @@ public sealed class NodeControl(OpenTubeNode node)
                 case "update":
                 {   // download the newest version and restart with it (the launcher or the service manager starts it again)
                     if (!owner && !May(user, "manage")) return Fail("only the owner can update this computer");
-                    if (node.Update is not { Enabled: true } up) return Fail("this computer wasn’t started with the OpenTube command, so it can’t update itself: stop it and run the command again");
+                    if (node.Update is not { Enabled: true } up) return Fail("this computer wasn’t started with the OpenTuber command, so it can’t update itself: stop it and run the command again");
                     node.Log($"[control] update from {who}’s console");
                     try { var restarting = await up.Check(true); return Reply(c, true, new JsonObject { ["restarting"] = restarting, ["commit"] = up.Commit }); }
                     catch (Exception e) { return Fail(e.Message); }
@@ -207,7 +207,7 @@ public sealed class NodeControl(OpenTubeNode node)
                     if (node.Hosting == null) return Fail("video hosting is off on this computer (started with --no-host, or without --grant)");
                     data = node.Hosting.Command(cmd, a); break;
                 default:
-                    return Fail("this computer doesn’t know that command (it runs the .NET version of OpenTube)");
+                    return Fail("this computer doesn’t know that command (it runs the .NET version of OpenTuber)");
             }
             node.Log($"[control] {cmd} from {who}’s console");
             return Reply(c, true, data);

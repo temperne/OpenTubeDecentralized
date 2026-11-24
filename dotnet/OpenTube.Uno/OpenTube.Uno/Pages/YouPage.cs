@@ -9,7 +9,7 @@ using static OpenTube.Uno.Controls.Ui;
 namespace OpenTube.Uno.Pages;
 
 /// <summary>
-/// You: who you are on OpenTube (name, user ID, coins), your profile, your channels (and making new ones), your
+/// You: who you are on OpenTuber (name, user ID, coins), your profile, your channels (and making new ones), your
 /// wallet (send coins, prices, history), your keys (password-locked backup and import, channel keys, messaging keys,
 /// retiring a leaked key) and your settings (not-interested tags, subscriptions).
 /// </summary>
@@ -163,7 +163,7 @@ public sealed partial class YouPage : Page
             if (personal != null)
             {
                 var swap = new ContentDialog { Title = "Use the personal key from the file?", Content = $"This file has a different personal key{(res.Controls > 0 ? $" (it controls {res.Controls} older channel(s) or list(s))" : "")}. Your current personal key is replaced: back it up first if it matters. The app restarts with it.", PrimaryButtonText = "Use the key from the file", CloseButtonText = "Keep mine", XamlRoot = XamlRoot };
-                if (await swap.ShowAsync() == ContentDialogResult.Primary) { await S.Keys.UsePersonal(personal); st.Say("Using the key from the file: close and reopen OpenTube to finish."); return; }
+                if (await swap.ShowAsync() == ContentDialogResult.Primary) { await S.Keys.UsePersonal(personal); st.Say("Using the key from the file: close and reopen OpenTuber to finish."); return; }
             }
             st.Say(res.Channels > 0 ? $"Imported {res.Channels} channel/list key{(res.Channels == 1 ? "" : "s")}." : "Those keys are already here."); Show();
         }

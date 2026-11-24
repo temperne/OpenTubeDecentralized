@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OpenTube</title>
+<title>OpenTuber</title>
 <script>
 // The website is the C# app (WebAssembly) at app/: open it, on the same page. This JavaScript page stays only as a
 // fallback for what isn't in the C# app yet (?classic, which this browser then remembers until "new site" is chosen
@@ -179,8 +179,8 @@
     <a href="#/you" data-nav="you" id="nav-you">👤 You</a>
     <a href="#/me" data-nav="me" title="Your computers, video folder and the network">Devices</a>
     <a href="#/mine" data-nav="mine" id="nav-mine" class="hidden">My channel</a>
-    <a href="?classic=0" title="The OpenTube website (C#, WebAssembly): the same key and channels as this page">New site</a>
-    <a href="https://github.com/temperne/OpenTubeDecentralized/releases/download/android-latest/opentube.apk" title="OpenTube for Android (all C#): install opentube.apk on your phone">📱 App</a>
+    <a href="?classic=0" title="The OpenTuber website (C#, WebAssembly): the same key and channels as this page">New site</a>
+    <a href="https://github.com/temperne/OpenTubeDecentralized/releases/download/android-latest/opentube.apk" title="OpenTuber for Android (all C#): install opentube.apk on your phone">📱 App</a>
   </nav>
   <span class="actions"><a class="act" href="#/notifications" id="bell" title="Notifications">🔔<span id="bell-n" class="bell-n hidden"></span></a><a class="act" href="#/new/video">＋ Add video</a><a class="act live" href="#/new/live">● Go live</a></span>
   <a class="status" href="#/network" title="Network & diagnostics" style="color:inherit;text-decoration:none">
@@ -189,11 +189,11 @@
     <span class="detail"><span class="dot" id="dot-chain"></span><span id="st-chain">main chain…</span></span>
     <span id="st-p2p" class="detail"></span>
   </a>
-  <button id="upd-btn" class="small" title="Check for a new version of OpenTube and load it" style="margin-left:6px;white-space:nowrap">⟳ Update</button>
+  <button id="upd-btn" class="small" title="Check for a new version of OpenTuber and load it" style="margin-left:6px;white-space:nowrap">⟳ Update</button>
 </header>
 <div id="folderbar" class="hidden"></div>
 <div id="terms-banner" class="hidden" style="background:var(--panel-2);border-bottom:1px solid var(--border);padding:10px 16px;font-size:14px">
-  By using OpenTube you agree that disputes about transactions made through it are resolved by the network’s arbitration, as described in the <a href="#/terms">terms</a>. <button class="small primary" id="terms-ok">I agree</button>
+  By using OpenTuber you agree that disputes about transactions made through it are resolved by the network’s arbitration, as described in the <a href="#/terms">terms</a>. <button class="small primary" id="terms-ok">I agree</button>
 </div>
 <main id="app"><div class="empty">Starting node…</div></main>
 <div id="toast"></div>
@@ -217,7 +217,7 @@ const MAIN_GENESIS = {
   v: 1, chain: null, parents: [], height: 0, ts: 1794960000000, author: null, nonce: 0,
   payload: {
     type: 'genesis', kind: 'main',
-    name: 'OpenTube Main Chain',
+    name: 'OpenTuber Main Chain',
     difficulty: 18,          // leading zero bits required on main-chain blocks
     commentDifficulty: 10,   // anti-spam work on blocks written by non-owners
     maxEntries: 16,          // registrations per main block
@@ -564,7 +564,7 @@ function validRanking(r, listGenesis) {
 }
 const rankingPreimage = (r) => { const { sig, ...rest } = r; return 'opentube-ranking:' + canon(rest); };
 
-// ---- the OpenTube coin (transactions ride in main-chain blocks)
+// ---- the OpenTuber coin (transactions ride in main-chain blocks)
 // One shared coin. Amounts are whole units: 100 units = 1 coin. New coins only come from running the network:
 // whoever mines a main-chain block earns COIN.reward (plus the posting fees of channels nobody hosts), and each new
 // key may claim COIN.starter once with a `starter` transaction that needs extra proof of work.
@@ -1272,7 +1272,7 @@ function rankVideos(chainList, now = Date.now(), paid = null, postOk = null) {
   return items.sort((a, b) => b.s - a.s).slice(0, RANK.items);
 }
 
-// ---- a WebTorrent-compatible tracker, so every OpenTube computer (node) is a meet place for video peers.
+// ---- a WebTorrent-compatible tracker, so every OpenTuber computer (node) is a meet place for video peers.
 // Speaks the WebSocket tracker protocol: announce with WebRTC offers, relay answers, scrape.
 function createTracker() {
   const swarms = new Map();   // info_hash -> Map(peer_id -> socket id)
@@ -1321,7 +1321,7 @@ function createTracker() {
   };
 }
 
-// ---- live streams. Every OpenTube computer (node) runs this hub at /live; entry nodes are the public ones.
+// ---- live streams. Every OpenTuber computer (node) runs this hub at /live; entry nodes are the public ones.
 // The broadcaster's browser sends WebRTC to a tree of viewers: verified members of the channel (people who joined it)
 // get the slots right under the broadcaster, everyone else hangs under members, and each viewer can relay to a few
 // more. The hub only introduces peers and relays their WebRTC signalling. It also relays SEGMENTS: ~1 s pieces of the
@@ -1512,7 +1512,7 @@ function createLiveHub(o) {   // o: { ownerOf(chain) -> key|null, signerOf(chain
         return out(sid, { t: 'broadcasting', stream: m.stream });
       }
       if (m.t === 'ingest') {   // the owner asks for a stream key so OBS can send this stream to the node
-        if (!o.ingest) return out(sid, { t: 'error', stream: m.stream, error: 'This hub can’t receive OBS streams (only an OpenTube computer can).' });
+        if (!o.ingest) return out(sid, { t: 'error', stream: m.stream, error: 'This hub can’t receive OBS streams (only an OpenTuber computer can).' });
         if (!isHex(m.stream, 64) || !isHex(m.chain, 64) || !isStr(m.mime, 80) || streams.has(m.stream)) return;
         const owner = o.ownerOf(m.chain);
         if (!owner || !s.keys.has(owner)) return out(sid, { t: 'error', stream: m.stream, error: 'not the owner of this channel' });
@@ -1935,7 +1935,7 @@ async function createEngine(o) {
       chain.stats.lastResponse = Date.now();
       await insert(chain.id, m.b.slice(0, 5000), from);
     } else if (m.t === 'watch') {
-      // Watch-group traffic: hubs (OpenTube computers) relay it to everyone; browsers hand it to the player.
+      // Watch-group traffic: hubs (OpenTuber computers) relay it to everyone; browsers hand it to the player.
       if (o.relayWatch) send(m);
       o.onWatch?.(m, from);
     } else if (m.t === 'tx') {
@@ -2245,7 +2245,7 @@ async function lockKeyFile(obj, password) {
   const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
   const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await keyFileKey(password, salt, KEYFILE_ITER, 'encrypt'), new TextEncoder().encode(JSON.stringify(obj)));
   return { format: 'opentube-encrypted', v: 1, kdf: 'pbkdf2-sha256', iterations: KEYFILE_ITER, salt: b64u.enc(salt), iv: b64u.enc(iv), ct: b64u.enc(new Uint8Array(ct)),
-    note: 'OpenTube keys, locked with a password. Import this file in OpenTube and enter the password.' };
+    note: 'OpenTuber keys, locked with a password. Import this file in OpenTuber and enter the password.' };
 }
 async function unlockKeyFile(f, password) {
   if (f.kdf !== 'pbkdf2-sha256' || !(f.iterations >= 1000 && f.iterations <= 10000000)) throw new Error('This locked file uses a format this version doesn’t know');
@@ -2341,7 +2341,7 @@ async function importKeyFile(text) {
       return location.reload();
     }
   }
-  if (!added && !personal) return toast('No valid OpenTube keys found in that file');
+  if (!added && !personal) return toast('No valid OpenTuber keys found in that file');
   if (added) toast(`Imported ${added} channel/list key${added === 1 ? '' : 's'}.`);
   if (firstChain && openChain(firstChain)) { E.requestChain(chains.get(firstChain)); location.hash = `#/c/${firstChain}`; } else scheduleRender();
 }
@@ -2435,7 +2435,7 @@ function homeNodeUrl() {
   return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ot';
 }
 // Nodes to connect to over WebSocket: this host's, ?nodes=wss://a/ot,wss://b/ot, and nodes that announce a public address.
-// Entry nodes (public OpenTube computers) seen before, kept in this browser: a way into the network when the site
+// Entry nodes (public OpenTuber computers) seen before, kept in this browser: a way into the network when the site
 // serves only the page.
 const ENTRY_KEY = 'ot-entry-nodes';
 const savedEntries = () => { try { return [...seedEntries, ...JSON.parse(localStorage.getItem(ENTRY_KEY) || '[]')]; } catch { return seedEntries; } };
@@ -2489,7 +2489,7 @@ setInterval(() => {
 }, 60000);
 // WebSocket links to nodes are a backup for when the browser mesh is thin (few peers yet, or WebRTC blocked here):
 // with 3+ direct peers, no node connection is needed at all.
-// Entry nodes (public OpenTube computers) come first; this site's own node (a small fallback) only while no entry node
+// Entry nodes (public OpenTuber computers) come first; this site's own node (a small fallback) only while no entry node
 // answers, so the site mostly just serves the page.
 let entryWaitSince = 0;
 function maintainNodes() {
@@ -3253,7 +3253,7 @@ async function reconnectFolder() {
 function folderPrompt(what) {
   if (folder.state === 'unsupported') return h('div', { class: 'sub' }, `${what} needs a folder on your computer, which this browser can’t give a web page. Use Chrome or Edge on a computer. You can still watch videos here.`);
   if (folder.state === 'needs-permission') return h('div', { class: 'row' }, h('span', { class: 'sub' }, `${what}: the browser needs your OK to use “${folder.root.name}” again.`), h('button', { class: 'primary', onclick: reconnectFolder }, 'Reconnect folder'));
-  return h('div', { class: 'row' }, h('span', { class: 'sub' }, `${what} needs a folder on your computer where OpenTube keeps each channel’s videos.`), h('button', { class: 'primary', onclick: chooseFolder }, 'Choose video folder'));
+  return h('div', { class: 'row' }, h('span', { class: 'sub' }, `${what} needs a folder on your computer where OpenTuber keeps each channel’s videos.`), h('button', { class: 'primary', onclick: chooseFolder }, 'Choose video folder'));
 }
 
 // ---------------------------------------------------------------- live streaming (see createLiveHub in the core)
@@ -3283,7 +3283,7 @@ function clusterAt(u8, from = 0) {
 }
 
 // The live hubs this page talks to. A stream lives on one hub: the one its live block names (an entry node: a public
-// OpenTube computer, or the computer that streams it). Broadcasting from a browser picks an entry node, else one of
+// OpenTuber computer, or the computer that streams it). Broadcasting from a browser picks an entry node, else one of
 // your own computers; the site's own hub is only the last fallback (older streams that name no hub live there).
 // Messages for a stream go to its hub; each hub hears our keys.
 const liveNet = (() => {
@@ -3452,7 +3452,7 @@ const broadcasts = new Map();   // chainId -> session
 async function startLive(chainId, media, title, how = {}) {
   const group = how.group || null;   // a computer: send this into the group stream there (it records the combined picture)
   const viaNode = !group && !canHost() && storageNodes()[0];   // no folder here: a computer you may use records it
-  if (!group && !canHost() && !viaNode) throw new Error('Going live needs a video folder (it records the stream there), or a computer running OpenTube that you may use.');
+  if (!group && !canHost() && !viaNode) throw new Error('Going live needs a video folder (it records the stream there), or a computer running OpenTuber that you may use.');
   if (!LIVE_MIME) throw new Error('This browser can’t record video for streaming. Use Chrome, Edge or Firefox.');
   const hubPick = await liveNet.pickHub(group?.node);   // an entry node, else this site; a hub helps (trees, counts), but the mesh carries the stream without one
   const hub = !!hubPick;
@@ -3517,7 +3517,7 @@ async function stopLive(chainId) {
   append(chainId, { type: 'liveend', stream: sess.stream, outcome: 'ended', ...(stats ? { stats } : {}) }).catch(e => console.warn('liveend', e));   // over now, for everyone: Publish/Discard comes after
   scheduleRender();
 }
-// OBS with a stream key (an OpenTube computer): OBS sends WebM to the node, which signs and relays it. This browser
+// OBS with a stream key (an OpenTuber computer): OBS sends WebM to the node, which signs and relays it. This browser
 // records it (the owner gets every segment) so the publish-or-discard step works the same.
 const OBS_MIME = 'video/webm;codecs="vp8,vorbis"';   // Vorbis, not Opus: browsers can't stream ffmpeg's Opus-in-WebM interleaving
 async function startObsLive(chainId, title) {
@@ -4057,7 +4057,7 @@ function videoStatsPanel(id, video, v) {
       viewers.length ? h('div', { style: 'margin-top:10px' }, h('a', { href: 'javascript:void 0', class: 'sub', onclick: () => { open = !open; draw(); } }, `${open ? '▾' : '▸'} Who watched (${viewers.length})`),
         open ? h('div', { style: 'margin-top:6px' }, viewers.slice(0, 200).map(k => { const a = authorOf(k, null); return h('a', { href: a.href, class: 'row', style: 'gap:6px;display:inline-flex;align-items:center;margin:0 12px 6px 0' }, avatar(a.pic, a.name, 'xs'), h('span', {}, a.name)); })) : null) : null,
       v.stream && d.liveStats?.get(v.stream) ? h('div', { style: 'margin-top:12px' }, liveStatsPanel(d.liveStats.get(v.stream), { title: '🔴 When it was live' })) : null,
-      h('div', { class: 'sub', style: 'margin-top:6px' }, 'Public on OpenTube: anyone can see these, not only the creator.'));
+      h('div', { class: 'sub', style: 'margin-top:6px' }, 'Public on OpenTuber: anyone can see these, not only the creator.'));
   };
   draw(); const iv = setInterval(() => { if (!box.isConnected) return clearInterval(iv); if (!open) draw(); }, 5000);
   return box;
@@ -4071,7 +4071,7 @@ function liveStatsPanel(st, { title = '📊 Stream statistics' } = {}) {
     h('div', { class: 'row', style: 'gap:18px;flex-wrap:wrap' }, cell(st.peak, 'peak viewers'), cell(st.unique, 'unique viewers'), cell(fmtDur(st.secs), 'watched in total'), cell(st.unique ? fmtDur(Math.round(st.secs / st.unique)) : '–', 'per viewer')),
     st.top?.length ? h('div', { style: 'margin-top:10px' }, h('div', { class: 'sub', style: 'margin-bottom:4px' }, 'Who watched (longest first)'),
       st.top.slice(0, 20).map(([k, s]) => { const a = authorOf(k, null); return h('a', { href: a.href, class: 'row', style: 'gap:6px;display:inline-flex;align-items:center;margin:0 12px 6px 0' }, avatar(a.pic, a.name, 'xs'), h('span', {}, a.name), h('span', { class: 'sub' }, fmtDur(s))); })) : null,
-    h('div', { class: 'sub', style: 'margin-top:6px' }, 'Public on OpenTube: anyone can see these, not only the streamer.'));
+    h('div', { class: 'sub', style: 'margin-top:6px' }, 'Public on OpenTuber: anyone can see these, not only the streamer.'));
 }
 // Your channels (not lists), and quick ways to the things people look for.
 const myChannels = () => [...new Set([...E.directory.keys(), ...mempool.keys(), ...chains.keys()])].filter(id => id !== MAIN_ID && genesisFor(id)?.payload.kind === 'channel' && isMine(genesisFor(id).author));
@@ -4802,8 +4802,8 @@ views.orgs = { render() {
 } };
 views.terms = { render() {
   return h('div', { class: 'panel', style: 'max-width:760px' }, h('h2', { style: 'margin-top:0' }, 'Terms: arbitration'),
-    h('p', {}, 'OpenTube is run by the people who use it; there is no company behind a transaction. By using it you agree to the following.'),
-    h('ol', {}, h('li', {}, 'Any dispute about a transaction made through OpenTube (a sale, an auction, a payment held in escrow) is resolved through the network’s own arbitration: the arbitration body named on the listing, and on appeal the levels above it. It is not a public court.'),
+    h('p', {}, 'OpenTuber is run by the people who use it; there is no company behind a transaction. By using it you agree to the following.'),
+    h('ol', {}, h('li', {}, 'Any dispute about a transaction made through OpenTuber (a sale, an auction, a payment held in escrow) is resolved through the network’s own arbitration: the arbitration body named on the listing, and on appeal the levels above it. It is not a public court.'),
       h('li', {}, 'Filings, case dockets and orders are public records on the network. Don’t file anything you need to keep private.'),
       h('li', {}, 'A ruling decides how coins held in escrow are split. When that body’s appeal window passes, or the highest level has ruled, the ruling is final as far as the network is concerned.'),
       h('li', {}, 'Goods, services and payments outside the network are between the parties; the arbitrators’ rulings and records are what the network provides.')),
@@ -5416,7 +5416,7 @@ function notify(type, text, href, obj, ts = Date.now(), id = null) {
   if (seenNotif.has(id) || ts < settings.notif.since - 3600000 || !notifOn(type, obj)) return;
   seenNotif.add(id); notifs.unshift({ id, type, text, href, obj: obj || null, ts, read: false }); notifs = notifs.slice(0, 400);
   clearTimeout(notify.t); notify.t = setTimeout(() => { kv.set('notifications', notifs); bell(); }, 300);
-  if (settings.notif.desktop && document.visibilityState !== 'visible' && window.Notification?.permission === 'granted') try { new Notification('OpenTube', { body: text, tag: id }); } catch {}
+  if (settings.notif.desktop && document.visibilityState !== 'visible' && window.Notification?.permission === 'granted') try { new Notification('OpenTuber', { body: text, tag: id }); } catch {}
 }
 function bell() { const n = notifs.filter(x => !x.read).length, el = $('#bell-n'); if (!el) return; el.textContent = n > 99 ? '99+' : String(n); el.classList.toggle('hidden', !n); }
 const mineK = (k) => !!k && (isMine(k) || E.ledger.resolve(k) === me.pub);
@@ -5661,7 +5661,7 @@ function liveStudio(chainId) {
   };
   function setup() {
     const head = h('h3', { style: 'margin-top:0' }, '🔴 Go live');
-    const meshNote = liveNet.available() ? '' : h('p', { class: 'sub' }, 'No entry node or computer of yours is reachable: the stream goes out over the peer-to-peer mesh only (camera streams; OBS needs one of your computers running OpenTube).');
+    const meshNote = liveNet.available() ? '' : h('p', { class: 'sub' }, 'No entry node or computer of yours is reachable: the stream goes out over the peer-to-peer mesh only (camera streams; OBS needs one of your computers running OpenTuber).');
     const source = h('select', {}, h('option', { value: '' }, 'Choose a camera…'));
     // group streams this browser can send into: on your computers, ones shared with you, and ones you were invited to
     let groupNodes = [];
@@ -5738,16 +5738,16 @@ function liveStudio(chainId) {
       try { await startNodeObsLive(chainId, nodeTitle.value.trim(), nodeSel.value); stopPreview(); ui(); } catch (e) { nodeStatus.textContent = e.message; nodeGo.disabled = false; }
     } }, 'Go live with OBS');
     const viaComputer = h('div', { class: 'panel', style: 'margin:0 0 14px;background:var(--panel-2)' }, h('h4', { style: 'margin:0 0 6px' }, 'Stream from OBS (Start Streaming)'),
-      comps.length ? [h('p', { class: 'sub', style: 'margin-top:0' }, 'OBS sends to OpenTube running on one of your computers (yours at home, or a server), which puts it live on this channel. Pick the computer:'),
+      comps.length ? [h('p', { class: 'sub', style: 'margin-top:0' }, 'OBS sends to OpenTuber running on one of your computers (yours at home, or a server), which puts it live on this channel. Pick the computer:'),
         (() => { const sel = h('select', { style: 'width:auto' }, comps.map(n => h('option', { value: n.node }, n.info?.name || n.grant.label || 'computer'))); const slot = h('div'); const show = () => slot.replaceChildren(obsPanel(comps.find(x => x.node === sel.value), { chainId })); sel.onchange = show; show(); return h('div', {}, sel, slot); })()]
-        : h('p', { class: 'sub', style: 'margin:0' }, 'Run OpenTube on the computer where OBS is (My node → Your computers → Run OpenTube on a computer). It then appears here, and OBS’s normal Start Streaming button goes live on your channel.'));
+        : h('p', { class: 'sub', style: 'margin:0' }, 'Run OpenTuber on the computer where OBS is (My node → Your computers → Run OpenTuber on a computer). It then appears here, and OBS’s normal Start Streaming button goes live on your channel.'));
     const obs = false ? h('details', { style: 'margin-top:14px' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Or send the stream from OBS with a stream key'),
       h('p', { class: 'sub' }, 'OBS sends the video straight to this site’s server, which relays it. Viewers watch a few seconds behind. Your browser records it, so keep this page open.'),
       h('label', {}, 'Title'), obsTitle, h('div', { class: 'row', style: 'margin-top:8px' }, obsGo, obsStatus)) : null;
     // OBS through one of your computers (or one shared with you) needs nothing in this browser: the computer records
     // and streams. Only streaming from this browser (camera, screen) needs a video folder and in-browser recording.
     if (!LIVE_MIME) return [head, viaComputer, h('p', { class: 'sub' }, 'To stream from this browser (camera or screen), use Chrome, Edge or Firefox on a computer.')];
-    if (!canHost() && !storageNodes().length && !groupNodes.length) return [head, meshNote, viaComputer, folderPrompt('Streaming from this browser (camera or screen; the recording is kept in your video folder)'), h('p', { class: 'sub' }, 'Or use a computer running OpenTube (yours, or one shared with you): it records the stream, and this browser needs no folder.')];
+    if (!canHost() && !storageNodes().length && !groupNodes.length) return [head, meshNote, viaComputer, folderPrompt('Streaming from this browser (camera or screen; the recording is kept in your video folder)'), h('p', { class: 'sub' }, 'Or use a computer running OpenTuber (yours, or one shared with you): it records the stream, and this browser needs no folder.')];
     return [head, meshNote, viaComputer,
       h('p', { class: 'sub', style: 'margin-top:0' }, 'Or stream from this browser: a camera, your screen, or OBS’s “Start Virtual Camera” (pick “OBS Virtual Camera” below). Your stream is recorded into this channel’s folder; when you end it you choose whether to publish the recording.'),
       ask, h('div', { class: 'split', style: 'margin-top:8px' }, h('div', {}, h('label', {}, 'Video'), source), h('div', {}, h('label', {}, 'Audio'), mic)),
@@ -5879,7 +5879,7 @@ views.livewatch = {
         host ? h('div', { class: 'sub', style: 'margin-top:4px' }, '🎥 Invite puts them on camera with you: they get a “Join on camera” button on this page.') : null,
         h('div', { style: 'margin-top:8px' }, h('a', { href: 'javascript:void 0', class: 'sub', onclick: () => { showSeen = !showSeen; drawWho(); } }, `${showSeen ? '▾' : '▸'} Has been here (${m.seenCount || 0})`)),
         showSeen ? h('div', { style: 'margin-top:4px' }, (m.seen || []).map(x => face(x.k, ` · first ${ago(x.first)}, watched ${dur(x.secs)}`)),
-          h('div', { class: 'sub', style: 'margin-top:6px' }, 'Open to everyone: who watches is public on OpenTube.')) : null);
+          h('div', { class: 'sub', style: 'margin-top:6px' }, 'Open to everyone: who watches is public on OpenTuber.')) : null);
     };
     const unmute = h('button', { class: 'small', onclick: () => { player.muted = false; player.play().catch(() => {}); unmute.remove(); } }, '🔊 Unmute');
     const chat = h('div', { style: 'max-height:420px;overflow:auto' });
@@ -6283,7 +6283,7 @@ function uploadForm(chainId) {
     } catch (e) { console.error(e); status.textContent = 'Failed: ' + (e.message || e); btn.disabled = false; }
   };
   if (!canHost() && !nodes.length) return h('details', { class: 'panel' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Upload a video'),
-    h('div', { style: 'margin-top:12px' }, folderPrompt('Uploading'), h('p', { class: 'sub' }, 'Or use a computer running OpenTube (yours, or one a friend shared with you): it keeps your videos, and this browser needs no folder.')));
+    h('div', { style: 'margin-top:12px' }, folderPrompt('Uploading'), h('p', { class: 'sub' }, 'Or use a computer running OpenTuber (yours, or one a friend shared with you): it keeps your videos, and this browser needs no folder.')));
   if (!canHost()) return h('details', { class: 'panel' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Upload a video'),
     h('div', { style: 'margin-top:12px' }, h('p', { class: 'sub', style: 'margin-top:0' }, 'This browser has no video folder, so the video is kept on a computer you may use. Keep this tab open until it has the whole file.'),
       h('div', { class: 'row' }, h('span', {}, 'Store on'), nodeSel), h('div', { style: 'margin-top:10px' }, input, drop), prev, h('label', {}, 'Title'), title, h('label', {}, 'Description'), desc, h('label', {}, 'Tags'), tagsIn, h('label', {}, 'Comments'), vpol,
@@ -6595,7 +6595,7 @@ function healthChecks() {
   // connection
   const nP = net.count('p2p'), nN = net.count('node'), nL = net.count('local');
   if (nL) checks.push(warn('Connection', `Local test mode: only tabs of this browser (${nL}).`, 'Remove ?net=local from the address to join the real network.'));
-  else if (nP + nN === 0) checks.push(bad('Connection', 'No peers yet: no other browser or node found.', 'Nobody else may be online, or the trackers are blocked on this network. Running OpenTube on a computer (My node) gives the network an always-on peer.'));
+  else if (nP + nN === 0) checks.push(bad('Connection', 'No peers yet: no other browser or node found.', 'Nobody else may be online, or the trackers are blocked on this network. Running OpenTuber on a computer (My node) gives the network an always-on peer.'));
   else checks.push((nP + nN >= 2 ? ok : warn)('Connection', `Connected to ${nP} peer(s) directly and ${nN} node(s). Every connection is an equal peer; none is required.`, nP + nN < 2 ? 'With only one connection, losing it pauses syncing until another peer is found.' : undefined));
   // main chain
   const ms = E.syncState(main);
@@ -6619,8 +6619,8 @@ function healthChecks() {
     const up = tr.filter(x => x.ok).length;
     const homeTr = null;
     if (!tr.length) checks.push(warn('Video (P2P)', 'Testing trackers…'));
-    else if (homeTracker && homeTr?.at && !homeTr.ok) checks.push(bad('Video (P2P)', `The site’s video tracker is unreachable (${homeTr.err}); ${up} of ${tr.length} trackers work.`, (liveNet.linkedHubs().length || liveNet.entryHubs().length) ? 'Your computers’ trackers are used instead, so videos still work.' : 'The site’s own node may be out of its daily quota (it answers with an error). Run OpenTube on a computer (Devices), or add --public to a server’s command so it becomes an entry node: browsers then use it instead.'));
-    else if (!up) checks.push(bad('Video (P2P)', 'No video tracker is reachable, so viewers can’t find whoever has a video.', 'Check your network/firewall, or run OpenTube on a computer with --tunnel (it becomes a meet place with its own tracker.'));
+    else if (homeTracker && homeTr?.at && !homeTr.ok) checks.push(bad('Video (P2P)', `The site’s video tracker is unreachable (${homeTr.err}); ${up} of ${tr.length} trackers work.`, (liveNet.linkedHubs().length || liveNet.entryHubs().length) ? 'Your computers’ trackers are used instead, so videos still work.' : 'The site’s own node may be out of its daily quota (it answers with an error). Run OpenTuber on a computer (Devices), or add --public to a server’s command so it becomes an entry node: browsers then use it instead.'));
+    else if (!up) checks.push(bad('Video (P2P)', 'No video tracker is reachable, so viewers can’t find whoever has a video.', 'Check your network/firewall, or run OpenTuber on a computer with --tunnel (it becomes a meet place with its own tracker.'));
     else checks.push(ok('Video (P2P)', `${up} of ${tr.length} trackers reachable${homeTr?.ok ? ', including an entry node’s' : ''}.`));
     if (diag.stun && !diag.stun.running) {
       if (diag.stun.error) checks.push(warn('Reachability', 'Could not test WebRTC reachability: ' + diag.stun.error));
@@ -6734,7 +6734,7 @@ views.network = { render() {
       h('h4', {}, 'Trackers'),
       h('div', { class: 'tablewrap' }, h('table', { class: 'diag' }, h('tr', {}, ['Tracker', 'Role', 'Status'].map(t => h('th', {}, t))),
         TRACKERS.map(u => { const r = diag.trackers.get(u);
-          return h('tr', {}, h('td', { class: 'mono' }, u), h('td', {}, u === homeTracker ? 'the site (fallback)' : /\/tracker$/.test(u) ? 'meet place (OpenTube computer)' : 'public tracker'),
+          return h('tr', {}, h('td', { class: 'mono' }, u), h('td', {}, u === homeTracker ? 'the site (fallback)' : /\/tracker$/.test(u) ? 'meet place (OpenTuber computer)' : 'public tracker'),
             h('td', {}, !r?.at ? 'testing…' : r.ok ? pill('ok', `reachable · ${r.ms} ms`) : pill('warn', r.err))); }))),
       h('h4', {}, 'Transfers'),
       wt.torrents.length ? h('div', { class: 'tablewrap' }, h('table', { class: 'diag' },
@@ -7320,7 +7320,7 @@ views.wallet = { render() {
   const hist = E.history(histKey.key);
   return h('div', {},
     h('h2', { style: 'margin-top:0' }, 'Wallet'),
-    h('p', { class: 'sub' }, 'OpenTube runs on one shared coin. Watching a video pays its creator, a like pays whoever you liked (a dislike is burned), and posting a video pays the people who host that channel. Watching ads earns coins back. New coins come only from running the network: each main-chain block pays whoever confirmed it, and nodes are paid every 10 minutes for the video bandwidth, connection time and tracker service they provide (see Earned by your nodes). Every new account can claim starter coins once.'),
+    h('p', { class: 'sub' }, 'OpenTuber runs on one shared coin. Watching a video pays its creator, a like pays whoever you liked (a dislike is burned), and posting a video pays the people who host that channel. Watching ads earns coins back. New coins come only from running the network: each main-chain block pays whoever confirmed it, and nodes are paid every 10 minutes for the video bandwidth, connection time and tracker service they provide (see Earned by your nodes). Every new account can claim starter coins once.'),
     myAccounts().map(k => accountCard(k, true)),
     h('div', { class: 'panel' }, h('h3', { style: 'margin-top:0' }, 'Prices right now'),
       h('p', { class: 'sub', style: 'margin-top:0' }, 'The network sets these itself. After every main-chain block, each price moves up to 12.5% toward keeping use at a target: busy means dearer, quiet means cheaper.'),
@@ -7347,7 +7347,7 @@ views.wallet.refresh = () => { if (!document.activeElement || !/INPUT|TEXTAREA|S
 
 // ---- my node
 // ---- your computers: the one-command node, and the list of your nodes
-// the one command for a computer: installs .NET 10 if it's missing (for the user, no admin), downloads OpenTube from
+// the one command for a computer: installs .NET 10 if it's missing (for the user, no admin), downloads OpenTuber from
 // its repository, builds and starts it (and starts it again when it updates itself)
 const isWindows = () => /Win/.test(navigator.platform || navigator.userAgent);
 const NODE_COMMAND = (site, args, win = isWindows()) => win
@@ -7372,7 +7372,7 @@ function peoplePanel(n) {
   const box = h('div', { class: 'panel', style: 'margin-top:8px;background:var(--panel-2)' }), st = h('span', { class: 'sub' });
   let users = null;
   const run = async (cmd, args) => { st.textContent = 'asking the computer…'; try { users = (await nodeCtl(n, cmd, args)).data.users; st.textContent = cmd === 'users.set' ? '✓ saved' : ''; draw(); }
-    catch (e) { st.textContent = /unknown command|bad command/.test(e.message) ? '✗ This computer runs an older OpenTube. On it, stop OpenTube (Ctrl+C) and run your command again: it updates itself on start.' : '✗ ' + e.message; draw(); } };
+    catch (e) { st.textContent = /unknown command|bad command/.test(e.message) ? '✗ This computer runs an older OpenTuber. On it, stop OpenTuber (Ctrl+C) and run your command again: it updates itself on start.' : '✗ ' + e.message; draw(); } };
   const who = h('input', { type: 'text', placeholder: 'Their @@name or user ID', style: 'flex:1;min-width:200px' });
   const checks = Object.fromEntries(PERMS.map(([k]) => [k, h('input', { type: 'checkbox', checked: k !== 'manage' })]));
   const resolve = (v) => { v = v.trim(); if (/^[A-Za-z0-9_-]{43}$/.test(v)) return E.ledger.resolve ? E.ledger.resolve(v) : v;
@@ -7424,7 +7424,7 @@ function nodesPanel() {
     const ta = h('textarea', { readOnly: true, rows: 5, class: 'mono', style: 'width:100%;font-size:12px' }, shown); ta.value = shown;
     out.replaceChildren(h('label', {}, win ? 'Paste this into Command Prompt or PowerShell on that computer:' : 'Paste this into a terminal on that computer (Linux, Mac):'), ta,
       h('div', { class: 'row', style: 'margin-top:6px' }, h('button', { onclick: () => copyText(shown, 'Command') }, 'Copy command'),
-        h('span', { class: 'sub' }, (win ? 'For Windows. ' : 'For Linux and macOS (for Windows, open this page there). ') + 'It installs .NET 10 if this computer doesn’t have it (for your user only, no admin needed), downloads OpenTube and starts it: a window, or a terminal UI over SSH; its Service menu sets it to run at startup. It updates itself. The command carries a grant signed by your key: whoever runs it runs a computer that is yours, so don’t share it.')));
+        h('span', { class: 'sub' }, (win ? 'For Windows. ' : 'For Linux and macOS (for Windows, open this page there). ') + 'It installs .NET 10 if this computer doesn’t have it (for your user only, no admin needed), downloads OpenTuber and starts it: a window, or a terminal UI over SSH; its Service menu sets it to run at startup. It updates itself. The command carries a grant signed by your key: whoever runs it runs a computer that is yours, so don’t share it.')));
   } }, 'Create my command');
   const list = h('div');
   const draw = () => {
@@ -7435,8 +7435,8 @@ function nodesPanel() {
   };
   draw(); box.refresh = draw;
   box.append(h('h3', { style: 'margin-top:0' }, 'Your computers'),
-    h('p', { class: 'sub', style: 'margin-top:0' }, 'Run OpenTube on a computer with one command: it keeps a full copy of the network, hosts your joined channels around the clock, and receives OBS for going live. Each one reports here.'),
-    list, h('details', { style: 'margin-top:12px' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Run OpenTube on a computer'),
+    h('p', { class: 'sub', style: 'margin-top:0' }, 'Run OpenTuber on a computer with one command: it keeps a full copy of the network, hosts your joined channels around the clock, and receives OBS for going live. Each one reports here.'),
+    list, h('details', { style: 'margin-top:12px' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Run OpenTuber on a computer'),
       h('div', { style: 'margin-top:8px' }, label, h('div', { style: 'margin-top:6px' }, videos), h('div', { style: 'margin-top:6px' }, obsPort), ...parts.map(([k, t]) => h('label', { style: 'display:flex;gap:8px;align-items:center;font-weight:400' }, checks[k], t)), h('div', { style: 'margin-top:6px' }, pub),
         h('div', { style: 'margin-top:8px' }, make), out)));
   return box;
@@ -7558,7 +7558,7 @@ function groupPanel(n, { title = false } = {}) {
   const tick = setInterval(() => { if (!box.isConnected) { if (box.wasShown) clearInterval(tick); return; } box.wasShown = true; if (!document.hidden && ![who, tickText].includes(document.activeElement)) run('group', { thumbs: true }); }, 4000);
   return box;
 }
-// The reachability test: other OpenTube nodes elsewhere connect to this computer's OBS and web ports. Its own test of
+// The reachability test: other OpenTuber nodes elsewhere connect to this computer's OBS and web ports. Its own test of
 // itself is shown too, but it proves little: the public address is on its own network card, so that connection never
 // leaves the computer and skips the firewalls OBS's connection has to pass.
 function reachReport(t, data) {
@@ -7570,7 +7570,7 @@ function reachReport(t, data) {
     r.http ? line(r.http.ok, r.http.ok ? `web port ${r.http.port} reachable` : `web port ${r.http.port}: ${r.http.error}`) : null));
   const blocked = out.some(r => r.rtmp && !r.rtmp.ok);
   return h('div', { class: 'sub', style: 'margin:6px 0 0 128px' },
-    out.length ? rows : h('div', {}, `⚠ No other OpenTube computer on another network answered, so this couldn’t be tested from outside (${t.asked || 0} asked).`),
+    out.length ? rows : h('div', {}, `⚠ No other OpenTuber computer on another network answered, so this couldn’t be tested from outside (${t.asked || 0} asked).`),
     blocked ? h('p', { style: 'margin:6px 0' }, `Connections from outside don’t get through, so OBS can’t either. Open TCP port ${port} (and the web port) for incoming connections: in the hosting provider’s control panel (its firewall or “security group”), and on the server (sudo iptables -I INPUT -p tcp --dport ${port} -j ACCEPT, or the nftables / firewalld equivalent).`) : null,
     h('div', { style: 'margin-top:6px' }, `This computer testing itself: ${t.test.ok ? 'answers' : '❌ ' + t.test.error}. That doesn’t prove outside access: the connection never leaves the computer.`),
     h('div', { style: 'margin-top:6px' }, 'Test from the computer where OBS runs: Windows PowerShell ', h('code', {}, `Test-NetConnection ${ip} -Port ${port}`), ' (TcpTestSucceeded: True means it works) · Mac/Linux ', h('code', {}, `nc -vz ${ip} ${port}`), '.'));
@@ -7580,7 +7580,7 @@ function obsPanel(n, { chainId = null } = {}) {
   let data = null;
   let testResult = null, pick = null, groupBox = null;
   const run = async (cmd, args) => { st.textContent = 'asking the computer…'; try { const r = await nodeCtl(n, cmd, args); if (args?.test) testResult = r.data; else data = r.data; st.textContent = ''; draw(); }
-    catch (e) { st.textContent = /unknown command|bad command/.test(e.message) ? '✗ This computer runs an older OpenTube. On it, stop OpenTube (Ctrl+C) and run your command again: it updates itself on start.' : '✗ ' + e.message; draw(); } };
+    catch (e) { st.textContent = /unknown command|bad command/.test(e.message) ? '✗ This computer runs an older OpenTuber. On it, stop OpenTuber (Ctrl+C) and run your command again: it updates itself on start.' : '✗ ' + e.message; draw(); } };
   const chanArgs = async (chain, extra = {}) => {   // the channel, with proof that it's ours (signed by its key)
     const sg = chain && signerFor(derive(chain)?.owner);
     return { channel: chain, ...(sg ? { channelSig: await sg.sign(globalThis.OpenTubeCore.obsChannelPreimage(n.node, me.pub, chain)) } : {}), ...extra };
@@ -7623,7 +7623,7 @@ function obsPanel(n, { chainId = null } = {}) {
       row('Channel', ch, linked ? h('span', { class: 'badge ok' }, 'linked') : selected ? h('button', { class: 'small primary', onclick: async () => { await append(selected, { type: 'relay', key: n.node, on: true }); toast('Linked: this computer can go live on ' + channelTitle(selected)); await run('obs.set', await chanArgs(selected, { title: title.value })); } }, 'Link this computer to it') : null),
       row('Title', title, h('button', { class: 'small', onclick: async () => run('obs.set', await chanArgs(ch.value || null, { title: title.value })) }, 'Save')),
       row('YouTube', ytOn, h('span', {}, 'Also send it to YouTube'), ytKey, h('button', { class: 'small', onclick: () => run('obs.set', { youtube: { on: ytOn.checked, ...(ytKey.value.trim() ? { key: ytKey.value.trim() } : {}) } }) }, 'Save')),
-      data.ffmpeg ? null : h('div', { class: 'sub', style: 'margin-left:128px' }, '⚠ YouTube forwarding and tiles need ffmpeg on that computer. Install it (Linux: sudo apt install ffmpeg), then press ⟳ Update on Devices to restart OpenTube there.'),
+      data.ffmpeg ? null : h('div', { class: 'sub', style: 'margin-left:128px' }, '⚠ YouTube forwarding and tiles need ffmpeg on that computer. Install it (Linux: sudo apt install ffmpeg), then press ⟳ Update on Devices to restart OpenTuber there.'),
       row('Group', h('div', { style: 'flex:1' }, groupBox || (groupBox = groupPanel(n)))),
 
       data.live?.live ? h('div', { style: 'margin-top:6px' }, h('span', { class: 'badge live' }, 'LIVE'), ' receiving from OBS', data.watching != null ? ` · 👁 ${data.watching} watching` : '') : null);
@@ -7712,10 +7712,10 @@ document.body.append(updateNote);
 function maybeReload() {
   if (!updateReady) return;
   const busy = pageBusy();
-  if (!busy) { updateNote.style.display = 'flex'; updateNote.replaceChildren('Updating OpenTube to the new version…'); setTimeout(() => { if (!pageBusy()) location.reload(); else maybeReload(); }, 1500); return; }
+  if (!busy) { updateNote.style.display = 'flex'; updateNote.replaceChildren('Updating OpenTuber to the new version…'); setTimeout(() => { if (!pageBusy()) location.reload(); else maybeReload(); }, 1500); return; }
   if (updateDismissed) return;
   updateNote.style.display = 'flex';
-  updateNote.replaceChildren(h('span', {}, `A new version of OpenTube is ready. It loads by itself when you’re done (${busy}).`),
+  updateNote.replaceChildren(h('span', {}, `A new version of OpenTuber is ready. It loads by itself when you’re done (${busy}).`),
     h('button', { class: 'small primary', onclick: () => location.reload() }, 'Reload now'), h('button', { class: 'small', onclick: () => { updateDismissed = true; updateNote.style.display = 'none'; } }, '✕'));
 }
 setInterval(() => { if (updateReady) maybeReload(); }, 30000);
@@ -7743,7 +7743,7 @@ function siteFileHashes() {
   return null;
 }
 function versionBadge(v) {   // a node's version compared with this page's
-  if (!v?.build) return h('span', { class: 'badge warn', title: 'This computer runs an OpenTube from before versions were reported. Stop it and run your command again to update.' }, 'old version: stop it and run your command again');
+  if (!v?.build) return h('span', { class: 'badge warn', title: 'This computer runs an OpenTuber from before versions were reported. Stop it and run your command again to update.' }, 'old version: stop it and run your command again');
   const sf = v.files ? siteFileHashes() : null, stale = sf ? Object.entries(v.files).filter(([f, x]) => sf[f] && sf[f] !== x).map(([f]) => f) : [];
   if (stale.length) return h('span', { class: 'badge warn', title: `These files on that computer differ from the site’s: ${stale.join(', ')}` }, `v${v.name} · ${stale.join(', ')} out of date: press ⟳ Update`);
   const same = pageBuild && v.build === pageBuild;
@@ -7797,7 +7797,7 @@ const FLASH_KEY_HINT = { aws: 'ACCESS_KEY_ID:SECRET_ACCESS_KEY', gcp: 'paste the
 function flashPanel(n) {
   const box = h('div', { style: 'margin-top:6px' }), st = h('span', { class: 'sub' });
   let data = null, editing = false, open = false;
-  const run = async (cmd, args = {}) => { st.textContent = '…'; try { data = (await nodeCtl(n, cmd, args)).data; st.textContent = ''; } catch (e) { st.textContent = '✗ ' + (/unknown command|bad command/.test(e.message) ? 'this computer runs an older OpenTube: press ⟳ Update first' : e.message); } draw(); };
+  const run = async (cmd, args = {}) => { st.textContent = '…'; try { data = (await nodeCtl(n, cmd, args)).data; st.textContent = ''; } catch (e) { st.textContent = '✗ ' + (/unknown command|bad command/.test(e.message) ? 'this computer runs an older OpenTuber: press ⟳ Update first' : e.message); } draw(); };
   // the setup form (kept across refreshes)
   const prov = h('select', { style: 'width:auto' }), key = h('textarea', { rows: 1, style: 'flex:1;min-width:220px;font-family:monospace' });
   const region = h('input', { type: 'text', style: 'width:150px' }), plan = h('input', { type: 'text', style: 'width:150px' }), image = h('input', { type: 'text', style: 'width:220px' });
@@ -7883,10 +7883,10 @@ function nodeRow(n) {
       h('div', { class: 'row' }, h('button', { class: 'small', onclick: check }, 'Test connection'),
         n.roles.includes('obs') && perms.includes('o') ? h('button', { class: 'small', onclick: toggle('obs:' + n.node, () => perms.includes('g') ? guestPanel(n) : obsPanel(n)) }, perms.includes('g') ? '👥 Group stream' : '🎥 OBS & streaming') : null,
         owner ? h('button', { class: 'small', onclick: toggle('people:' + n.node, () => peoplePanel(n)) }, '👥 People') : null,
-        perms.includes('m') && online ? h('button', { class: 'small' + (i.version?.build && pageBuild && i.version.build !== pageBuild ? ' primary' : ''), title: 'Download the site’s current OpenTube on that computer and restart it', onclick: async (e) => {
+        perms.includes('m') && online ? h('button', { class: 'small' + (i.version?.build && pageBuild && i.version.build !== pageBuild ? ' primary' : ''), title: 'Download the site’s current OpenTuber on that computer and restart it', onclick: async (e) => {
           const b = e.target; b.disabled = true; test.textContent = 'Asking it to update…';
           try { await nodeCtl(n, 'update'); test.textContent = '⟳ Updating: it restarts with the current version and reports back here within a minute.'; }
-          catch (err) { b.disabled = false; test.textContent = /unknown command|bad command/.test(err.message) ? '✗ This computer runs an OpenTube from before remote updates: stop it on that computer (Ctrl+C) and run your command again, once.' : '✗ ' + err.message; }
+          catch (err) { b.disabled = false; test.textContent = /unknown command|bad command/.test(err.message) ? '✗ This computer runs an OpenTuber from before remote updates: stop it on that computer (Ctrl+C) and run your command again, once.' : '✗ ' + err.message; }
         } }, '⟳ Update') : null,
         n.roles.includes('host') && perms.includes('m') ? h('button', { class: 'small', onclick: (e) => { const row = e.target.closest('.item'); if (openManagers.has(n.node)) { openManagers.get(n.node).remove(); openManagers.delete(n.node); return; } const fm = fileManager(n); openManagers.set(n.node, fm); row.append(fm); } }, openManagers.has(n.node) ? 'Close files' : 'Manage files') : null)),
     h('div', { class: 'sub' }, [i.os, i.node && 'Node ' + i.node, i.height != null && `main #${i.height}`, i.peers != null && `${i.peers} peer(s)`, i.chains != null && `${i.chains} chains`].filter(Boolean).join(' · '), ' ', versionBadge(i.version)),
@@ -7897,7 +7897,7 @@ function nodeRow(n) {
     owner && online ? keep('logs:' + n.node, () => {   // the computer's recent log
       const box = h('div', { style: 'margin-top:6px' }), pre = h('pre', { class: 'mono', style: 'max-height:320px;overflow:auto;font-size:11px;background:var(--panel-2);padding:8px;border-radius:6px;white-space:pre-wrap;display:none' });
       let open = false, iv = null;
-      const load = async () => { try { const r = (await nodeCtl(n, 'logs', { n: 300 })).data; const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20; pre.textContent = r.lines.join('\n'); if (atEnd) pre.scrollTop = pre.scrollHeight; } catch (e) { pre.textContent = /unknown command|bad command/.test(e.message) ? 'This computer runs an older OpenTube: press ⟳ Update first.' : '✗ ' + e.message; } };
+      const load = async () => { try { const r = (await nodeCtl(n, 'logs', { n: 300 })).data; const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20; pre.textContent = r.lines.join('\n'); if (atEnd) pre.scrollTop = pre.scrollHeight; } catch (e) { pre.textContent = /unknown command|bad command/.test(e.message) ? 'This computer runs an older OpenTuber: press ⟳ Update first.' : '✗ ' + e.message; } };
       const btn = h('button', { class: 'small', onclick: () => { open = !open; pre.style.display = open ? 'block' : 'none'; btn.textContent = open ? '📜 Hide log' : '📜 Log'; clearInterval(iv); if (open) { load(); iv = setInterval(() => { if (!pre.isConnected) return clearInterval(iv); load(); }, 5000); } } }, '📜 Log');
       const copy = h('button', { class: 'small', onclick: () => copyText(pre.textContent, 'Log') }, 'Copy');
       box.append(h('div', { class: 'row', style: 'gap:6px' }, btn, copy), pre); return box;
@@ -7920,7 +7920,7 @@ function nodeRow(n) {
       owner && online ? h('button', { class: 'small' + (i.public ? '' : ' primary'), title: i.public ? 'Stop the Cloudflare Tunnel' : 'Give this computer a public HTTPS address through Cloudflare Tunnel: no open ports or account needed', onclick: async (e) => {
         const b = e.target; b.disabled = true; test.textContent = i.public ? 'Turning public access off…' : 'Starting a Cloudflare Tunnel: the computer restarts and reports its public address within a minute…';
         try { await nodeCtl(n, 'public.set', { mode: i.public && i.tunnel === 'on' ? 'off' : 'tunnel' }); }
-        catch (err) { b.disabled = false; test.textContent = /unknown command|bad command/.test(err.message) ? '✗ This computer runs an older OpenTube: press ⟳ Update first.' : '✗ ' + err.message; }
+        catch (err) { b.disabled = false; test.textContent = /unknown command|bad command/.test(err.message) ? '✗ This computer runs an older OpenTuber: press ⟳ Update first.' : '✗ ' + err.message; }
       } }, i.public ? (i.tunnel === 'on' ? 'Stop being public' : 'Public (its own HTTPS)') : '🌐 Make public') : null),
     h('div', { class: 'sub mono' }, n.addrs.join('  ')), test, openManagers.get('obs:' + n.node) || null, openManagers.get('people:' + n.node) || null, openManagers.get(n.node) || null);
 }

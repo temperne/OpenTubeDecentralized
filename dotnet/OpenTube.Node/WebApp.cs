@@ -4,7 +4,7 @@ namespace OpenTube.Node;
 
 /// <summary>
 /// The C# website (Blazor WebAssembly, OpenTube.Web) a node serves at /app/. It's found ready-made (--app-dir, the site's
-/// app/ folder), or, when the node runs from the OpenTube command (its source is here), built once per version in the
+/// app/ folder), or, when the node runs from the OpenTuber command (its source is here), built once per version in the
 /// background: "dotnet publish" into app-web/ next to the source, marked with the commit it was built from.
 /// </summary>
 public sealed class WebApp(OpenTubeNode node)

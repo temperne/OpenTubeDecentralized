@@ -1,4 +1,4 @@
-// OpenTube home node on Cloudflare: the page is served as a static asset, and
+// OpenTuber home node on Cloudflare: the page is served as a static asset, and
 // a single Durable Object runs the node:
 //   /ot       blockchain node (WebSocket)
 //   /tracker  WebTorrent tracker, so browsers find each other for video
@@ -22,7 +22,7 @@ export default {
       return res;
     }
     if (url.pathname === '/entries.json' && request.method === 'GET') {
-      // The entry nodes (public OpenTube computers) browsers use instead of this site's node. Served from Cloudflare's
+      // The entry nodes (public OpenTuber computers) browsers use instead of this site's node. Served from Cloudflare's
       // edge cache: the Durable Object is asked at most every 2 minutes per location, and when it can't answer (e.g.
       // its daily quota is spent) the static seed list is served instead.
       const cache = caches.default, key = new Request(url.origin + '/entries.json');

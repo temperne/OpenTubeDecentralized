@@ -81,7 +81,7 @@ public static class Ingest
         try { var u = new UriBuilder(via) { Path = new Uri(via).AbsolutePath.TrimEnd('/') + "/rtmp", Query = "" }; u.Scheme = u.Scheme == "http" ? "ws" : "wss"; u.Port = u.Uri.IsDefaultPort ? -1 : u.Port; to = u.Uri; }
         catch { Console.Error.WriteLine("--obs-via needs the computer’s address, like --obs-via=https://example.trycloudflare.com"); return 1; }
         var l = new TcpListener(System.Net.IPAddress.Loopback, port);
-        try { l.Start(); } catch { Console.Error.WriteLine($"Port {port} is in use here (an OpenTube receiving OBS?). Use --obs-port=1936 and put rtmp://127.0.0.1:1936/live in OBS."); return 1; }
+        try { l.Start(); } catch { Console.Error.WriteLine($"Port {port} is in use here (an OpenTuber receiving OBS?). Use --obs-port=1936 and put rtmp://127.0.0.1:1936/live in OBS."); return 1; }
         Console.WriteLine($"OBS bridge ready. In OBS: Settings → Stream → Custom…, Server rtmp://127.0.0.1{(port == 1935 ? "" : ":" + port)}/live and your stream key from that computer. Forwarding to {to.Host}. Ctrl+C stops.");
         while (true)
         {

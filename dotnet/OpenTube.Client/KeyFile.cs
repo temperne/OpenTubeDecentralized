@@ -46,7 +46,7 @@ public static class KeyFile
         {
             ["format"] = "opentube-encrypted", ["v"] = 1, ["kdf"] = "pbkdf2-sha256", ["iterations"] = Iterations,
             ["salt"] = B64u.Encode(salt), ["iv"] = B64u.Encode(iv), ["ct"] = B64u.Encode(ct),
-            ["note"] = "OpenTube keys, locked with a password. Import this file in OpenTube and enter the password.",
+            ["note"] = "OpenTuber keys, locked with a password. Import this file in OpenTuber and enter the password.",
         }.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
     }
     /// <summary>Unlock a locked key file (the inner file's text). Throws on a wrong password.</summary>

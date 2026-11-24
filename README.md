@@ -1,8 +1,8 @@
-# OpenTube
+# OpenTuber
 
 A decentralized video platform with its own blockchain.
 
-**Live demo:** https://opentubedecentralized.jasonajensen.workers.dev/ (a Cloudflare Worker + Durable Object home node, deployed from this repository).
+**Site:** https://opentuber.com/ — until its DNS is live, https://opentubedecentralized.jasonajensen.workers.dev/ (a Cloudflare Worker + Durable Object home node, deployed from this repository).
 
 Every browser that opens `index.html` becomes a full node: it verifies blocks, stores the chains it cares about, and hosts videos for other viewers.
 
@@ -10,15 +10,15 @@ Every browser that opens `index.html` becomes a full node: it verifies blocks, s
 
 **Viewers** just open the page. Nothing to install.
 
-**Operators (optional but recommended)** run OpenTube's node, one C# program (.NET 10) for Windows, macOS and Linux.
+**Operators (optional but recommended)** run OpenTuber's node, one C# program (.NET 10) for Windows, macOS and Linux.
 It serves the page too, so any node is a way into the network:
 
 ```sh
 curl -fsSL https://<your site>/opentube-dotnet.sh | bash -s -- --site=https://<your site>
 ```
 
-(Windows: the PowerShell command from *Devices → Run OpenTube on a computer*.) It installs .NET 10 if it's missing,
-downloads OpenTube, builds it and starts it: a window on a desktop, a terminal UI over SSH, or `--service` with no UI
+(Windows: the PowerShell command from *Devices → Run OpenTuber on a computer*.) It installs .NET 10 if it's missing,
+downloads OpenTuber, builds it and starts it: a window on a desktop, a terminal UI over SSH, or `--service` with no UI
 (`--install-service` makes it start with the computer). From the repository: `cd dotnet && dotnet run --project
 OpenTube.App`. Every option and what the node does: [dotnet/README.md](dotnet/README.md).
 
@@ -34,11 +34,11 @@ npx wrangler deploy
 
 `wrangler.jsonc` builds the page (`cloudflare/build.mjs`) and deploys `cloudflare/worker.mjs`. The Worker serves `index.html` and routes `/ot` and `/status` to a single Durable Object, which runs the full node. It stores every chain in its built-in SQLite storage and uses WebSocket hibernation, so idle connections cost nothing. Durable Objects with SQLite storage are available on the Workers free plan. If you deploy through Cloudflare's Git integration, pushing this repository is enough: the build step runs automatically.
 
-### Run OpenTube on your computer with one command
+### Run OpenTuber on your computer with one command
 
-*Devices → Run OpenTube on a computer → Create my command* gives you one line to paste into a terminal (Windows
+*Devices → Run OpenTuber on a computer → Create my command* gives you one line to paste into a terminal (Windows
 Command Prompt or PowerShell, Mac Terminal, Linux). It installs .NET 10 if the computer doesn't have it (for your user,
-no admin needed), downloads OpenTube from its repository, builds and starts it, and it updates itself afterwards. It
+no admin needed), downloads OpenTuber from its repository, builds and starts it, and it updates itself afterwards. It
 runs:
 
 - **a full node** that keeps the network, serves the website, the tracker and a live hub, and joins the peer mesh;
@@ -65,7 +65,7 @@ Note: the joined-channel list is public, so anyone with your user ID can see whi
 Everything is moving to C#, one codebase (`dotnet/`):
 
 - **OpenTube.Core**: the network's rules, chains, the coin and BitTorrent (peer wire, encryption, the DHT).
-- **OpenTube.Client**: the engine for apps, linked to OpenTube computers over WebSockets.
+- **OpenTube.Client**: the engine for apps, linked to OpenTuber computers over WebSockets.
 - **OpenTube.UI**: the pages (Razor), shared by the website and the phone app.
 - **OpenTube.Web**: the website in WebAssembly at `/app/` (the site's and every node's). JavaScript is only thin bindings to the browser.
 - **OpenTube.Mobile**: the Android app (.NET MAUI). Its pages are the same, the rest is native C#: the engine, the
@@ -77,11 +77,11 @@ Everything is moving to C#, one codebase (`dotnet/`):
 
 ## How peers connect (no central node)
 
-OpenTube works like Bitcoin and BitTorrent: every browser and every command-line node is an equal peer, and none is required.
+OpenTuber works like Bitcoin and BitTorrent: every browser and every command-line node is an equal peer, and none is required.
 
 - **The mesh:** browsers and command-line nodes join the network's WebRTC room and connect directly to each other. Blocks, transactions and introductions spread over those connections; a peer that receives something new passes it on. Losing any peer, including the site the page came from, changes nothing for the others.
 - **Trackers only introduce peers:** the site's own tracker, every node's tracker, the network's defaults, and the current public WebSocket trackers from [ngosang/trackerslist](https://github.com/ngosang/trackerslist), fetched on every start (and remembered in case GitHub can't be reached). Any one of them is enough. Command-line nodes also use the list's UDP/HTTP trackers and the DHT for videos, so ordinary BitTorrent apps can share them too.
-- **Computers running OpenTube** are the always-on backbone, like bitcoind: they keep everything, join the same mesh (the .NET node speaks Trystero's WebRTC room protocol itself), and host videos.
+- **Computers running OpenTuber** are the always-on backbone, like bitcoind: they keep everything, join the same mesh (the .NET node speaks Trystero's WebRTC room protocol itself), and host videos.
 - **Public nodes with automatic HTTPS:** browsers only accept secure connections. A node directly on the internet gets a public HTTPS name by itself: `<its IP, dashed>.sslip.io` (e.g. `203-0-113-7.sslip.io`, which resolves to that IP for everyone, so no domain is needed) with a Let's Encrypt certificate it obtains and renews itself; `--public=your.domain` uses your own domain. Behind a router, or when ports 80/443 are taken by another program, it uses a Cloudflare tunnel instead. The node announces its address in its check-ins; browsers then connect to it and use its tracker, and remember public nodes' trackers for the next start.
 - **WebSocket links to nodes are only a backup:** a browser connects to the site's node (or `?nodes=wss://a/ot,wss://b/ot`, or nodes announcing a public address) only while it has fewer than 3 direct peers.
 - **Trending** is computed by each browser for itself; picking a ranking list is optional.
@@ -120,7 +120,7 @@ MAIN CHAIN (proof of work, every node keeps it)
 
 ## Coins (the ledger)
 
-OpenTube runs on **one shared coin**. 100 units = 1 coin. Transactions ride in main-chain blocks, so proof of work orders them and nothing can be spent twice; every node replays them and gets the same balances.
+OpenTuber runs on **one shared coin**. 100 units = 1 coin. Transactions ride in main-chain blocks, so proof of work orders them and nothing can be spent twice; every node replays them and gets the same balances.
 
 - **Where coins come from:** only from running the network. Each main-chain block pays **1 coin** to whoever mined it (home nodes, your computers, or your browser when it confirms its own transaction). Every new key may claim **10 starter coins** once, which needs a few seconds of extra proof of work.
 - **What costs coins:**
@@ -223,7 +223,7 @@ Channels also have a richer **About** page: an avatar (changeable under *Manage*
 
 ## Paying per piece
 
-A video torrent is split into pieces, each checked against the hash in the torrent. OpenTube adds one message type, `ot_pay`, to the BitTorrent connection itself (BitTorrent's extension protocol, the same mechanism WebTorrent uses for metadata), so payment follows the exact exchange between the peer that gave a piece and the peer that got it:
+A video torrent is split into pieces, each checked against the hash in the torrent. OpenTuber adds one message type, `ot_pay`, to the BitTorrent connection itself (BitTorrent's extension protocol, the same mechanism WebTorrent uses for metadata), so payment follows the exact exchange between the peer that gave a piece and the peer that got it:
 
 1. When two peers connect they say who they are (`{hello: key}`).
 2. As pieces arrive, the downloader signs a running **tab** for that peer and video: "you've sent me n pieces; I owe you amt units in total". amt grows by the network's **piece price** per piece; it started at 0.02 coins and adjusts every block like the other prices. It goes to the peer over the same connection.
@@ -432,14 +432,14 @@ On your channel's Videos tab, **Go live**: pick a camera, a microphone, or *Shar
 - **When it ends, the streamer chooses:** *Publish recording* hashes the recording and posts it as a normal video. Members already have it, so they only fetch what they missed. *Discard* deletes the recording, and members delete their copies.
 - Every node checks the rules: only the channel's key can start or end a stream or sign its chunks, and viewers verify every chunk's signature and hash.
 
-**OBS "Start Streaming" (recommended for OBS):** run OpenTube on the computer OBS runs on (*My node → Your computers → Run OpenTube on a computer*). It listens for OBS on `rtmp://localhost/live` (its own RTMP receiver, no ffmpeg needed). On the site, *Go live → Stream from OBS*, pick that computer, then in OBS set *Settings → Stream → Service “Custom…”*, server `rtmp://localhost/live`, any stream key, an H.264 video encoder (x264 or your GPU's H.264, not HEVC/AV1), AAC audio, and a keyframe interval of 2 s. Click *Start Streaming*. The computer repackages the stream as fragmented MP4, signs each fragment with its node key (your signed `live` block names it as the stream's `relay`), and relays it to the site's live hub. Viewers watch through segments, a few seconds behind. Your browser and members save the recording as an `.mp4`, and *Stop Streaming* leads to the usual publish-or-discard step. If you click Start Streaming before Go live, OBS shows an error saying so. This works with the Cloudflare site too.
+**OBS "Start Streaming" (recommended for OBS):** run OpenTuber on the computer OBS runs on (*My node → Your computers → Run OpenTuber on a computer*). It listens for OBS on `rtmp://localhost/live` (its own RTMP receiver, no ffmpeg needed). On the site, *Go live → Stream from OBS*, pick that computer, then in OBS set *Settings → Stream → Service “Custom…”*, server `rtmp://localhost/live`, any stream key, an H.264 video encoder (x264 or your GPU's H.264, not HEVC/AV1), AAC audio, and a keyframe interval of 2 s. Click *Start Streaming*. The computer repackages the stream as fragmented MP4, signs each fragment with its node key (your signed `live` block names it as the stream's `relay`), and relays it to the site's live hub. Viewers watch through segments, a few seconds behind. Your browser and members save the recording as an `.mp4`, and *Stop Streaming* leads to the usual publish-or-discard step. If you click Start Streaming before Go live, OBS shows an error saying so. This works with the Cloudflare site too.
 
-**OBS with a stream key (an OpenTube computer, not the Cloudflare node):** under *Go live*, open *Or send the stream from OBS with a stream key* and click *Get a stream key*. The page shows the exact OBS settings: Settings → Output → Advanced → Recording → *Custom Output (FFmpeg)* → *Output to URL*, the URL shown, container `webm`, video `libvpx` (VP8), audio `libvorbis` (browsers can't stream ffmpeg's Opus-in-WebM). Then *Start Recording* in OBS; stopping it ends the stream. The node signs the incoming bytes with its own key (your browser names the node as the stream's `relay` in the signed `live` block) and relays them as segments, a few seconds behind. Your browser records the stream, so keep the page open, and then asks publish or discard as usual. The Cloudflare node can't receive OBS streams; use the Virtual Camera there.
+**OBS with a stream key (an OpenTuber computer, not the Cloudflare node):** under *Go live*, open *Or send the stream from OBS with a stream key* and click *Get a stream key*. The page shows the exact OBS settings: Settings → Output → Advanced → Recording → *Custom Output (FFmpeg)* → *Output to URL*, the URL shown, container `webm`, video `libvpx` (VP8), audio `libvorbis` (browsers can't stream ffmpeg's Opus-in-WebM). Then *Start Recording* in OBS; stopping it ends the stream. The node signs the incoming bytes with its own key (your browser names the node as the stream's `relay` in the signed `live` block) and relays them as segments, a few seconds behind. Your browser records the stream, so keep the page open, and then asks publish or discard as usual. The Cloudflare node can't receive OBS streams; use the Virtual Camera there.
 
 Known limits: the recording is WebM straight from the browser's recorder, so some players can't seek in it. The hub keeps the last minute of chunks, so a member who joins later than that fetches the gap after the stream is published.
 
 
-**OBS through your computer.** Every computer running OpenTube (with OBS on) has its own **stream key**. On *Go live* (pick the computer) or *Devices → 🎥 OBS & streaming*:
+**OBS through your computer.** Every computer running OpenTuber (with OBS on) has its own **stream key**. On *Go live* (pick the computer) or *Devices → 🎥 OBS & streaming*:
 
 - **Setting up OBS:** copy the **server** address and the key. The server is `rtmp://localhost/live` on that computer, or `rtmp://<its address>/live` from another one. The key is hidden until you click *Show*, and *New key* replaces it. Paste both into OBS → Settings → Stream → Custom.
 - **Linking a channel:** choose the channel and click *Link this computer to it*. That writes a `relay` block on the channel: the computer may now start and end live streams on it by itself. Then *Start Streaming* in OBS goes live on the channel with the title you saved, and *Stop Streaming* ends it. The computer accepts OBS only with its key, from any address.
@@ -453,7 +453,7 @@ Known limits: the recording is WebM straight from the browser's recorder, so som
 
 The usual causes:
 
-- **The computer runs an older OpenTube:** stop it and run the command again; it updates itself on start.
+- **The computer runs an older OpenTuber:** stop it and run the command again; it updates itself on start.
 - **A server or VPS blocks the port:** allow incoming TCP **1935** in its firewall (for example `sudo ufw allow 1935/tcp`) and in the provider's security settings.
 - **The wrong address in OBS:** use the server address shown first (the public one) from outside that network.
 - **No stream key in OBS:** the key belongs in OBS's *Stream Key* box, not in the server address.
@@ -466,7 +466,7 @@ The usual causes:
 - **Checking:** viewers verify each segment's hash and the channel's signature; relays only pass segments on.
 - **With a hub too:** viewers use both paths and drop duplicates.
 
-Camera streams work with no hub at all. OBS needs one of your computers running OpenTube.
+Camera streams work with no hub at all. OBS needs one of your computers running OpenTuber.
 
 ## Lists: curated feeds
 
@@ -489,7 +489,7 @@ Video files travel via WebTorrent (v3). The chains carry only the infohash, titl
 
 ## Managing your nodes from any console
 
-Every computer you run OpenTube on appears under *My node → Your computers*. Computers that host have a **Manage files** button. It lists each channel and video on that node: size, download progress, peers, and how many **other copies** exist (proven by storage proofs, or seeding in the swarm). You can:
+Every computer you run OpenTuber on appears under *My node → Your computers*. Computers that host have a **Manage files** button. It lists each channel and video on that node: size, download progress, peers, and how many **other copies** exist (proven by storage proofs, or seeding in the swarm). You can:
 
 - **Pin** a video. It is never trimmed.
 - **Drop** a video. It is deleted and not downloaded again; *Allow again* undoes this. You're warned when no other copy is known.
@@ -503,7 +503,7 @@ Commands are signed by your personal key, and the node obeys only the user in it
 
 ### OBS on a server whose firewall only lets some ports in
 
-Many VPS providers only let a few ports in from the internet (often 22 and 80), whatever the server itself listens on. To check, run `python3 -m http.server 9999` on the server and open `http://<its-ip>:9999` from your phone on mobile data. If that doesn't load, the firewall is blocking the port, not OpenTube. Fix it either way:
+Many VPS providers only let a few ports in from the internet (often 22 and 80), whatever the server itself listens on. To check, run `python3 -m http.server 9999` on the server and open `http://<its-ip>:9999` from your phone on mobile data. If that doesn't load, the firewall is blocking the port, not OpenTuber. Fix it either way:
 
 - **Open the port:** in the provider's control panel (Firewall or Security group), and on the server with `sudo iptables -I INPUT -p tcp --dport 1935 -j ACCEPT`.
 - **Or use a port that's already open:** add `--obs-port=80` to the command, or set "OBS port" when you create it on Devices. In OBS, use `rtmp://<its-ip>:80/live`. Only one program can use a port, so pick one nothing else on the server is using.
@@ -526,7 +526,7 @@ The site (Cloudflare) serves the page. Its own node is a last resort: it has a d
 
 1. **Computers they remember:** entry nodes they've met, and your own computers (their localhost address works from the page). Kept in the browser and refreshed by itself.
 2. **The site's list, `entries.json`:** the entry nodes the site's node currently hears of, served from Cloudflare's edge cache. Each page load is one cheap Worker request, and the Durable Object is asked at most every 2 minutes per location. When it can't answer (for example, its quota is spent), the static list below is served instead. **`seeds.json`:** a static file served next to the page, which costs the Worker nothing. It lists entry nodes. A GitHub Action (`.github/workflows/seeds.yml`) refreshes it every hour: it asks the known entry nodes which entry nodes they know (`/entries.json`), keeps those that answer over HTTPS and commits the list, and the site redeploys. Nodes appear and drop out by themselves. If none answers, the old list stays.
-3. **The public tracker mesh:** browsers join the OpenTube room through public WebTorrent trackers. Peers there (browsers and nodes) pass along signed node statuses, entry nodes included.
+3. **The public tracker mesh:** browsers join the OpenTuber room through public WebTorrent trackers. Peers there (browsers and nodes) pass along signed node statuses, entry nodes included.
 4. **The site's own node,** only while none of the above answers, and retried slowly (up to every 30 min) when it fails.
 
 Every node serves `/entries.json` (the entry nodes it knows) and `/seeds.json`. To add your server, start it with `--public`. It joins the list by itself once any entry node or the hourly update hears about it, or you can add its HTTPS address to `seeds.json` yourself.
@@ -560,9 +560,9 @@ When you go live with OBS through one of your computers, it records the stream i
 
 ### Updating a computer from the site
 
-Each computer on Devices has **⟳ Update** (highlighted when its version differs from the site's). It asks the computer, with a signed command, to download the site's current OpenTube and restart, so you don't need its terminal. This works for computers started with the one-line command. Computers running a version from before this button: stop OpenTube there and run the command again once.
+Each computer on Devices has **⟳ Update** (highlighted when its version differs from the site's). It asks the computer, with a signed command, to download the site's current OpenTuber and restart, so you don't need its terminal. This works for computers started with the one-line command. Computers running a version from before this button: stop OpenTuber there and run the command again once.
 
-When OpenTube starts, it also stops any older OpenTube still running from the same `~/.opentube`. An old leftover kept port 1935 bound to `127.0.0.1`, so OBS from other computers couldn't connect. It now says so if it couldn't update itself, and Devices shows a warning when the OBS port is taken.
+When OpenTuber starts, it also stops any older OpenTuber still running from the same `~/.opentube`. An old leftover kept port 1935 bound to `127.0.0.1`, so OBS from other computers couldn't connect. It now says so if it couldn't update itself, and Devices shows a warning when the OBS port is taken.
 
 ### Letting other people use your computer
 
@@ -588,7 +588,7 @@ Passed proofs count as copies for trimming. They also earn **storage** receipts:
 
 ## The video folder (hosting uses real files on your disk)
 
-To upload or join, you choose a folder once (*My node → Video folder*). OpenTube manages it like this:
+To upload or join, you choose a folder once (*My node → Video folder*). OpenTuber manages it like this:
 
 ```
 <your folder>/
@@ -602,7 +602,7 @@ To upload or join, you choose a folder once (*My node → Video folder*). OpenTu
 - **Join** creates the channel's folder and downloads each video straight into it. Nothing is held in memory: pieces are written to the file as they arrive, and the file is saved in steps, so a closed tab loses little.
 - **Reopening the page** shares everything in the folder again within a second. Videos you host also play straight from the file on disk.
 - **Browser support:** the folder uses the File System Access API, which Chrome and Edge on a computer provide. Firefox, Safari and phones can still **watch**, but not upload or join. After a restart Chrome may ask you to allow the folder again; a bar at the top of the page has the button. Choose "Allow on every visit" to stop the question.
-- **Computers running OpenTube** keep the same layout in their video folder (`--videos=…`). `?folder=browser` uses the browser's private storage with the same layout, for testing.
+- **Computers running OpenTuber** keep the same layout in their video folder (`--videos=…`). `?folder=browser` uses the browser's private storage with the same layout, for testing.
 - Videos stored inside the browser by older versions keep being shared, and they move into the folder when you choose one.
 
 ## Where your copy of the network lives
@@ -652,7 +652,7 @@ A computer of yours runs cloud servers for streams (*flash computers*): it start
 
 `custom` runs a create command with `OT_NAME` and `OT_USERDATA_FILE` (the setup script), expecting `{"id":"…","ip":"…"}` as its last line, and a delete command with `OT_ID`. Azure, for example: create `az vm create -g opentube -n "$OT_NAME" --image Ubuntu2404 --size Standard_F2s_v2 --custom-data "$OT_USERDATA_FILE" --generate-ssh-keys -o json --query "{id:name, ip:publicIpAddress}" | tr -d "\n"; echo`, delete `az vm delete -g opentube -n "$OT_ID" --yes`. Custom commands run on that computer, so only its owner may set them.
 
-**Lifecycle.** A new server installs ffmpeg, .NET and OpenTube (2–4 minutes), comes online through a Cloudflare Tunnel, and is controlled like any of your computers (OBS, group, studio, update). Its recordings are copied to the parent (pinned, never trimmed). When it's idle with every recording copied, the parent shuts it down: **billed by the hour, at the end of the hour already paid for** (go live again before then and it just carries on); billed by the second, after a few idle minutes. **Shut down** does it at once; **keep** stops the automatic shutdown; a time limit (6 h by default) is the backstop.
+**Lifecycle.** A new server installs ffmpeg, .NET and OpenTuber (2–4 minutes), comes online through a Cloudflare Tunnel, and is controlled like any of your computers (OBS, group, studio, update). Its recordings are copied to the parent (pinned, never trimmed). When it's idle with every recording copied, the parent shuts it down: **billed by the hour, at the end of the hour already paid for** (go live again before then and it just carries on); billed by the second, after a few idle minutes. **Shut down** does it at once; **keep** stops the automatic shutdown; a time limit (6 h by default) is the backstop.
 
 **Stats and scaling.** Viewers report how it's going with their check-ins (download speed, stalls, video in hand); hubs summarise it per stream (shown on the stream page: "100% smooth · 2.1 Mbps typical"), and each computer reports its streams' numbers in its status. With **add flash computers as viewers grow**, the parent starts another one on your account for every N viewers (up to a maximum), and one more when over a fifth of viewers are struggling. A flash computer of yours relays your live streams to viewers, so each one adds capacity; extra ones go idle when the stream ends and are shut down like any other.
 

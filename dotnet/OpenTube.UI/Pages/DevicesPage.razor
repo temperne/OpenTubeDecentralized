@@ -2,7 +2,7 @@
 @inherits Live
 @using System.Text.Json.Nodes
 <div class="head-row"><h2>Devices</h2><a href="network">📡 Network &amp; diagnostics</a></div>
-<p class="sub">Your computers run OpenTube: they keep the network, host your videos, receive OBS, and watch for you while your phone sleeps.</p>
+<p class="sub">Your computers run OpenTuber: they keep the network, host your videos, receive OBS, and watch for you while your phone sleeps.</p>
 @foreach (var (n, perms, at) in S.MyNodes())
 {
     var info = Info(n); var online = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - at < 120000; var owner = perms.Contains('o') && perms.Contains('m') && Owner(n);
@@ -62,7 +62,7 @@
 @if (S.MyNodes().Count == 0) { <p class="sub">No computers yet. Add one below.</p> }
 <div class="panel">
     <h3>Add a computer</h3>
-    <p class="sub">Run one command on it (Linux, Mac, or Windows PowerShell). It installs .NET if needed, runs OpenTube as yours, and updates itself. Don’t share the command: whoever runs it runs a computer that is yours.</p>
+    <p class="sub">Run one command on it (Linux, Mac, or Windows PowerShell). It installs .NET if needed, runs OpenTuber as yours, and updates itself. Don’t share the command: whoever runs it runs a computer that is yours.</p>
     <div class="row-actions"><input placeholder="Its name (e.g. Home server)" @bind="label" class="grow-input" /><button class="primary" @onclick="() => grant = S.Trade.Grant(label)">Make the command</button></div>
     @if (grant != null)
     {

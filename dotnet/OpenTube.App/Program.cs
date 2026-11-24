@@ -26,7 +26,7 @@ public static class Program
         if (args.Contains("--service")) return RunService(args);
         if (Console.IsInputRedirected && !HasDisplay())
         {   // no keyboard to read (input is a pipe or a file): menus would show but no key would reach them
-            Console.WriteLine("OpenTube: no terminal to read keys from, so running without the menus (Ctrl+C stops it).");
+            Console.WriteLine("OpenTuber: no terminal to read keys from, so running without the menus (Ctrl+C stops it).");
             return RunService(args);
         }
         if (args.Contains("--tui") || !HasDisplay()) return TerminalUi.Run(args);
@@ -53,7 +53,7 @@ public static class Program
     }
 
     const string Help = """
-      OpenTube node
+      OpenTuber node
 
         opentube                 a window (or the terminal UI when there's no screen)
         opentube --tui           the terminal UI
@@ -91,7 +91,7 @@ sealed class NodeService(NodeOptions options, IHostApplicationLifetime life) : B
     protected override async Task ExecuteAsync(CancellationToken stop)
     {
         try { server = new NodeServer(options); await server.StartAsync(); }
-        catch (Exception e) { Console.Error.WriteLine("OpenTube couldn't start: " + e.Message); life.StopApplication(); return; }
+        catch (Exception e) { Console.Error.WriteLine("OpenTuber couldn't start: " + e.Message); life.StopApplication(); return; }
         try { await Task.Delay(Timeout.Infinite, stop); } catch (OperationCanceledException) { }
     }
     public override async Task StopAsync(CancellationToken ct) { if (server != null) await server.DisposeAsync(); await base.StopAsync(ct); }

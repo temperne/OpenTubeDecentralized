@@ -212,7 +212,7 @@ public sealed class LiveHub
             }
             if (t == "ingest")
             {   // the owner asks for a stream key so OBS can send this stream to the node
-                if (IngestTicket == null) { Out(sid, new JsonObject { ["t"] = "error", ["stream"] = Get(m, "stream")?.DeepClone(), ["error"] = "This hub can’t receive OBS streams (only an OpenTube computer can)." }); return; }
+                if (IngestTicket == null) { Out(sid, new JsonObject { ["t"] = "error", ["stream"] = Get(m, "stream")?.DeepClone(), ["error"] = "This hub can’t receive OBS streams (only an OpenTuber computer can)." }); return; }
                 if (stream == null || !IsHex(Get(m, "chain"), 64) || !IsStr(Get(m, "mime"), 80) || streams.ContainsKey(stream)) return;
                 var owner = OwnerOf(Str(m["chain"])!);
                 if (owner == null || !s.Keys.Contains(owner)) { Out(sid, new JsonObject { ["t"] = "error", ["stream"] = stream, ["error"] = "not the owner of this channel" }); return; }

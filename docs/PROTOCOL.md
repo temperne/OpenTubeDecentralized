@@ -1,4 +1,4 @@
-# OpenTube protocol
+# OpenTuber protocol
 
 What a node or browser must do to take part in the network. The reference is the shared core in `index.html`
 (`<script id="opentube-core">`), which browsers run; the .NET node (`dotnet/`) implements the same rules in C#,

@@ -23,7 +23,7 @@ public sealed partial class DevicesPage : DataPage
     {
         var S = Svc.S;
         Col.Children.Add(Row(H("Devices", 22), Btn("Network & diagnostics", () => App.Open(typeof(NetworkPage)))));
-        Col.Children.Add(Sub("Your computers run OpenTube: they keep the network, host your videos, receive OBS, and watch for you while your phone sleeps."));
+        Col.Children.Add(Sub("Your computers run OpenTuber: they keep the network, host your videos, receive OBS, and watch for you while your phone sleeps."));
         var nodes = S.MyNodes();
         if (nodes.Count == 0) Col.Children.Add(Sub("No computers yet. Add one below."));
         foreach (var (n, perms, at) in nodes)
@@ -57,7 +57,7 @@ public sealed partial class DevicesPage : DataPage
         Col.Children.Add(Status);
         // ---- add a computer
         var label = Input("Its name (e.g. Home server)", max: 60);
-        var add = new List<UIElement> { H("Add a computer"), Sub("Run one command on it (Linux, Mac, or Windows PowerShell). It installs .NET if needed, runs OpenTube as yours, and updates itself. Don’t share the command: whoever runs it runs a computer that is yours."), label,
+        var add = new List<UIElement> { H("Add a computer"), Sub("Run one command on it (Linux, Mac, or Windows PowerShell). It installs .NET if needed, runs OpenTuber as yours, and updates itself. Don’t share the command: whoever runs it runs a computer that is yours."), label,
             Btn("Make the command", () => { grant = S.Trade.Grant(label.Text); Redraw(); }, primary: true, id: "devices-make") };
         if (grant != null)
         {

@@ -175,7 +175,7 @@ public sealed partial class GoLivePage : Page
         var S = Svc.S; var st = Status(); var box = new StackPanel { Spacing = 8 };
         var nodes = S.MyNodes().Where(x => x.Perms.Contains('o')).ToList();
         var items = new List<UIElement> { H("With OBS"), Sub("Stream from OBS to one of your computers; it goes live on the channel above.") };
-        if (nodes.Count == 0) items.Add(Sub("None of your computers receives OBS yet: run the OpenTube command on the computer with OBS (Devices)."));
+        if (nodes.Count == 0) items.Add(Sub("None of your computers receives OBS yet: run the OpenTuber command on the computer with OBS (Devices)."));
         foreach (var (n, _, _) in nodes) { var node = n; items.Add(Row(Text((string?)S.Info(n)?["name"] ?? "your computer"), Btn("Show OBS settings", () => _ = st.Do("Asking your computer…", async () => ShowObs(node, await S.NodeCtl(node, "obs"), box, st), null!)))); }
         items.Add(box); items.Add(st);
         col.Children.Add(Card([.. items]));

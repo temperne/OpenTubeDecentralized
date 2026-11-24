@@ -11,7 +11,7 @@ namespace OpenTube.Uno.Services;
 public static class Svc
 {
     /// <summary>The site whose node the app links to first (then the entry nodes it lists). In the browser: the page's own site.</summary>
-    public const string DefaultSite = "https://opentubedecentralized.jasonajensen.workers.dev";
+    public const string DefaultSite = OpenTube.Core.Network.SiteUrl;
     public static ClientSession S { get; private set; } = null!;
     public static IVideoSource Video { get; private set; } = null!;
     public static string Site { get; private set; } = DefaultSite;
@@ -35,7 +35,7 @@ public static class Svc
         TaskScheduler.UnobservedTaskException += (_, e) => { e.SetObserved(); Console.WriteLine("[opentube] background error: " + e.Exception.GetBaseException().Message); };
         try
         {
-            Site = Environment.GetEnvironmentVariable("OPENTUBE_SITE") ?? PlatformSite() ?? DefaultSite;
+            Site = Environment.GetEnvironmentVariable("OPENTUBE_SITE") ?? PlatformSite() ?? Reachable(DefaultSite) ?? OpenTube.Core.Network.FallbackSite;
             S = new ClientSession(new FileStore(Path.Combine(dataDir, "chain")), Site) { Log = m => Console.WriteLine("[opentube] " + m) };
             _ = Task.Run(async () => { try { await S.Start(); } catch (Exception e) { StartError = "network: " + e.Message; Console.WriteLine("[opentube] start: " + e); } });
         }
@@ -49,6 +49,15 @@ public static class Svc
             return new NativeVideoSource(S, Path.Combine(dataDir, "videos"));
 #endif
         });
+    }
+    /// <summary>The site if it answers within a few seconds (the home domain before its DNS is live doesn't).</summary>
+    static string? Reachable(string site)
+    {
+#if __WASM__
+        return site;
+#else
+        try { using var h = new HttpClient { Timeout = TimeSpan.FromSeconds(4) }; return h.GetAsync(site + "/status").GetAwaiter().GetResult().IsSuccessStatusCode ? site : null; } catch { return null; }
+#endif
     }
     /// <summary>Note an error a page caught, for the crash report.</summary>
     public static void Report(Exception e) { Console.WriteLine("[opentube] error: " + e); try { File.AppendAllText(Path.Combine(dataDir, "errors.txt"), DateTime.Now + " " + e + "\n"); } catch { } }

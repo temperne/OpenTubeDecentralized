@@ -15,7 +15,7 @@ public static class Files
     {
         if (TestDir is { } d) { Directory.CreateDirectory(d); await File.WriteAllTextAsync(Path.Combine(d, name), text); return true; }
         var picker = new FileSavePicker { SuggestedFileName = Path.GetFileNameWithoutExtension(name), SuggestedStartLocation = PickerLocationId.DocumentsLibrary };
-        picker.FileTypeChoices.Add("OpenTube keys", [Path.GetExtension(name) is { Length: > 0 } ext ? ext : ".json"]);
+        picker.FileTypeChoices.Add("OpenTuber keys", [Path.GetExtension(name) is { Length: > 0 } ext ? ext : ".json"]);
         Init(picker);
         var file = await picker.PickSaveFileAsync(); if (file == null) return false;
         await FileIO.WriteTextAsync(file, text); return true;

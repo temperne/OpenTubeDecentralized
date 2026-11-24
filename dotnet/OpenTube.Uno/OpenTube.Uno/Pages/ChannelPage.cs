@@ -269,7 +269,7 @@ public sealed partial class ChannelPage : Page
                 o.Add(Row(Btn(S.NameOf(k), () => ProfilePage.Open(k)), Text(((string?)q["role"] ?? "") + (Js.Num(q["share"]) is double sh ? $" · {sh}%" : ""), 14)));
             }
             var roles = S.Trade.Roles(id);
-            if (roles.Count > 0) { o.Add(H("Roles on OpenTube", 15)); foreach (var (k, rs) in roles) o.Add(Row(Btn(S.NameOf(k), () => ProfilePage.Open(k)), Sub(string.Join(", ", rs.Select(Trade.RoleName))))); }
+            if (roles.Count > 0) { o.Add(H("Roles on OpenTuber", 15)); foreach (var (k, rs) in roles) o.Add(Row(Btn(S.NameOf(k), () => ProfilePage.Open(k)), Sub(string.Join(", ", rs.Select(Trade.RoleName))))); }
             var listings = S.Trade.Listings().Where(l => l.Open && (string?)l.L["org"] == id).Count();
             if ((string?)g?["orgType"] == "arbitration") o.Add(Sub($"Arbitrates marketplace disputes · {listings} open listing(s) use it for escrow."));
             body.Children.Add(Card([.. o]));

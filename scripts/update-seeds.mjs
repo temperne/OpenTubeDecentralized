@@ -7,14 +7,16 @@ const FILE = new URL('../seeds.json', import.meta.url);
 const cur = JSON.parse(fs.readFileSync(FILE, 'utf8'));
 // an address that redirects elsewhere isn't a node: redirects count as failures
 const get = async (u, ms = 8000) => { const r = await fetch(u, { signal: AbortSignal.timeout(ms), redirect: 'manual' }); if (!r.ok) throw new Error(String(r.status)); return r.json(); };
-const SITE = (process.env.SITE || 'https://opentubedecentralized.jasonajensen.workers.dev').replace(/\/+$/, '');
+// the home domain first; the Cloudflare address until the domain's DNS is live
+const SITES = (process.env.SITE ? [process.env.SITE] : ['https://opentuber.com', 'https://opentubedecentralized.jasonajensen.workers.dev']).map(u => u.replace(/\/+$/, ''));
+let SITE = SITES[0];
 const known = new Set((cur.entry || []).map(u => u.replace(/\/+$/, '')));
 let network = cur.network || null;
 // the site's list too: the entry nodes its node hears of right now (a computer behind a tunnel gets a new address
 // each time it starts, so the old addresses alone would never lead to it)
 let siteUp = false;
-try { const j = await get(SITE + '/entries.json'); siteUp = true; network ||= j.network; for (const e of j.entry || []) if (e?.node && /^https:\/\//.test(e.url || '')) known.add(e.url.replace(/\/+$/, '')); }
-catch (e) { console.log(`${SITE}: no entry list (${e.message})`); }
+for (const s of SITES) try { const j = await get(s + '/entries.json'); SITE = s; siteUp = true; network ||= j.network; for (const e of j.entry || []) if (e?.node && /^https:\/\//.test(e.url || '')) known.add(e.url.replace(/\/+$/, '')); }
+catch (e) { console.log(`${s}: no entry list (${e.message})`); }
 for (const u of [...known]) {
   try { const j = await get(u + '/entries.json'); network ||= j.network; if (j.network && network && j.network !== network) continue; for (const e of j.entry || []) if (/^https:\/\//.test(e?.url || '')) known.add(e.url.replace(/\/+$/, '')); }
   catch (e) { console.log(`${u}: no entry list (${e.message})`); }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# OpenTube's .NET node for Linux and macOS, from one command (the site's Devices page makes it for you):
+# OpenTuber's .NET node for Linux and macOS, from one command (the site's Devices page makes it for you):
 #   curl -fsSL https://<site or node>/opentube-dotnet.sh | bash -s -- --site=… --grant=…
-# Installs .NET 10 if this computer doesn't have it (into ~/.dotnet, no admin rights needed), downloads OpenTube
+# Installs .NET 10 if this computer doesn't have it (into ~/.dotnet, no admin rights needed), downloads OpenTuber
 # (no git needed) and starts the node: a window on a desktop, the terminal UI over SSH. Running it again updates.
 set -euo pipefail
 # Run as a regular user after su/sudo, the environment can still be root's (HOME=/root, XDG_RUNTIME_DIR=/run/user/0):
@@ -26,15 +26,15 @@ if [ -x "$HOME/.dotnet/dotnet" ]; then export DOTNET_ROOT="$HOME/.dotnet" PATH="
 
 has_dotnet10() { command -v dotnet >/dev/null 2>&1 && dotnet --list-sdks 2>/dev/null | grep -Eq '^(1[0-9]|[2-9][0-9])\.'; }
 if ! has_dotnet10; then
-  echo "OpenTube: installing .NET 10 into ~/.dotnet (once; no admin rights needed)…"
+  echo "OpenTuber: installing .NET 10 into ~/.dotnet (once; no admin rights needed)…"
   curl -fsSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 10.0 --install-dir "$HOME/.dotnet"
   export DOTNET_ROOT="$HOME/.dotnet" PATH="$HOME/.dotnet:$PATH"
-  has_dotnet10 || { echo "OpenTube: .NET 10 didn't install. Install it from https://dot.net and run this again."; exit 1; }
+  has_dotnet10 || { echo "OpenTuber: .NET 10 didn't install. Install it from https://dot.net and run this again."; exit 1; }
 fi
 # minimal Linux servers often lack ICU (Unicode tables); .NET runs without it in invariant mode
 if [ "$(uname)" = "Linux" ] && ! (ldconfig -p 2>/dev/null | grep -q libicu); then export DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1; fi
 
-echo "OpenTube: downloading the latest version…"
+echo "OpenTuber: downloading the latest version…"
 mkdir -p "$APP"
 COMMIT=""
 if [ -n "${OPENTUBE_SRC:-}" ]; then cp -R "$OPENTUBE_SRC/." "$APP/"   # a local copy (for testing)
@@ -47,7 +47,7 @@ printf '%s' "$COMMIT" > "$APP/.commit"
 # the node updates itself: it fetches the new source here and exits with 75; this loop starts it again
 export OPENTUBE_APP_DIR="$APP" OPENTUBE_REPO="$REPO" OPENTUBE_REF="$REF"
 cd "$APP/dotnet"
-echo "OpenTube: building and starting (the first time takes a minute)…"
+echo "OpenTuber: building and starting (the first time takes a minute)…"
 # Started as "curl … | bash", this script's input is the download, not the keyboard: give the program the terminal,
 # so its menus and Ctrl+C work. With no terminal at all (cron, a pipe), run it with no UI.
 run() {
@@ -58,5 +58,5 @@ run() {
 while true; do
   code=0; run "$@" || code=$?
   [ "$code" -eq 75 ] || exit "$code"
-  echo "OpenTube: starting the new version…"
+  echo "OpenTuber: starting the new version…"
 done

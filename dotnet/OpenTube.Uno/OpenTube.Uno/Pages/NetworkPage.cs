@@ -34,7 +34,7 @@ public sealed partial class NetworkPage : DataPage
     List<Check> Checks()
     {
         var S = Svc.S; var o = new List<Check>();
-        o.Add(S.Peers == 0 ? new("error", "Connection", "Not linked to any node: nothing new arrives.", "Nobody may be reachable, or this network blocks it. Running OpenTube on a computer (Devices) gives the network an always-on peer.")
+        o.Add(S.Peers == 0 ? new("error", "Connection", "Not linked to any node: nothing new arrives.", "Nobody may be reachable, or this network blocks it. Running OpenTuber on a computer (Devices) gives the network an always-on peer.")
             : new(S.Peers >= 2 ? "ok" : "warn", "Connection", $"Connected to {S.Peers} node(s). Every connection is an equal peer; none is required.", S.Peers < 2 ? "With only one connection, losing it pauses syncing until another is found." : null));
         var (lvl, _, text, height, dir) = S.Engine.Read(e => { var s = e.SyncState(e.Store.Main); return (s.Level, s.State, s.Text, Js.Num(e.Store.MainBest["height"]) ?? 0, e.Store.Directory.Count); });
         o.Add(new(lvl, "Main chain", $"Block #{height}, {dir} registered. {text}", lvl == "ok" ? null : "Stay connected; missing blocks are requested automatically."));
@@ -42,9 +42,9 @@ public sealed partial class NetworkPage : DataPage
         var stuck = followed.Count(x => x.Level == "error"); var lag = followed.Count(x => x.Level == "warn" && x.State != "unconfirmed");
         o.Add(stuck > 0 ? new("error", "Your chains", $"{stuck} of {followed.Count} chains are not syncing.", "See the chains below.") : lag > 0 ? new("warn", "Your chains", $"{lag} of {followed.Count} chains are catching up.", "Usually resolves within seconds.") : new("ok", "Your chains", followed.Count > 0 ? $"All {followed.Count} chains you follow are in sync." : "You don’t follow any chains yet."));
         var up = trackers.Values.Count(t => t.Ok);
-        o.Add(trackers.Count == 0 ? new("warn", "Video (P2P)", "Testing trackers…") : up == 0 ? new("error", "Video (P2P)", "No video tracker is reachable, so viewers can’t find whoever has a video.", "Check your network, or run OpenTube on a computer with a public address.") : new("ok", "Video (P2P)", $"{up} of {trackers.Count} trackers reachable."));
+        o.Add(trackers.Count == 0 ? new("warn", "Video (P2P)", "Testing trackers…") : up == 0 ? new("error", "Video (P2P)", "No video tracker is reachable, so viewers can’t find whoever has a video.", "Check your network, or run OpenTuber on a computer with a public address.") : new("ok", "Video (P2P)", $"{up} of {trackers.Count} trackers reachable."));
         var nodes = S.MyNodes(); var online = nodes.Count(x => Now - x.At < 10 * 60000);
-        o.Add(nodes.Count == 0 ? new("warn", "Your computers", "None yet, so your videos are online only while this device is.", "Devices → Add a computer: one command on any computer keeps them online.") : online > 0 ? new("ok", "Your computers", $"{online} of {nodes.Count} online.") : new("warn", "Your computers", "None online right now.", "Check that OpenTube is running on them (Devices)."));
+        o.Add(nodes.Count == 0 ? new("warn", "Your computers", "None yet, so your videos are online only while this device is.", "Devices → Add a computer: one command on any computer keeps them online.") : online > 0 ? new("ok", "Your computers", $"{online} of {nodes.Count} online.") : new("warn", "Your computers", "None online right now.", "Check that OpenTuber is running on them (Devices)."));
         return o;
     }
     protected override void Build()

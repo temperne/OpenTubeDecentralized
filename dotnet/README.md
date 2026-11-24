@@ -1,6 +1,6 @@
-# OpenTube for .NET (prototype)
+# OpenTuber for .NET (prototype)
 
-One C# program that runs an OpenTube node. It shows a window when there's a screen, a terminal UI when there isn't,
+One C# program that runs an OpenTuber node. It shows a window when there's a screen, a terminal UI when there isn't,
 and runs with no UI as a system service.
 
 | Project | What |

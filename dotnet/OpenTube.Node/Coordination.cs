@@ -115,7 +115,7 @@ public sealed class Coordination(OpenTubeNode node)
             return n == 1 && b[0] == 3 ? R(true) : R(false, "something else answers on that port");
         }
         catch (OperationCanceledException) { return R(false, "no answer: the port is blocked by a firewall, or the address isn’t this computer"); }
-        catch (SocketException e) when (e.SocketErrorCode == SocketError.ConnectionRefused) { return R(false, "refused: nothing listens there (is OpenTube running with OBS on?)"); }
+        catch (SocketException e) when (e.SocketErrorCode == SocketError.ConnectionRefused) { return R(false, "refused: nothing listens there (is OpenTuber running with OBS on?)"); }
         catch (Exception e) { return R(false, e.Message); }
     }
     /// <summary>Another node asks: connect to its OBS and web ports from here (it can't test that itself).</summary>

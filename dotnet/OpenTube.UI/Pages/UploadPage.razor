@@ -32,7 +32,7 @@ else
                 <label>Kept on</label>
                 <select value="@(node ?? nodes[0].Node)" @onchange="e => node = (string?)e.Value ?? string.Empty">@foreach (var (k, n) in nodes) { <option value="@k">@n</option> }<option value="">This device only (keep the app open while people watch)</option></select>
             }
-            else { <p class="sub">None of your computers is online to keep it, so this device shares it while the app is open. Run the OpenTube command on a computer (Devices on the site) to keep your videos available.</p> }
+            else { <p class="sub">None of your computers is online to keep it, so this device shares it while the app is open. Run the OpenTuber command on a computer (Devices on the site) to keep your videos available.</p> }
             <div class="row-actions"><button class="primary" disabled="@(busy || file == null || string.IsNullOrWhiteSpace(title))" @onclick="Go">Publish to channel</button></div>
             @if (step >= 0)
             {

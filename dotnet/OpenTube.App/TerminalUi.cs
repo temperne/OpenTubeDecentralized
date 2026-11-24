@@ -74,7 +74,7 @@ public static class TerminalUi
             {
                 var s = server.Node.Status;
                 status.Text = s.Count == 0 ? "Starting…" :
-                    $"Network   {((string?)s["network"])?[..16]}…   OpenTube {s["version"]} on {s["impl"]}\n" +
+                    $"Network   {((string?)s["network"])?[..16]}…   OpenTuber {s["version"]} on {s["impl"]}\n" +
                     $"Main      #{s["height"]}   {s["registered"]} registered   {s["chains"]} chains loaded   {s["pending"]} pending\n" +
                     $"Peers     {s["peers"]} connected   tracker {s["trackerClients"]}   live {s["liveClients"]}   nodes known {s["nodes"]}\n" +
                     $"Website   http://localhost:{server.Node.Options.Port}   {server.Node.PublicUrl ?? "(no public address)"}\n" +

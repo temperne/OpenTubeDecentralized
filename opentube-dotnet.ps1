@@ -1,7 +1,7 @@
-# OpenTube's .NET node for Windows, from one command (the site's Devices page makes it for you), in Command Prompt or
+# OpenTuber's .NET node for Windows, from one command (the site's Devices page makes it for you), in Command Prompt or
 # PowerShell:
 #   powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm https://<site>/opentube-dotnet.ps1))) --site=… --grant=…"
-# Installs .NET 10 if this computer doesn't have it (for this user, no admin rights needed), downloads OpenTube (no git
+# Installs .NET 10 if this computer doesn't have it (for this user, no admin rights needed), downloads OpenTuber (no git
 # needed) and starts the node in a window. Running it again updates.
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'   # Invoke-WebRequest is much faster without its progress bar
@@ -14,15 +14,15 @@ if (Test-Path (Join-Path $userDotnet 'dotnet.exe')) { $env:DOTNET_ROOT = $userDo
 
 function Test-Dotnet10 { try { return [bool]((& dotnet --list-sdks 2>$null) -match '^(1[0-9]|[2-9][0-9])\.') } catch { return $false } }
 if (-not (Test-Dotnet10)) {
-  Write-Host 'OpenTube: installing .NET 10 for this user (once; no admin rights needed)...'
+  Write-Host 'OpenTuber: installing .NET 10 for this user (once; no admin rights needed)...'
   $installer = Join-Path $env:TEMP 'dotnet-install.ps1'
   Invoke-WebRequest -UseBasicParsing 'https://dot.net/v1/dotnet-install.ps1' -OutFile $installer
   & $installer -Channel 10.0 -InstallDir $userDotnet
   $env:DOTNET_ROOT = $userDotnet; $env:PATH = "$userDotnet;$env:PATH"
-  if (-not (Test-Dotnet10)) { Write-Host 'OpenTube: .NET 10 did not install. Install it from https://dot.net and run this again.'; exit 1 }
+  if (-not (Test-Dotnet10)) { Write-Host 'OpenTuber: .NET 10 did not install. Install it from https://dot.net and run this again.'; exit 1 }
 }
 
-Write-Host 'OpenTube: downloading the latest version...'
+Write-Host 'OpenTuber: downloading the latest version...'
 $zip = Join-Path $env:TEMP 'opentube.zip'; $tmp = Join-Path $env:TEMP 'opentube-src'
 $commit = ''
 try { $commit = (Invoke-WebRequest -UseBasicParsing -Headers @{ Accept = 'application/vnd.github.sha' } "https://api.github.com/repos/$repo/commits/$ref").Content.Trim() } catch { }
@@ -37,9 +37,9 @@ Set-Content -NoNewline -Path (Join-Path $app '.commit') -Value $commit
 # the node updates itself: it fetches the new source here and exits with 75; this loop starts it again (rebuilding)
 $env:OPENTUBE_APP_DIR = $app; $env:OPENTUBE_REPO = $repo; $env:OPENTUBE_REF = $ref
 Set-Location (Join-Path $app 'dotnet')
-Write-Host 'OpenTube: building and starting (the first time takes a minute)...'
+Write-Host 'OpenTuber: building and starting (the first time takes a minute)...'
 while ($true) {
   & dotnet run -c Release --project OpenTube.App -- @args
   if ($LASTEXITCODE -ne 75) { exit $LASTEXITCODE }
-  Write-Host 'OpenTube: starting the new version...'
+  Write-Host 'OpenTuber: starting the new version...'
 }

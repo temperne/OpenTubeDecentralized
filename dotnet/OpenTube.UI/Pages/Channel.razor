@@ -30,7 +30,7 @@ else
                 {
                     var hosts = S.Publish.StorageNodes();
                     @if (S.Notes.Subscription(Id) == "join") { <button class="on" title="Your computers host this channel’s videos. Click to stop." @onclick="() => Run(() => S.Join(Id, false), null, LeftText)">Joined ✓</button> }
-                    else { <button disabled="@(hosts.Count == 0)" title="@(hosts.Count == 0 ? "Joining means hosting its videos: run OpenTube on a computer (Devices) first" : "Your computers download every video this channel posts and share it with viewers")" @onclick="() => Run(() => S.Join(Id, true), null, JoinedText)">Join</button> }
+                    else { <button disabled="@(hosts.Count == 0)" title="@(hosts.Count == 0 ? "Joining means hosting its videos: run OpenTuber on a computer (Devices) first" : "Your computers download every video this channel posts and share it with viewers")" @onclick="() => Run(() => S.Join(Id, true), null, JoinedText)">Join</button> }
                 }
                 @if (S.Notes.Subscription(Id) != null)
                 {

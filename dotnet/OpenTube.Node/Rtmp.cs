@@ -176,7 +176,7 @@ public sealed class RtmpServer
                 var r = srv.onPublish(key);
                 if (r is not IStreamSink s) { var why = r as string ?? "refused"; srv.LastStage = "refused: " + why; await Status(sid, "error", "NetStream.Publish.BadName", why); srv.log("OBS stream refused: " + why); await Task.Delay(500); client.Close(); return; }
                 sink = s; published = true; Interlocked.Increment(ref srv.Live);
-                await Status(sid, "status", "NetStream.Publish.Start", "Publishing to OpenTube"); srv.LastStage = "streaming"; srv.log("OBS is streaming");
+                await Status(sid, "status", "NetStream.Publish.Start", "Publishing to OpenTuber"); srv.LastStage = "streaming"; srv.log("OBS is streaming");
             }
             else if (name is "FCUnpublish" or "deleteStream") { if (published) srv.log($"{who}: OBS stopped streaming ({name})"); End(); }
         }

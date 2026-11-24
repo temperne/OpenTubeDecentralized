@@ -115,7 +115,7 @@ else
                     @if (whoOpen) { <div class="row-actions">@foreach (var k in watchers.Take(200)) { <a class="person" href="u/@S.Engine.Read(e => e.Store.Ledger.Resolve(k))">@S.NameOf(k)</a> }</div> }
                 }
                 @if ((string?)p["stream"] is { } vs && d.LiveStats.GetValueOrDefault(vs) is JsonObject ls) { <div class="sub">🔴 When it was live: peak @ls["peak"] viewers · @ls["unique"] unique</div> }
-                <div class="sub">Public on OpenTube: anyone can see these, not only the creator.</div>
+                <div class="sub">Public on OpenTuber: anyone can see these, not only the creator.</div>
             </div>
             <div class="head-row"><h3>Comments</h3>
                 @if (mineCh)

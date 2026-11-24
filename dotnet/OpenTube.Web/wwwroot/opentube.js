@@ -1,4 +1,4 @@
-// The thin bindings OpenTube's C# website needs from the browser. Everything else is C# (WebAssembly).
+// The thin bindings OpenTuber's C# website needs from the browser. Everything else is C# (WebAssembly).
 // PBKDF2-SHA256 → 32 bytes (password-locked key files), base64 in and out.
 window.otKdf = async (pw, salt, iterations) => {
   const dec = (b) => Uint8Array.from(atob(b), c => c.charCodeAt(0));

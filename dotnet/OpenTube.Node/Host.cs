@@ -196,7 +196,7 @@ public sealed class Host : IAsyncDisposable
     /// <summary>A .torrent file (bencoded {info, announce-list}) so the next start needs no metadata from peers.</summary>
     byte[] TorrentFile(TorrentMeta m)
     {
-        var head = Bencode.Encode(new Dictionary<string, object?> { ["announce"] = trackers.FirstOrDefault() ?? "", ["created by"] = "OpenTube" });
+        var head = Bencode.Encode(new Dictionary<string, object?> { ["announce"] = trackers.FirstOrDefault() ?? "", ["created by"] = "OpenTuber" });
         // splice the exact info bytes in (its hash is the infohash): d…announce…created by…4:info<raw>e
         return [.. head[..^1], .. Encoding.ASCII.GetBytes("4:info"), .. m.InfoBytes, (byte)'e'];
     }

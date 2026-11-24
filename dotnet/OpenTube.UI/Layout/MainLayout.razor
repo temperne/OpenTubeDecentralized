@@ -21,7 +21,7 @@
         @if (S.Ready && MyChannelCount() is > 0 and var nch) { <NavLink href="mine" class="desk-only">@(nch > 1 ? "My channels" : "My channel")</NavLink> }
     </nav>
     <span class="actions">
-        @if (Web && android) { <a class="act app-link" id="android-app" href="https://github.com/temperne/OpenTubeDecentralized/releases/download/android-latest/opentube.apk" title="OpenTube for Android: download opentube.apk and open it to install">📱 App</a> }
+        @if (Web && android) { <a class="act app-link" id="android-app" href="https://github.com/temperne/OpenTubeDecentralized/releases/download/android-latest/opentube.apk" title="OpenTuber for Android: download opentube.apk and open it to install">📱 App</a> }
         <a class="bell" href="notifications" title="Notifications">🔔@if (S.Ready && S.Notes.Unread > 0) { <span class="bell-n">@(S.Notes.Unread > 99 ? "99+" : S.Notes.Unread.ToString())</span> }</a>
         <a class="act" href="upload" title="Add a video">＋<span class="lbl"> Add video</span></a><a class="act live" href="golive" title="Go live">●<span class="lbl"> Go live</span></a>
     </span>
@@ -33,7 +33,7 @@
     </a>
     @if (Web)
     {
-        <button class="small-btn desk-only @(updateReady ? "primary" : "")" title="Check for a new version of OpenTube and load it" @onclick="CheckUpdate">@updateText</button>
+        <button class="small-btn desk-only @(updateReady ? "primary" : "")" title="Check for a new version of OpenTuber and load it" @onclick="CheckUpdate">@updateText</button>
         <a class="sub desk-only" href="../?classic=1" title="The older JavaScript page. “New site” there brings you back.">Classic page</a>
     }
 </header>
@@ -50,7 +50,7 @@
     protected override void OnInitialized()
     {
         S.Changed += Poke;
-        _ = Task.Run(async () => { for (int i = 0; i < 300 && !S.Ready; i++) await Task.Delay(200); if (S.Ready && Web) S.Notes.Arrived += n => { if (S.Notes.Desktop) _ = JS.InvokeVoidAsync("otUi.notify", "OpenTube", n.Text, AppNav.LinkFor(n.Href, S.Site)).AsTask(); }; });
+        _ = Task.Run(async () => { for (int i = 0; i < 300 && !S.Ready; i++) await Task.Delay(200); if (S.Ready && Web) S.Notes.Arrived += n => { if (S.Notes.Desktop) _ = JS.InvokeVoidAsync("otUi.notify", "OpenTuber", n.Text, AppNav.LinkFor(n.Href, S.Site)).AsTask(); }; });
         if (Web) _ = InvokeAsync(async () =>
         {
             build = await BuildNow();
@@ -79,7 +79,7 @@
         var now = await BuildNow();
         updateReady = now != null && build != null && now != build;
         updateText = updateReady ? "⟳ Update ready" : "⟳ Update";
-        updateMsg = updateReady ? "A new version of OpenTube is ready: press “⟳ Update ready” to load it." : "You have the latest version.";
+        updateMsg = updateReady ? "A new version of OpenTuber is ready: press “⟳ Update ready” to load it." : "You have the latest version.";
         _ = Task.Delay(5000).ContinueWith(_ => InvokeAsync(() => { if (!updateReady) updateMsg = null; StateHasChanged(); }));
     }
     void Open(string href) { AppNav.Pending = null; var l = AppNav.LinkFor(href, S.Site); _ = InvokeAsync(() => Nav.NavigateTo(l)); }

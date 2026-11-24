@@ -5,14 +5,14 @@ using OpenTube.UI;
 namespace OpenTube.Mobile;
 
 /// <summary>
-/// OpenTube on a phone: the same pages as the website (OpenTube.UI) in a native web view, with everything else native
+/// OpenTuber on a phone: the same pages as the website (OpenTube.UI) in a native web view, with everything else native
 /// C#: the network's engine (OpenTube.Client over OpenTube.Core), the chains and keys in the app's own files, and
 /// videos over BitTorrent (WebRTC with browsers and nodes, TCP, the DHT) streamed to the page's video element.
 /// </summary>
 public static class MauiProgram
 {
     /// <summary>The site whose node the app links to first (then the entry nodes it lists).</summary>
-    public const string Site = "https://opentubedecentralized.jasonajensen.workers.dev";
+    public const string Site = OpenTube.Core.Network.FallbackSite;
 
     public static MauiApp CreateMauiApp()
     {

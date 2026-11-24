@@ -40,7 +40,7 @@ sealed class MainWindow : Window
 
     public MainWindow(string[] args)
     {
-        Title = "OpenTube node"; Width = 1000; Height = 680;
+        Title = "OpenTuber node"; Width = 1000; Height = 680;
         server = new NodeServer(NodeOptions.From(args));
         var start = server.StartAsync();
 
@@ -86,7 +86,7 @@ sealed class MainWindow : Window
             if (start.IsFaulted) { status.Text = "Couldn't start: " + start.Exception?.InnerException?.Message; return true; }
             var s = server.Node.Status;
             if (s.Count > 0)
-                status.Text = $"Network  {((string?)s["network"])?[..16]}…   OpenTube {s["version"]} on {s["impl"]}\n" +
+                status.Text = $"Network  {((string?)s["network"])?[..16]}…   OpenTuber {s["version"]} on {s["impl"]}\n" +
                               $"Main     #{s["height"]} · {s["registered"]} registered · {s["chains"]} chains · {s["pending"]} pending\n" +
                               $"Peers    {s["peers"]} connected · tracker {s["trackerClients"]} · live {s["liveClients"]} · nodes known {s["nodes"]}\n" +
                               $"Website  http://localhost:{server.Node.Options.Port}   {server.Node.PublicUrl ?? "(no public address)"}\n" +

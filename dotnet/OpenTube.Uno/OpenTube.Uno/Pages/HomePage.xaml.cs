@@ -25,7 +25,7 @@ public sealed partial class HomePage : Page
     void ShowProblems()
     {
         var msg = Svc.StartError != null ? "Something went wrong starting up: " + Svc.StartError : null;
-        if (Svc.LastCrash != null) msg = (msg != null ? msg + "\n\n" : "") + "OpenTube closed on an error last time. Please send this to the developer:\n" + Svc.LastCrash[..Math.Min(1500, Svc.LastCrash.Length)];
+        if (Svc.LastCrash != null) msg = (msg != null ? msg + "\n\n" : "") + "OpenTuber closed on an error last time. Please send this to the developer:\n" + Svc.LastCrash[..Math.Min(1500, Svc.LastCrash.Length)];
         Problem.Visibility = msg != null ? Visibility.Visible : Visibility.Collapsed; ProblemText.Text = msg ?? "";
     }
     void Fill()

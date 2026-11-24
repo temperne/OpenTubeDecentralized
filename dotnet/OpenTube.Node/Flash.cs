@@ -198,7 +198,7 @@ public sealed class Flash
                 var j = JsonNode.Parse(o.Trim().Split('\n')[^1])!; return (j["id"]!.ToString(), S(j["ip"]));
             }
             case "local":
-            {   // testing on one machine (owner only): the flash computer is another OpenTube here
+            {   // testing on one machine (owner only): the flash computer is another OpenTuber here
                 var port = 20000 + Random.Shared.Next(20000); var dir = Path.Combine(node.Options.DataDir, "flash-local", tag);
                 var psi = new ProcessStartInfo(Environment.ProcessPath!) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
                 if (Path.GetFileNameWithoutExtension(Environment.ProcessPath!) == "dotnet") psi.ArgumentList.Add(System.Reflection.Assembly.GetEntryAssembly()!.Location);
@@ -239,7 +239,7 @@ public sealed class Flash
     /// <summary>The setup script the new server runs once: ffmpeg, then the .NET node as a service (with self-update), as a flash computer of this one, belonging to the person who started it.</summary>
     string UserData(string tag, string grant)
     {
-        var site = node.Options.Site ?? "https://opentubedecentralized.jasonajensen.workers.dev";
+        var site = node.Options.Site ?? OpenTube.Core.Network.FallbackSite;
         var args = string.Join(' ', "--service", $"--site={site}", $"--grant={grant}", "--tunnel", $"--name={tag}", $"--flash-parent={node.NodeKey}", $"--flash-tag={tag}");
         return $"""
             #!/bin/bash
@@ -248,7 +248,7 @@ public sealed class Flash
             mkdir -p /root/.opentube && curl -fsSL {site}/opentube-dotnet.sh -o /root/.opentube/opentube-dotnet.sh
             cat > /etc/systemd/system/opentube.service <<'UNIT'
             [Unit]
-            Description=OpenTube (flash computer)
+            Description=OpenTuber (flash computer)
             After=network-online.target
             [Service]
             Environment=HOME=/root

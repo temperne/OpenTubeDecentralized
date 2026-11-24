@@ -93,7 +93,7 @@ public sealed class Keys
             if (string.IsNullOrEmpty(password)) throw new ArgumentException("This file is locked with a password: enter it");
             text = await KeyFile.Unlock(text, password);
         }
-        JsonObject f; try { f = JsonNode.Parse(text) as JsonObject ?? throw new Exception(); } catch { throw new ArgumentException("That file isn’t an OpenTube key file"); }
+        JsonObject f; try { f = JsonNode.Parse(text) as JsonObject ?? throw new Exception(); } catch { throw new ArgumentException("That file isn’t an OpenTuber key file"); }
         var backup = (string?)f["format"] == "opentube-keys"; var kind = (string?)f["kind"];
         var chans = backup ? (f["channels"] as JsonArray ?? []).OfType<JsonObject>().ToList() : (kind is "channel" or "list") && !Js.IsTrue(f["sharedWithPersonalKey"]) ? [f] : [];
         var personal = backup ? f["personal"] as JsonObject : (kind == "personal" || Js.IsTrue(f["sharedWithPersonalKey"]) || kind == null) ? f : null;
@@ -114,7 +114,7 @@ public sealed class Keys
             if (!Valid(personal)) throw new ArgumentException("The personal key in that file isn’t valid");
             other = personal;
         }
-        if (added == 0 && personal == null) throw new ArgumentException("No valid OpenTube keys found in that file");
+        if (added == 0 && personal == null) throw new ArgumentException("No valid OpenTuber keys found in that file");
         return (new ImportResult(added, (string?)other?["pub"], (other?["controls"] as JsonArray)?.Count ?? 0, first), other);
     }
     /// <summary>Use the personal key from a file on this device (replacing the current one: back it up first). The app restarts.</summary>

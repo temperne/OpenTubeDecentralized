@@ -69,7 +69,7 @@ else
             {
                 <div class="row-actions"><b>@NodeName(n)</b> <button @onclick="() => Obs(n)">Show OBS settings</button></div>
             }
-            @if (!S.MyNodes().Any(x => x.Perms.Contains('o'))) { <p class="sub">None of your computers receives OBS yet: run the OpenTube command on the computer with OBS (Devices on the site).</p> }
+            @if (!S.MyNodes().Any(x => x.Perms.Contains('o'))) { <p class="sub">None of your computers receives OBS yet: run the OpenTuber command on the computer with OBS (Devices on the site).</p> }
             @if (obs != null)
             {
                 <div class="panel">

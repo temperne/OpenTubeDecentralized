@@ -56,7 +56,7 @@ public sealed class PushLink
         if (Endpoint == null || Pub.Length == 0) return;
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var nodes = s.MyNodes().Where(n => now - n.At < 10 * 60000 && s.Engine.Read(e => e.Nodes.TryGetValue(n.Node, out var x) && Js.IsTrue(x["info"]?["push"]))).Take(2).ToList();
-        if (nodes.Count == 0) { Say("No computer of yours is online to watch for you. Run the OpenTube command on a computer (Devices on the site), or ask someone to share theirs."); return; }
+        if (nodes.Count == 0) { Say("No computer of yours is online to watch for you. Run the OpenTuber command on a computer (Devices on the site), or ask someone to share theirs."); return; }
         var args = new JsonObject
         {
             ["device"] = Device, ["endpoint"] = Endpoint, ["p256dh"] = B64u.Encode(Pub), ["auth"] = B64u.Encode(auth), ["label"] = label,

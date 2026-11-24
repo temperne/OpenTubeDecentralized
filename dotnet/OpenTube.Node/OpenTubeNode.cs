@@ -9,7 +9,7 @@ using OpenTube.Core;
 namespace OpenTube.Node;
 
 /// <summary>
-/// An OpenTube node: keeps the chains (the network's rules run in <see cref="JsCore"/>), talks to other nodes and
+/// An OpenTuber node: keeps the chains (the network's rules run in <see cref="JsCore"/>), talks to other nodes and
 /// browsers over WebSockets (/ot), is a BitTorrent tracker for browsers (/tracker) and a live hub (/live). The website,
 /// HTTP and tunnel live in <see cref="NodeServer"/>; the UIs only read <see cref="Status"/> and <see cref="Logs"/>.
 /// </summary>
@@ -150,7 +150,7 @@ public sealed class OpenTubeNode : IAsyncDisposable
         });
         Hub.IsJoined = (k, c) => Engine.Read(x => x.Memberships.TryGetValue(k, out var m) && m["joined"] is JsonArray j && j.Any(v => (string?)v == c));
         Hub.UserOf = k => Engine.Read(x => x.Nodes.TryGetValue(k, out var nd) ? (string?)nd["grant"]?["user"] : null);
-        Log($"OpenTube {Version} on .NET {Environment.Version} (all C#) · build {Build} · network {NetworkId[..16]}… · node {NodeKey[..8]}… · website from {SiteDir}");
+        Log($"OpenTuber {Version} on .NET {Environment.Version} (all C#) · build {Build} · network {NetworkId[..16]}… · node {NodeKey[..8]}… · website from {SiteDir}");
 
         // OBS: each person who may use this computer has a stream key (the owner's is made now and shown here)
         if (Options.ObsPort > 0)

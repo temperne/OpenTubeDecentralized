@@ -88,7 +88,7 @@ else
         </div>
         <h4>Trackers</h4>
         <div class="tablewrap"><table class="diag"><tr><th>Tracker</th><th>Role</th><th>Status</th></tr>
-            @foreach (var u in Player.TrackerList()) { <tr><td class="mono">@u</td><td>@(u.StartsWith(S.Site.Replace("https://", "wss://").Replace("http://", "ws://")) ? "the site (fallback)" : u.EndsWith("/tracker") ? "meet place (OpenTube computer)" : "public tracker")</td><td>@if (trackers.TryGetValue(u, out var r)) { <span class="pill @(r.Ok ? "ok" : "warn")">@r.Text</span> } else { <span>testing…</span> }</td></tr> }
+            @foreach (var u in Player.TrackerList()) { <tr><td class="mono">@u</td><td>@(u.StartsWith(S.Site.Replace("https://", "wss://").Replace("http://", "ws://")) ? "the site (fallback)" : u.EndsWith("/tracker") ? "meet place (OpenTuber computer)" : "public tracker")</td><td>@if (trackers.TryGetValue(u, out var r)) { <span class="pill @(r.Ok ? "ok" : "warn")">@r.Text</span> } else { <span>testing…</span> }</td></tr> }
         </table></div>
         <h4>Transfers</h4>
         @if (transfers.Count == 0) { <div class="sub">No video transfers right now.</div> }
@@ -168,7 +168,7 @@ else
     {
         var o = new List<Check>();
         // connection
-        o.Add(S.Peers == 0 ? new("error", "Connection", "Not linked to any node: nothing new arrives.", "Nobody may be reachable, or this network blocks it. Running OpenTube on a computer (Devices) gives the network an always-on peer; reload to retry.")
+        o.Add(S.Peers == 0 ? new("error", "Connection", "Not linked to any node: nothing new arrives.", "Nobody may be reachable, or this network blocks it. Running OpenTuber on a computer (Devices) gives the network an always-on peer; reload to retry.")
             : new(S.Peers >= 2 ? "ok" : "warn", "Connection", $"Connected to {S.Peers} node(s). Every connection is an equal peer; none is required.", S.Peers < 2 ? "With only one connection, losing it pauses syncing until another is found." : null));
         // main chain
         var (lvl, state, text, height, dir) = S.Engine.Read(e => { var s = e.SyncState(e.Store.Main); return (s.Level, s.State, s.Text, Js.Num(e.Store.MainBest["height"]) ?? 0, e.Store.Directory.Count); });
@@ -191,7 +191,7 @@ else
         {
             var up = trackers.Values.Count(x => x.Ok);
             if (trackers.Count == 0) o.Add(new("warn", "Video (P2P)", "Testing trackers…"));
-            else if (up == 0) o.Add(new("error", "Video (P2P)", "No video tracker is reachable, so viewers can’t find whoever has a video.", "Check your network/firewall, or run OpenTube on a computer with a public address (it becomes a meet place with its own tracker)."));
+            else if (up == 0) o.Add(new("error", "Video (P2P)", "No video tracker is reachable, so viewers can’t find whoever has a video.", "Check your network/firewall, or run OpenTuber on a computer with a public address (it becomes a meet place with its own tracker)."));
             else o.Add(new("ok", "Video (P2P)", $"{up} of {trackers.Count} trackers reachable."));
             if (stun != null)
             {
@@ -220,7 +220,7 @@ else
         // your computers
         var nodes = S.MyNodes(); var online = nodes.Count(x => Now - x.At < 10 * 60000);
         o.Add(nodes.Count == 0 ? new("warn", "Your computers", "None yet, so your videos are online only while this device is.", "Devices → Add a computer: one command on any computer keeps them online.")
-            : online > 0 ? new("ok", "Your computers", $"{online} of {nodes.Count} online.") : new("warn", "Your computers", "None online right now.", "Check that OpenTube is running on them (Devices)."));
+            : online > 0 ? new("ok", "Your computers", $"{online} of {nodes.Count} online.") : new("warn", "Your computers", "None online right now.", "Check that OpenTuber is running on them (Devices)."));
         // keys
         if (keysOk == false) o.Add(new("warn", "Keys", "Keys controlling your channels are not backed up.", "You → Keys & security → Back up all keys."));
         return o;

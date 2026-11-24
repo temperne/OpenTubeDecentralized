@@ -109,7 +109,7 @@ public sealed partial class UploadPage : Page
         }
         StepRow Step(string name) { var s = new StepRow(name); steps.Children.Add(s.View); return s; }
         col.Children.Add(Card(H("Add a video"), Sub("Channel"), chain, Row(choose), fileInfo, bar, pickStatus, preview, title, desc, tags, policy,
-            keep, Sub("Run OpenTube on a computer (Devices) to keep your videos online when this device isn’t."),
+            keep, Sub("Run OpenTuber on a computer (Devices) to keep your videos online when this device isn’t."),
             publish, steps, status));
         if (Environment.GetEnvironmentVariable("OPENTUBE_OPEN_VIDEO") != null) _ = Choose().ContinueWith(_ => DispatcherQueue.TryEnqueue(() => { if (Environment.GetEnvironmentVariable("OPENTUBE_AUTOPUBLISH") == "1") _ = Publish(); }));   // (tests)
     }

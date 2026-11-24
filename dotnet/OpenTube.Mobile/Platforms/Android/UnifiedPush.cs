@@ -35,7 +35,7 @@ public static class UnifiedPush
     {
         Directory.CreateDirectory(Dir(c)); File.WriteAllText(Path.Combine(Dir(c), "upDistributor"), distributor);
         var i = new Intent(Register).SetPackage(distributor)
-            .PutExtra("token", Token(c)).PutExtra("application", c.PackageName).PutExtra("message", "OpenTube notifications")
+            .PutExtra("token", Token(c)).PutExtra("application", c.PackageName).PutExtra("message", "OpenTuber notifications")
             .PutExtra("pi", PendingIntent.GetBroadcast(c, 0, new Intent("org.unifiedpush.android.connector.pi"), PendingIntentFlags.Immutable));
         c.SendBroadcast(i);
     }

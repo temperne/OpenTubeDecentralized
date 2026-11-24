@@ -9,7 +9,7 @@ public sealed class DeviceFiles : IDeviceFiles
     public async Task Save(string name, string text)
     {
         var path = Path.Combine(FileSystem.CacheDirectory, name); await File.WriteAllTextAsync(path, text);
-        await MainThread.InvokeOnMainThreadAsync(() => Share.Default.RequestAsync(new ShareFileRequest { Title = "Keep your OpenTube keys private", File = new ShareFile(path, "application/json") }));
+        await MainThread.InvokeOnMainThreadAsync(() => Share.Default.RequestAsync(new ShareFileRequest { Title = "Keep your OpenTuber keys private", File = new ShareFile(path, "application/json") }));
     }
     public Task Restart()
     {

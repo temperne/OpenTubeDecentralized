@@ -26,7 +26,7 @@ public interface IClientStore
 
 /// <summary>
 /// The network for an app (the website in WebAssembly, the phone app): the C# engine (the network's rules, chains, the
-/// coin, gossip) with the person's identity, linked to OpenTube computers over WebSockets (the site's own node if it
+/// coin, gossip) with the person's identity, linked to OpenTuber computers over WebSockets (the site's own node if it
 /// has one, the entry nodes from seeds.json and /entries.json). The UI reads the engine and redraws on Changed.
 /// </summary>
 public sealed class ClientSession : IAsyncDisposable
@@ -135,7 +135,7 @@ public sealed class ClientSession : IAsyncDisposable
         }
     }
     readonly HashSet<string> seedBases = [];
-    /// <summary>The trackers (meet places) videos are announced to, as the site picks them: every OpenTube computer seen
+    /// <summary>The trackers (meet places) videos are announced to, as the site picks them: every OpenTuber computer seen
     /// in the last 10 minutes that this device can reach (from an https page: its https address; your own also on
     /// localhost when the page is), the seed entries, the computers this device is linked to, the site's own, and
     /// the network's public trackers.</summary>

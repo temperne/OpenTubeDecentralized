@@ -7,7 +7,7 @@ using OpenTube.Core;
 using OpenTube.UI;
 using OpenTube.Web;
 
-// OpenTube's website in C# (WebAssembly): the network's rules, chains, the coin and gossip run here in C#
+// OpenTuber's website in C# (WebAssembly): the network's rules, chains, the coin and gossip run here in C#
 // (OpenTube.Core and OpenTube.Client, the same code as the computers' node); the pages are OpenTube.UI, shared with
 // the phone app. JavaScript is only the thin bindings to the browser (wwwroot/opentube.js).
 var builder = WebAssemblyHostBuilder.CreateDefault(args);

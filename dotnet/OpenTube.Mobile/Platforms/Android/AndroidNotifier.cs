@@ -7,7 +7,7 @@ using OpenTube.Client;
 namespace OpenTube.Mobile;
 
 /// <summary>
-/// OpenTube's notifications as Android notifications: each kind (new videos, live streams, comments, messages, the
+/// OpenTuber's notifications as Android notifications: each kind (new videos, live streams, comments, messages, the
 /// market…) is its own notification channel, so people choose sound, silent or off per kind in Android's settings.
 /// Tapping one opens its page in the app.
 /// </summary>
@@ -30,7 +30,7 @@ public static class AndroidNotifier
         foreach (var (key, label, _) in Notifications.Types)
         {
             var importance = key is "live" or "message" or "swap" ? NotificationImportance.High : key is "like" or "coins" ? NotificationImportance.Low : NotificationImportance.Default;
-            nm.CreateNotificationChannel(new NotificationChannel(ChannelId(key), label, importance) { Description = "OpenTube: " + label });
+            nm.CreateNotificationChannel(new NotificationChannel(ChannelId(key), label, importance) { Description = "OpenTuber: " + label });
         }
     }
 
