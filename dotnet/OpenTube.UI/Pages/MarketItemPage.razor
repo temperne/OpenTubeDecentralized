@@ -19,7 +19,11 @@ else
         </div>
         @{ var det = Market.Details(l.L); }
         @if (det.Count > 0) { <div class="kv">@foreach (var (k, v) in det) { <div>@k</div><div>@v</div> }</div> }
-        @if (l.L["place"] is System.Text.Json.Nodes.JsonObject pl) { <div class="sub">📍 @((string?)pl["label"] is { Length: > 0 } plb ? plb : $"{pl["lat"]}, {pl["lon"]}") · <a href="@($"https://www.openstreetmap.org/?mlat={pl["lat"]}&mlon={pl["lon"]}#map=15/{pl["lat"]}/{pl["lon"]}")" target="_blank" rel="noopener">map</a></div> }
+        @if (l.L["place"] is System.Text.Json.Nodes.JsonObject pl)
+        {
+            <div class="sub">📍 @((string?)pl["label"] is { Length: > 0 } plb ? plb : $"{pl["lat"]}, {pl["lon"]}")</div>
+            <MapView Points="@([new System.Text.Json.Nodes.JsonObject { ["lat"] = pl["lat"]?.DeepClone(), ["lon"] = pl["lon"]?.DeepClone(), ["title"] = l.Title, ["kind"] = (string?)l.L["category"] == "housing" ? "housing" : "listing" }])" Height="240" Zoom="15" />
+        }
         @if ((l.L["tags"] as System.Text.Json.Nodes.JsonArray) is { Count: > 0 } tg) { <div class="row-actions">@foreach (var t in tg) { <a class="tag" href="tag/@t">#@t</a> } </div> }
         <div class="big-price">@Trade.Coins(l.PriceNow) <span class="sub">coins@(l.Kind == "auction" ? (l.L["high"] != null ? $" · high bid · {Js.Num(l.L["bids"])} bid(s)" : " · starting bid") : "")</span></div>
         @if (l.Kind == "auction" && l.State == "open") { <div class="sub">Ends @DateTimeOffset.FromUnixTimeMilliseconds((long)(Js.Num(l.L["ends"]) ?? 0)).LocalDateTime</div> }

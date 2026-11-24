@@ -124,3 +124,4 @@ label { display: block; margin-top: 10px; font-size: 13px; color: var(--sub); } 
 .split { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; } .tablewrap { overflow-x: auto; }
 table.diag { width: 100%; border-collapse: collapse; font-size: 13px; } table.diag th, table.diag td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
 .check { padding: 4px 0; }
+.osm { border-radius: 12px; overflow: hidden; background: var(--line); margin: 6px 0; } .osm-pin { font-size: 22px; line-height: 26px; text-align: center; background: none; border: none; }

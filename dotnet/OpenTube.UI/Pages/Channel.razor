@@ -164,7 +164,7 @@ else
             <div class="panel">
                 @if ((string?)d.Profile["about"] is { Length: > 0 } about) { <Rich Text="@about" /> } else { <p class="sub">No description.</p> }
                 @if ((string?)d.Profile["location"] is { Length: > 0 } loc) { <div class="sub">📍 @loc</div> }
-                @if (d.Profile["place"] is JsonObject place) { <div class="sub">🗺 <a href="@($"https://www.openstreetmap.org/?mlat={place["lat"]}&mlon={place["lon"]}#map=16/{place["lat"]}/{place["lon"]}")" target="_blank" rel="noopener">On the map</a> @((string?)place["label"])</div> }
+                @if (d.Profile["place"] is JsonObject place) { <MapView Points="@([new JsonObject { [LatKey] = place[LatKey]?.DeepClone(), [LonKey] = place[LonKey]?.DeepClone(), [TitleKey] = name, [SubKey] = (string?)place[LabelKey], [KindKey] = d.Kind == OrgKind ? OrgKind : ChannelKind }])" Height="240" Zoom="15" /> }
                 @if (links.Count > 0) { <div class="row-actions">@foreach (var l in links) { <a class="tagbox" href="@((string?)l["url"])" target="_blank" rel="noopener noreferrer nofollow">🔗 @((string?)l["label"])</a> }</div> }
                 @if (d.Kind == "org")
                 {
@@ -227,6 +227,7 @@ else
 }
 @code {
     [Parameter] public string Id { get; set; } = ""; [Parameter] public string? Tab { get; set; }
+    const string LatKey = "lat", LonKey = "lon", TitleKey = "title", SubKey = "sub", LabelKey = "label", KindKey = "kind", OrgKind = "org", ChannelKind = "channel";
     const string JoinedText = "Joined: your computers host this channel’s videos.", LeftText = "Left: your computers stop hosting it (you stay subscribed).";
     string? msg; bool tipOpen, posting, keyUnbacked; double tipAmt = 1; string postText = "", addLink = "", addNote = "", addChannel = "";
     readonly Dictionary<string, string> replyText = []; HashSet<string>? friends, mutedTags;

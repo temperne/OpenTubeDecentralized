@@ -27,6 +27,7 @@
             <div class="row-actions">@if ((avatar ?? (string?)d.Profile["avatar"]) is { Length: > 0 } av) { <img class="avatar" src="@av" alt="" /> }<InputFile OnChange="PickAvatar" accept="image/*" /></div>
         }
         <label>Location</label><input @bind="location" maxlength="100" placeholder="City, country (optional)" />
+        @if (d.Kind != "list") { <label>@(d.Kind == "org" ? "On the map (where this organization is)" : "On the map (for a business or venue; optional)")</label><PlacePicker Value="place" ValueChanged="p => { place = p; placeChanged = true; }" /> }
         <label>Links (shown on the About page)</label>
         @foreach (var l in links.ToList()) { <div class="row-item"><span class="grow">🔗 <b>@l.Label</b> <span class="sub">@l.Url</span></span><button @onclick="() => links.Remove(l)">Remove</button></div> }
         <div class="row-actions"><input @bind="linkLabel" maxlength="40" placeholder="Label, e.g. Mastodon" style="width:160px" /><input class="grow-input" @bind="linkUrl" maxlength="300" placeholder="https://…" /><button @onclick="AddLink">Add link</button></div>
@@ -70,7 +71,7 @@
 @code {
     [Parameter] public string Id { get; set; } = "";
     string handle = "", name = "", about = "", location = "", policy = "anyone", join = "open", key = "", linkLabel = "", linkUrl = "";
-    string? avatar, msg; bool busy, loaded;
+    string? avatar, msg; bool busy, loaded, placeChanged; JsonObject? place;
     record Link(string Label, string Url);
     List<Link> links = [];
     protected override void OnParametersSet()
@@ -81,6 +82,7 @@
         policy = (string?)p["comments"] ?? "anyone"; join = (string?)p["join"] ?? "open";
         links = (p["links"] as JsonArray ?? []).OfType<JsonObject>().Select(l => new Link((string?)l["label"] ?? "", (string?)l["url"] ?? "")).ToList();
         handle = (S.NameOfChain(Id) ?? "").TrimStart('@', '~');
+        place = p["place"]?.DeepClone() as JsonObject;
     }
     string NameStatus(string space, string? cur)
     {
@@ -121,6 +123,7 @@
         if (name.Trim().Length > 0 && name.Trim() != (string?)p["name"]) ch["name"] = name.Trim();
         if (about != ((string?)p["about"] ?? "")) ch["about"] = about;
         if (avatar != null) ch["avatar"] = avatar;
+        if (placeChanged && place != null) ch["place"] = place.DeepClone();
         if (location.Trim() != ((string?)p["location"] ?? "")) ch["location"] = location.Trim();
         var cur = (p["links"] as JsonArray ?? []).OfType<JsonObject>().Select(l => new Link((string?)l["label"] ?? "", (string?)l["url"] ?? "")).ToList();
         if (!cur.SequenceEqual(links)) ch["links"] = new JsonArray(links.Select(l => (JsonNode?)new JsonObject { ["label"] = l.Label, ["url"] = l.Url }).ToArray());

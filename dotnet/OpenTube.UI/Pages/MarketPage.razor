@@ -47,8 +47,7 @@ else if (T == "new")
         <label>More pictures and videos (from My media, up to 10)</label>
         <AttachBox @ref="attach" />
         <label>Where (optional: helps people nearby find it)</label>
-        <div class="row-actions"><input class="grow-input" @bind="placeLabel" placeholder="Place, e.g. Lisbon, Portugal" /><button @onclick="Locate">📍 Use my location</button></div>
-        @if (d.Place != null) { <div class="sub">📍 @((double?)d.Place["lat"]), @((double?)d.Place["lon"])</div> }
+        <PlacePicker Value="d.Place" ValueChanged="p => d.Place = p" />
         @{ var certs = S.MyCerts(); }
         @if (certs.Count > 0)
         {
@@ -77,6 +76,13 @@ else if (T == "adviews-mine")
                 <a class="button" href="market/new">Sell</a></div>
         }
     </div>
+}
+else if (T == "map")
+{
+    <p class="sub">🛍 listings · 🏠 housing · 🏛 organizations · 🏪 channels and businesses. Click a pin to open it.</p>
+    var pts = Places();
+    <MapView Points="pts" Height="520" />
+    <div class="sub">@pts.Count place(s) known to this device.</div>
 }
 else if (T == "ads")
 {
@@ -122,6 +128,11 @@ else
         foreach (var p in pending) { <div class="row-item"><span class="grow"><b>@p</b></span><span class="badge warnb">waiting for a block</span></div> }
     }
     if (shown.Count == 0) { <p class="sub">@(T switch { "mine" => "You haven’t listed anything.", "auctions" => "No auctions running.", "housing" => "No housing listed yet.", "adviews" => "No ad-view bundles for sale.", _ => "Nothing listed yet. Be the first: ＋ Sell something." })</p> }
+    @if (T == "housing")
+    {
+        var hp = shown.Where(l => l.L["place"] is JsonObject).Select(l => Pt((JsonObject)l.L["place"]!, l.Title, $"{Trade.Coins(l.PriceNow)} coins{((string?)l.L["deal"] == "rent" ? " / month" : "")}", "market/item/" + l.Id, "housing")).ToList();
+        <MapView Points="hp" Height="300" />
+    }
     <div class="grid">
         @foreach (var l in shown) { <ListingCard L="l" /> }
     </div>
@@ -137,8 +148,8 @@ else
 @code {
     [Parameter] public string? Tab { get; set; }
     const string HousingKey = "housing", JobKey = "job", WantedKey = "wanted", FixedKey = "fixed", NumberKey = "number", DateKey = "date", DateTimeKey = "datetime", TrueText = "true", FalseText = "false", CashedText = "Cashed in: the coins arrive with the next main-chain block.", RunsText = "Their ads now run on your channel.";
-    static readonly (string, string)[] tabs = [("items", "Listings"), ("housing", "🏠 Housing"), ("auctions", "Auctions"), ("adviews", "Ad views"), ("ads", "Ad board"), ("mine", "Mine"), ("new", "＋ Sell something")];
-    string T => Tab is "housing" or "auctions" or "adviews" or "adviews-mine" or "ads" or "mine" or "new" ? Tab : Tab == "browse" ? "items" : "items";
+    static readonly (string, string)[] tabs = [("items", "Listings"), ("housing", "🏠 Housing"), ("map", "🗺 Map"), ("auctions", "Auctions"), ("adviews", "Ad views"), ("ads", "Ad board"), ("mine", "Mine"), ("new", "＋ Sell something")];
+    string T => Tab is "map" or "housing" or "auctions" or "adviews" or "adviews-mine" or "ads" or "mine" or "new" ? Tab : Tab == "browse" ? "items" : "items";
     AttachBox? attach; Market.Draft d = new(); string q = "", kindFilter = "all", deal = "all", placeLabel = "", giveTo = "", sponsorOn = ""; string? msg; bool busy;
     async Task Run(Func<Task> f, string? done = null) { msg = null; StateHasChanged(); try { await f(); msg = done; } catch (Exception e) { msg = e.Message; } }
     void ToggleCerts(List<string> ids, bool on) { d.Certs.RemoveAll(ids.Contains); if (on) d.Certs.AddRange(ids); }
@@ -158,6 +169,17 @@ else
         }
         catch (Exception ex) { msg = "That picture didn’t work: " + ex.Message; }
     }
+    static JsonObject Pt(JsonObject place, string title, string sub, string href, string kind) => new() { ["lat"] = place["lat"]?.DeepClone(), ["lon"] = place["lon"]?.DeepClone(), ["title"] = title, ["sub"] = sub, ["href"] = href, ["kind"] = kind };
+    /// <summary>Everything with a place: open listings, organizations, channels (businesses).</summary>
+    List<JsonObject> Places()
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); var pts = new List<JsonObject>();
+        foreach (var l in S.Trade.Listings().Where(l => l.Open && l.L["place"] is JsonObject && (l.Kind == "fixed" || (Js.Num(l.L["ends"]) ?? 0) > now)))
+            pts.Add(Pt((JsonObject)l.L["place"]!, l.Title, Trade.Coins(l.PriceNow) + " coins", "market/item/" + l.Id, (string?)l.L["category"] == "housing" ? "housing" : "listing"));
+        foreach (var c in S.Directory().Where(c => c.Kind is "org" or "channel"))
+            if (S.Chain(c.Id)?.Profile["place"] is JsonObject pl) pts.Add(Pt(pl, c.Name, (string?)pl["label"] ?? (c.Kind == "org" ? "Organization" : "Channel"), "c/" + c.Id, c.Kind == "org" ? "org" : "channel"));
+        return pts;
+    }
     async Task Locate()
     {
         try
@@ -169,7 +191,6 @@ else
     }
     async Task List()
     {
-        if (d.Place != null) d.Place["label"] = placeLabel.Trim();
         busy = true; msg = "Listing (a little proof of work)…"; StateHasChanged();
         try { if (attach?.Count > 0) d.Media = await attach.GetRefs(false); await S.ListDraft(d); msg = "Listed: it shows once the next main-chain block includes it."; d = new(); placeLabel = ""; Nav.NavigateTo("market/mine"); }
         catch (Exception e) { msg = e.Message; }

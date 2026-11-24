@@ -74,3 +74,45 @@ window.otUi.storage = async () => {
   const mb = (n) => (n / 1e6).toFixed(n < 1e8 ? 1 : 0) + ' MB';
   return `${mb(e.usage || 0)} of ${mb(e.quota || 0)} · ${p ? 'kept for good' : 'the browser may clear it when space runs low'}`;
 };
+// Maps (OpenStreetMap through Leaflet, loaded only when a map is shown). Places are just coordinates on the chain.
+(() => {
+  let leafletP = null;
+  const leaflet = () => leafletP ||= new Promise((res, rej) => {
+    const css = document.createElement('link'); css.rel = 'stylesheet'; css.href = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css'; document.head.append(css);
+    const js = document.createElement('script'); js.src = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js'; js.onload = () => res(window.L); js.onerror = () => { leafletP = null; rej(new Error('map library unavailable')); }; document.head.append(js);
+  });
+  const icon = (L, kind) => L.divIcon({ className: 'osm-pin', html: { listing: '🛍', housing: '🏠', org: '🏛', channel: '🏪', me: '📍' }[kind] || '📍', iconSize: [26, 26], iconAnchor: [13, 24] });
+  const r5 = (x) => Math.round(x * 1e5) / 1e5;
+  const maps = new Map();
+  // show(id, points [{lat, lon, title, sub, href, kind}], {center, zoom, picked, pickRef}): pickRef gets OnPick(lat, lon) on a click
+  window.otMap = {
+    show: async (id, points, opts) => {
+      const el = document.getElementById(id); if (!el) return;
+      let L; try { L = await leaflet(); } catch { el.textContent = 'The map couldn’t load (no connection to the map library).'; return; }
+      maps.get(id)?.remove();
+      const map = L.map(el, { scrollWheelZoom: false }); maps.set(id, map);
+      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors' }).addTo(map);
+      const bounds = [];
+      for (const pt of points || []) {
+        const m = L.marker([pt.lat, pt.lon], { icon: icon(L, pt.kind) }).addTo(map);
+        const pop = document.createElement('div'); const a = document.createElement(pt.href ? 'a' : 'b'); if (pt.href) a.href = pt.href; a.textContent = pt.title || ''; pop.append(a);
+        if (pt.sub) { const s = document.createElement('div'); s.className = 'sub'; s.textContent = pt.sub; pop.append(s); }
+        m.bindPopup(pop); bounds.push([pt.lat, pt.lon]);
+      }
+      let pin = opts?.picked ? L.marker([opts.picked.lat, opts.picked.lon], { icon: icon(L, 'me') }).addTo(map) : null;
+      if (opts?.pickRef) map.on('click', (e) => { if (pin) pin.setLatLng(e.latlng); else pin = L.marker(e.latlng, { icon: icon(L, 'me') }).addTo(map); opts.pickRef.invokeMethodAsync('OnPick', r5(e.latlng.lat), r5(e.latlng.lng)); });
+      map._pin = (lat, lon) => { if (pin) pin.setLatLng([lat, lon]); else pin = L.marker([lat, lon], { icon: icon(L, 'me') }).addTo(map); map.setView([lat, lon], 15); };
+      if (opts?.center) map.setView([opts.center.lat, opts.center.lon], opts.zoom || 13);
+      else if (bounds.length > 1) map.fitBounds(bounds, { padding: [30, 30], maxZoom: 14 });
+      else if (bounds.length === 1) map.setView(bounds[0], opts?.zoom || 13);
+      else map.setView([20, 0], 2);
+      setTimeout(() => map.invalidateSize(), 50);
+    },
+    pin: (id, lat, lon) => maps.get(id)?._pin?.(lat, lon),
+    // address search (OpenStreetMap's Nominatim): [{label, lat, lon}]
+    geocode: async (q) => {
+      const r = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=5&q=' + encodeURIComponent(q), { headers: { Accept: 'application/json' } });
+      return (await r.json()).map(x => ({ label: x.display_name.slice(0, 120), lat: r5(Number(x.lat)), lon: r5(Number(x.lon)) }));
+    }
+  };
+})();

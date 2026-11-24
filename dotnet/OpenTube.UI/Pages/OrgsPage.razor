@@ -2,6 +2,8 @@
 @inherits Live
 <h2>Organizations</h2>
 <p class="sub">Organizations moderate and arbitrate. Arbitration bodies take filings, run cases and rule on marketplace disputes.</p>
+@{ var orgPts = S.Trade.Orgs().Select(c => (c, pl: S.Chain(c.Id)?.Profile["place"] as JsonObject)).Where(x => x.pl != null).Select(x => new JsonObject { ["lat"] = x.pl!["lat"]?.DeepClone(), ["lon"] = x.pl["lon"]?.DeepClone(), ["title"] = x.c.Name, ["sub"] = (string?)x.pl["label"], ["href"] = "c/" + x.c.Id, ["kind"] = "org" }).ToList(); }
+@if (orgPts.Count > 0) { <MapView Points="orgPts" Height="300" /> }
 <div class="list">
     @foreach (var c in S.Trade.Orgs())
     {
