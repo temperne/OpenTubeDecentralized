@@ -36,10 +36,13 @@ public sealed class Publish
     }
 
     /// <summary>Publish a video file (already shared by this device: its infohash). Returns the video block.</summary>
-    public async Task<JsonObject> Video(string chain, TorrentMeta meta, string file, long size, string mime, string title, string desc, string thumb, Action<string> status)
+    public async Task<JsonObject> Video(string chain, TorrentMeta meta, string file, long size, string mime, string title, string desc, string thumb, Action<string> status, string tags = "", string comments = "")
     {
         if (title.Trim().Length == 0) throw new ArgumentException("Add a title");
         var payload = new JsonObject { ["type"] = "video", ["title"] = title.Trim()[..Math.Min(140, title.Trim().Length)], ["desc"] = desc.Trim()[..Math.Min(5000, desc.Trim().Length)], ["infohash"] = meta.InfoHash, ["file"] = file[..Math.Min(200, file.Length)], ["size"] = size, ["mime"] = mime[..Math.Min(60, mime.Length)], ["thumb"] = thumb };
+        var tagList = tags.ToLowerInvariant().Split([' ', ',', '#'], StringSplitOptions.RemoveEmptyEntries).Select(t => System.Text.RegularExpressions.Regex.Replace(t, "[^a-z0-9-]", "").TrimStart('-')).Where(t => t.Length is > 0 and <= 24).Distinct().Take(8).ToList();
+        if (tagList.Count > 0) payload["tags"] = new JsonArray(tagList.Select(t => (JsonNode?)t).ToArray());
+        if (comments is "anyone" or "approved" or "off") payload["comments"] = comments;
         status("Adding it to your channel…");
         var b = await Task.Run(() => s.Engine.Append(chain, payload));
         status("Paying the posting fee…");

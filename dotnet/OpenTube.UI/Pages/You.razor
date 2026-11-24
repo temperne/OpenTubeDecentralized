@@ -51,14 +51,22 @@ else
             <div class="panel">
                 <h3>Not interested</h3>
                 <p class="sub">Videos and ads with these tags are hidden. Kept on this device only.</p>
+                <p class="sub">Videos and ads with these tags, and ads in these categories, are hidden for you. This list stays on this device: it is never published or sent to anyone.</p>
                 @if (muted == null || muted.Value.Tags.Count + muted.Value.Cats.Count == 0) { <div class="sub">Nothing. Use ✕ next to a tag on a video to add one.</div> }
                 else
                 {
                     <div class="row-actions">
                         @foreach (var t in muted.Value.Tags) { <span class="tagbox">#@t<button class="tagx" title="Show again" @onclick="() => UnmuteTag(t)">✕</button></span> }
-                        @foreach (var c in muted.Value.Cats) { <span class="tagbox">@c<button class="tagx" title="Show again" @onclick="() => UnmuteCat(c)">✕</button></span> }
+                        @foreach (var c in muted.Value.Cats) { <span class="tagbox">@(Market.Categories.FirstOrDefault(x => x.Key == c).Name ?? c) ads<button class="tagx" title="Show again" @onclick="() => UnmuteCat(c)">✕</button></span> }
                     </div>
                 }
+                <div class="row-actions"><input @bind="addTag" placeholder="Add a tag…" style="width:160px" /><button @onclick="AddTags">Add</button>
+                    <select value="" @onchange="e => AddCat((string)e.Value!)"><option value="">Add an ad category…</option>@foreach (var (k, n) in Market.Categories.Where(c => muted?.Cats.Contains(c.Key) != true)) { <option value="@k">@n</option> }</select></div>
+            </div>
+            <div class="panel">
+                <h3>Organizations you follow</h3>
+                @if (orgsFollowed == null || orgsFollowed.Count == 0) { <div class="sub">None. Follow organizations from their page (Orgs).</div> }
+                @foreach (var (id, _) in orgsFollowed ?? []) { <div><ChainLink Id="@id" /> <a class="sub" href="c/@id/flags">what its flags do</a></div> }
             </div>
             <div class="panel">
                 <h3>Subscriptions</h3>
@@ -87,7 +95,7 @@ else
     }
     <div class="panel">
         <div class="head-row"><b>Your user ID</b><a href="wallet">Coins: @ChainActions.Coins(S.Balance(S.Me.pub)) →</a></div>
-        <div class="mono">@S.Me.pub</div>
+        <div class="row-actions"><span class="mono grow">@S.Me.pub</span><button @onclick="CopyId">Copy user ID</button></div>
         @if (!S.Engine.Read(e => e.Store.Ledger.Starters.Contains(S.Me.pub)))
         {
             <div class="row-actions"><button class="primary" disabled="@starting" @onclick="Starter">Get 10 starter coins</button> <span class="sub" id="starter-status">@starterMsg</span></div>
@@ -103,7 +111,16 @@ else
     string tab => Tab is "channels" or "settings" or "media" ? Tab : "profile";
     bool starting, busy; string? starterMsg, msg; string name = "", about = "", kind = "channel", join = "open";
     (HashSet<string> Tags, HashSet<string> Cats)? muted;
-    protected override async Task OnParametersSetAsync() { if (S.Ready) muted = await S.Social.Muted(); }
+    protected override async Task OnParametersSetAsync() { if (S.Ready) { muted = await S.Social.Muted(); orgsFollowed = await S.Followed(); } }
+    string addTag = ""; JsonObject? orgsFollowed;
+    [Inject] IJSRuntime JS { get; set; } = null!;
+    async Task CopyId() { try { await JS.InvokeVoidAsync("navigator.clipboard.writeText", S.Me.pub); starterMsg = "User ID copied."; } catch { } }
+    async Task AddTags()
+    {
+        foreach (var t in addTag.ToLowerInvariant().Split([' ', ',', '#'], StringSplitOptions.RemoveEmptyEntries).Select(t => System.Text.RegularExpressions.Regex.Replace(t, "[^a-z0-9-]", "")).Where(t => t.Length is > 0 and <= 24)) await S.Social.SetMuted("tags", t, true);
+        addTag = ""; muted = await S.Social.Muted();
+    }
+    async Task AddCat(string c) { if (c.Length == 0) return; await S.Social.SetMuted("cats", c, true); muted = await S.Social.Muted(); }
     Task UnmuteTag(string t) => Unmute("tags", t);
     Task UnmuteCat(string c) => Unmute("cats", c);
     async Task Unmute(string k, string v) { await S.Social.SetMuted(k, v, false); muted = await S.Social.Muted(); }

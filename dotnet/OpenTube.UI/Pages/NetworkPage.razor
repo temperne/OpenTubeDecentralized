@@ -65,6 +65,7 @@ else
     <div class="split">
         <div class="panel"><h3>Storage</h3>
             <div class="kv"><div>Used</div><div>@(storage ?? "…")</div></div>
+            @if (storage?.Contains("may clear") == true) { <button @onclick="Persist">Keep my data</button> }
         </div>
         <div class="panel"><h3>Hosting for you elsewhere</h3>
             @{ var m = S.Engine.Read(e => e.Memberships.TryGetValue(S.Me.pub, out var x) ? (JsonObject)x.DeepClone() : null); }
@@ -79,6 +80,7 @@ else
 @code {
     readonly Dictionary<string, string> trackers = []; string? storage;
     protected override async Task OnInitializedAsync() { base.OnInitialized(); Retest(); try { storage = await JS.InvokeAsync<string>("otUi.storage"); } catch { storage = "unknown"; } }
+    async Task Persist() { var ok = await JS.InvokeAsync<bool>("otUi.persist"); storage = await JS.InvokeAsync<string>("otUi.storage"); if (!ok) storage += " (the browser declined: bookmarking the site or installing it usually helps)"; }
     string Role(string id, string? owner) => S.IsMine(owner) ? "owner" : S.Notes.Subscription(id) switch { "join" => "joined (hosted by your computers)", "sub" => "subscribed", _ => "viewed" };
     List<(string, string, string)> Checks(double height)
     {

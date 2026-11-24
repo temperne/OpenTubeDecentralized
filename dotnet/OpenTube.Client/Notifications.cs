@@ -75,6 +75,13 @@ public sealed class Notifications
     // ---- the list
     public List<Note> All { get { lock (gate) return [.. list]; } }
     public int Unread { get { lock (gate) return list.Count(n => !n.Read); } }
+    public void ClearAll() { lock (gate) list = []; SaveList(); Changed?.Invoke(); }
+    /// <summary>A per-thing override of one kind: null (as the general setting), true or false.</summary>
+    public bool? TypeObj(string obj, string type) => Notif["typeObj"]?[obj + "|" + type] is JsonNode v ? Js.IsTrue(v) : null;
+    public async Task SetTypeObj(string obj, string type, bool? on) { var o = (JsonObject)Notif["typeObj"]!; if (on == null) o.Remove(obj + "|" + type); else o[obj + "|" + type] = on.Value; await SaveSettings(); Changed?.Invoke(); }
+    public List<string> Objects { get { lock (gate) return subs.Select(kv => kv.Key).Concat((Notif["objects"] as JsonObject ?? []).Select(kv => kv.Key)).Distinct().ToList(); } }
+    public bool Desktop => Js.IsTrue(Notif["desktop"]);
+    public async Task SetDesktop(bool on) { Notif["desktop"] = on; await SaveSettings(); Changed?.Invoke(); }
     public void MarkAllRead() { lock (gate) list = list.Select(n => n with { Read = true }).ToList(); SaveList(); Changed?.Invoke(); }
     void SaveList()
     {

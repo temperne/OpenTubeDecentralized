@@ -47,8 +47,9 @@
 </div>
 <div class="panel"><h3>Public posts</h3>
     @{ var posts = Months().SelectMany(m => S.Social.Posts(m).Where(p => S.Engine.Read(e => e.Store.Ledger.Resolve(p.Author)) == key).Select(p => (m, p))).OrderByDescending(x => x.p.Ts).Take(30).ToList(); }
-    @if (posts.Count == 0) { <div class="sub">No public posts in the last months.</div> }
+    @if (posts.Count == 0) { <div class="sub">No public posts in the last @months months.</div> }
     @foreach (var (m, p) in posts) { <PostItem P="p" Month="@m" /> }
+    <button class="small-btn" @onclick="Older">Load older months</button>
 </div>
 <div class="panel"><h3>Selling</h3>
     @if (selling.Count == 0) { <div class="sub">Nothing for sale.</div> }
@@ -68,7 +69,9 @@
         var key = S.Engine.Read(e => e.Store.Ledger.Resolve(Key));
         following = await S.Social.IsFollowing(key); isFriend = (await S.Social.Friends()).Any(f => f.Key == key);
     }
-    static IEnumerable<string> Months() { var m = Social.Month(DateTimeOffset.UtcNow); for (int i = 0; i < 3; i++) { yield return m; m = Social.PrevMonth(m); } }
+    int months = 3;
+    IEnumerable<string> Months() { var m = Social.Month(DateTimeOffset.UtcNow); for (int i = 0; i < months; i++) { yield return m; m = Social.PrevMonth(m); } }
+    void Older() { months += 6; foreach (var m in Months()) S.Social.Square(m); }
     async Task ToggleFollow() { following = !following; await S.Social.SetFollowing(S.Engine.Read(e => e.Store.Ledger.Resolve(Key)), following); }
     async Task AddFriend()
     {

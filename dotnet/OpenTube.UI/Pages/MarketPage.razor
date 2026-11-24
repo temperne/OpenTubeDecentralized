@@ -115,12 +115,19 @@ else
         "mine" => all.Where(l => S.IsMine(l.Seller)).ToList(),
         _ => live.Where(l => l.Kind == "fixed" && (kindFilter == "all" || Market.KindOf(l.L).Key == kindFilter)).ToList(),
     };
+    shown = Near(shown);
     shown = shown.Where(l => q.Length == 0 || l.Title.Contains(q, StringComparison.OrdinalIgnoreCase) || ((string?)l.L["about"] ?? "").Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
     <div class="row-actions">
         <input type="search" placeholder="Search" @bind="q" @bind:event="oninput" class="grow-input" />
         @if (T == "items") { <select @bind="kindFilter"><option value="all">All kinds</option>@foreach (var k in Market.Kinds) { <option value="@k.Key">@k.Icon @k.Name</option> }</select> }
         @if (T == "housing") { <select @bind="deal"><option value="all">All</option><option value="sale">For sale</option><option value="rent">For rent</option></select> }
         @if (T == "adviews") { <a class="button" href="market/adviews-mine">Your ad views</a> }
+        @if (T is "items" or "housing" or "auctions")
+        {
+            <span class="sub">@(here != null ? "📍 Near you:" : "Near you:")</span>
+            <select value="@nearKm" @onchange="e => SetNear(int.Parse((string)e.Value!))"><option value="0">anywhere</option><option value="5">within 5 km</option><option value="25">within 25 km</option><option value="100">within 100 km</option><option value="500">within 500 km</option></select>
+            @if (here != null) { <button @onclick="UpdateHere">Update my location</button> }
+        }
     </div>
     @if (T == "mine")
     {
@@ -168,6 +175,28 @@ else
             if (d.Image!.Length > 24000) { d.Image = null; msg = "That picture is too big even when shrunk."; }
         }
         catch (Exception ex) { msg = "That picture didn’t work: " + ex.Message; }
+    }
+    int nearKm; (double Lat, double Lon)? here;
+    protected override async Task OnInitializedAsync()
+    {
+        base.OnInitialized();
+        if (!S.Ready) return;
+        nearKm = int.TryParse(await S.Social.Pref("nearKm"), out var k) ? k : 0;
+        if (await S.Social.Setting("here") is JsonObject h && Js.Num(h["lat"]) is double la && Js.Num(h["lon"]) is double lo) here = (la, lo);
+    }
+    static double Km((double Lat, double Lon) a, JsonNode p)
+    {
+        double r = Math.PI / 180, la = (Js.Num(p["lat"]) ?? 0), lo = (Js.Num(p["lon"]) ?? 0), dLa = (la - a.Lat) * r, dLo = (lo - a.Lon) * r;
+        var x = Math.Pow(Math.Sin(dLa / 2), 2) + Math.Cos(a.Lat * r) * Math.Cos(la * r) * Math.Pow(Math.Sin(dLo / 2), 2);
+        return 2 * 6371 * Math.Asin(Math.Sqrt(x));
+    }
+    List<Trade.Listing> Near(List<Trade.Listing> list) => here is not { } me || nearKm == 0 ? list
+        : list.Where(l => l.L["place"] is JsonObject p && Km(me, p) <= nearKm).OrderBy(l => Km(me, l.L["place"]!)).ToList();
+    async Task SetNear(int km) { nearKm = km; await S.Social.SetPref("nearKm", km.ToString()); if (km > 0 && here == null) await UpdateHere(); }
+    async Task UpdateHere()
+    {
+        try { var p = await JS.InvokeAsync<double[]>("otUi.locate"); here = (Math.Round(p[0], 5), Math.Round(p[1], 5)); await S.Social.SetSetting("here", new JsonObject { ["lat"] = here.Value.Lat, ["lon"] = here.Value.Lon }); }
+        catch (Exception e) { msg = "Couldn’t get your location: " + e.Message; }
     }
     static JsonObject Pt(JsonObject place, string title, string sub, string href, string kind) => new() { ["lat"] = place["lat"]?.DeepClone(), ["lon"] = place["lon"]?.DeepClone(), ["title"] = title, ["sub"] = sub, ["href"] = href, ["kind"] = kind };
     /// <summary>Everything with a place: open listings, organizations, channels (businesses).</summary>

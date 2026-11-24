@@ -20,7 +20,7 @@ else
             </div>
             @if (guestOf != null && !ended) { <div class="panel warn row-actions" id="join-banner"><span class="grow">🎥 <b>You’re invited to join this stream on camera.</b></span><a class="button primary-link" href="golive?group=@guestOf">Join on camera</a></div> }
             <div class="sub" id="live-status">@(ended ? "This stream has ended." : w?.Status ?? "Joining…")@(w != null && w.Bytes > 0 ? $" · {Bytes(w.Bytes)} received" : "")</div>
-            @if (ended && d.LiveEnds.GetValueOrDefault(stream) == "published") { <p>The recording was published: see the channel’s <a href="c/@Chain">videos</a>.</p> }
+            @if (ended) { <p id="live-ended">This stream has ended. @if (d.Recordings.GetValueOrDefault(stream) is { } rec) { <a href="v/@Chain/@((string?)rec["hash"])">Watch the recording</a> } else { <span class="sub">If the streamer publishes the recording, it appears with the channel’s <a href="c/@Chain">videos</a>.</span> }</p> }
             @if (stats != null)
             {
                 var secs = Js.Num(stats["secs"]) ?? 0; var unique = Js.Num(stats["unique"]) ?? 0;

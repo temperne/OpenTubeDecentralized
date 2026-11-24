@@ -36,7 +36,7 @@
         @foreach (var b in d.Ads)
         {
             var t = b["payload"]!["terms"]!; var tid = Ads.TermsId(t);
-            <div class="row-item"><span class="grow"><b>@((string?)b["payload"]?["title"])</b> <span class="sub">· @S.AdViews(tid) of @t["maxViews"] views · @ChainActions.Coins(Js.Num(t["perView"]) ?? 0) coins per view · @t["duration"] s@((Js.Num(t["witnesses"]) ?? 0) > 0 ? " · confirmed views only" : "")</span></span></div>
+            <div class="row-item"><span class="grow"><b>@((string?)b["payload"]?["title"])</b> <span class="sub">· @S.AdViews(tid) of @t["maxViews"] views · @ChainActions.Coins(Js.Num(t["perView"]) ?? 0) coins per view · @t["duration"] s@((Js.Num(t["witnesses"]) ?? 0) > 0 ? " · confirmed views only" : "")</span></span><button @onclick="() => StopAd(b)">Stop ad</button></div>
         }
     </div>
 }
@@ -49,6 +49,7 @@
         try { duration = await JS.InvokeAsync<int>("otUi.duration", input!.Element); } catch { duration = 0; }
         try { thumb = await JS.InvokeAsync<string>("otUi.thumb", input!.Element); } catch { thumb = ""; }
     }
+    async Task StopAd(JsonObject b) { try { await S.Hide(Id, (string)b["hash"]!); msg = "Ad stopped: it no longer runs."; } catch (Exception e) { msg = e.Message; } }
     async Task Publish()
     {
         if (file == null) { msg = "Choose an ad video"; return; }

@@ -9,7 +9,7 @@
 else
 {
     var chans = S.Publish.MyChannels();
-    if (chans.Count == 0) { <p>You don’t have a channel yet. <a href="you">Create one</a> first.</p> }
+    if (chans.Count == 0) { <div class="panel"><h2>Create your channel first</h2><p>To add a video, you need a channel. It takes a few seconds.</p><a class="button primary-link" href="you/channels">Create a channel</a></div> }
     else
     {
         var nodes = S.Publish.StorageNodes();
@@ -24,6 +24,9 @@ else
             <input @bind="title" maxlength="140" />
             <label>Description</label>
             <textarea @bind="desc" rows="3" maxlength="5000"></textarea>
+            <label>Tags</label><input @bind="tags" placeholder="Tags, e.g. cooking, pasta, italian (up to 8)" />
+            <label>Comments on this video</label>
+            <select @bind="vpol"><option value="">Channel default</option><option value="anyone">Anyone</option><option value="approved">Approved users only</option><option value="off">Off</option></select>
             @if (nodes.Count > 0)
             {
                 <label>Kept on</label>
@@ -37,7 +40,7 @@ else
 }
 @code {
     [Parameter] public string? Chain { get; set; }
-    string chain = "", title = "", desc = "", thumb = ""; string? msg; bool busy;
+    string chain = "", title = "", desc = "", thumb = "", tags = "", vpol = ""; string? msg; bool busy;
     string? node;   // null: the first of your computers (as they come online); "": this device only
     IBrowserFile? file; InputFile? input;
     protected override void OnParametersSet()
@@ -60,7 +63,7 @@ else
             await using (var src = file.OpenReadStream(8L << 30)) await using (var dst = File.Create(path)) await src.CopyToAsync(dst);
             Say("Making its torrent…");
             var meta = await Player.Share(path, Path.GetFileName(path));
-            var b = await S.Publish.Video(chain, meta, Path.GetFileName(path), file.Size, file.ContentType is { Length: > 0 } ct ? ct : "video/mp4", title, desc, thumb, Say);
+            var b = await S.Publish.Video(chain, meta, Path.GetFileName(path), file.Size, file.ContentType is { Length: > 0 } ct ? ct : "video/mp4", title, desc, thumb, Say, tags, vpol);
             var keepOn = node ?? S.Publish.StorageNodes().FirstOrDefault().Node;
             if (!string.IsNullOrEmpty(keepOn)) await S.Publish.Store(keepOn, chain, meta.InfoHash, Say);
             Nav.NavigateTo($"v/{chain}/{b["hash"]}");

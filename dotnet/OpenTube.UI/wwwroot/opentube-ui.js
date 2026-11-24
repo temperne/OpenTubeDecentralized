@@ -13,12 +13,34 @@ window.otUi = {
   }),
   // a file to keep (a key backup): downloaded by the browser
   download: (name, text) => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' })); a.download = name; document.body.append(a); a.click(); a.remove(); },
+  // cameras and microphones (labels once allowed), for the Go live choices
+  devices: async () => {
+    const d = await navigator.mediaDevices?.enumerateDevices?.() || [];
+    return { cams: d.filter(x => x.kind === 'videoinput').map((x, i) => ({ id: x.deviceId, label: x.label || `Camera ${i + 1}` })), mics: d.filter(x => x.kind === 'audioinput').map((x, i) => ({ id: x.deviceId, label: x.label || `Microphone ${i + 1}` })), screen: !!navigator.mediaDevices?.getDisplayMedia };
+  },
+  allowCam: async () => { try { const s = await navigator.mediaDevices.getUserMedia({ video: true, audio: true }).catch(() => navigator.mediaDevices.getUserMedia({ video: true })); s.getTracks().forEach(t => t.stop()); return ''; } catch (e) { return e.message; } },
+  // a preview of the chosen source (cam: a camera's id, '' for the default, or 'screen'; mic: an id, '' default, 'none')
+  camPreview: async (videoId, cam, mic) => {
+    const old = window.otUi._preview; if (old) old.getTracks().forEach(t => t.stop()); window.otUi._preview = null;
+    try {
+      const audio = mic === 'none' ? null : await navigator.mediaDevices.getUserMedia({ audio: mic ? { deviceId: { exact: mic } } : true }).catch(() => null);
+      const video = cam === 'screen' ? await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30 }, audio: false })
+        : await navigator.mediaDevices.getUserMedia({ video: cam ? { deviceId: { exact: cam }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } } : { width: { ideal: 1280 }, height: { ideal: 720 } } });
+      const media = new MediaStream([...video.getVideoTracks(), ...(audio?.getAudioTracks() || [])]);
+      window.otUi._preview = media;
+      const v = document.getElementById(videoId); if (v) { v.srcObject = media; v.muted = true; v.play().catch(() => {}); }
+      return '';
+    } catch (e) { return 'Couldn’t open that source: ' + e.message; }
+  },
   camStart: async (hub, videoId) => {
     const mime = ['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9,opus', 'video/webm'].find(m => window.MediaRecorder?.isTypeSupported?.(m));
     if (!mime) return { error: 'This device can’t record video here.' };
-    let media;
-    try { media = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: true }); }
-    catch (e) { return { error: 'The camera or microphone isn’t available: ' + e.message }; }
+    let media = window.otUi._preview;
+    if (!media) {
+      try { media = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: true }); }
+      catch (e) { return { error: 'The camera or microphone isn’t available: ' + e.message }; }
+    }
+    window.otUi._preview = null;
     const v = document.getElementById(videoId); if (v) { v.srcObject = media; v.muted = true; v.play().catch(() => {}); }
     const rec = new MediaRecorder(media, { mimeType: mime, videoBitsPerSecond: 2_000_000, audioBitsPerSecond: 128_000 });
     let q = Promise.resolve();   // in order
@@ -116,3 +138,15 @@ window.otUi.storage = async () => {
     }
   };
 })();
+// This site's build: a hash of its index.html, which names every fingerprinted file of the build.
+window.otUi.buildId = async () => {
+  const t = await (await fetch(document.baseURI + 'index.html', { cache: 'no-store' })).text();
+  const h = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(t)));
+  return Array.from(h.slice(0, 6), b => b.toString(16).padStart(2, '0')).join('');
+};
+// Desktop notifications while the page is open (the browser asks you once).
+window.otUi.askNotify = async () => { if (!window.Notification) return false; if (Notification.permission === 'granted') return true; return (await Notification.requestPermission()) === 'granted'; };
+window.otUi.notify = (title, body, href) => { try { if (window.Notification?.permission !== 'granted') return; const n = new Notification(title, { body, icon: 'icon-192.png' }); n.onclick = () => { window.focus(); if (href) location.href = href; n.close(); }; } catch {} };
+window.otUi.persist = async () => !!(await navigator.storage?.persist?.());
+// a computer's /status, straight from this browser (Devices → Test connection)
+window.otUi.status = async (url) => { const r = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(4000) }); return await r.json(); };

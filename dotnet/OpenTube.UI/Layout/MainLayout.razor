@@ -4,6 +4,7 @@
 @inject OpenTube.UI.UiPlatform Platform
 @inject NavigationManager Nav
 @inject IVideoPlayer Player
+@inject IJSRuntime JS
 <header class="top">
     <a class="logo" href="">Open<span>Tube</span></a>
     <nav>
@@ -15,26 +16,65 @@
         <NavLink href="market" class="desk-only">Market</NavLink>
         <NavLink href="exchange" class="desk-only">Exchange</NavLink>
         <NavLink href="orgs" class="desk-only">Orgs</NavLink>
-        <NavLink href="devices" class="desk-only">Devices</NavLink>
-        <NavLink href="you">You</NavLink>
+        <NavLink href="you" id="nav-you">@if (MyPic() is { } pic) { <img class="avatar xs" src="@pic" alt="" /> } else { <span>👤</span> } You</NavLink>
+        <NavLink href="devices" class="desk-only" title="Your computers and the network">Devices</NavLink>
+        @if (S.Ready && MyChannelCount() is > 0 and var nch) { <NavLink href="mine" class="desk-only">@(nch > 1 ? "My channels" : "My channel")</NavLink> }
+        @if (Web) { <a href="https://github.com/temperne/OpenTubeDecentralized/releases/download/android-latest/opentube.apk" class="desk-only" title="OpenTube for Android: install opentube.apk on your phone">📱 App</a> }
     </nav>
-    <a class="bell" href="notifications" title="Notifications">🔔@if (S.Ready && S.Notes.Unread > 0) { <span class="bell-n">@(S.Notes.Unread > 99 ? "99+" : S.Notes.Unread.ToString())</span> }</a>
-    <div class="net">
-        <span class="dot @(S.Peers > 0 ? "on" : "")"></span>@(S.Peers) node@(S.Peers == 1 ? "" : "s")
-        @if (S.Ready) { <span class="sub"> · main #@S.MainBest["height"]</span> }
-        <span class="badge">@Platform.Label</span>
-        @if (Platform.Label.Contains("WebAssembly")) { <a class="sub" href="../?classic=1" title="The older JavaScript page, for what isn’t in this site yet. “New site” there brings you back.">Classic page</a> }
-    </div>
+    <span class="actions">
+        <a class="bell" href="notifications" title="Notifications">🔔@if (S.Ready && S.Notes.Unread > 0) { <span class="bell-n">@(S.Notes.Unread > 99 ? "99+" : S.Notes.Unread.ToString())</span> }</a>
+        <a class="act" href="upload" title="Add a video">＋<span class="lbl"> Add video</span></a><a class="act live" href="golive" title="Go live">●<span class="lbl"> Go live</span></a>
+    </span>
+    <a class="net" href="network" title="@StatusTitle()">
+        <span><span class="dot @HealthDot()"></span>@HealthText()</span>
+        <span class="desk-only"><span class="dot @(S.Peers > 0 ? "on" : "")"></span>@(S.Peers) node@(S.Peers == 1 ? "" : "s")</span>
+        @if (S.Ready) { <span class="desk-only"><span class="dot @(S.Engine.Mining ? "busy" : "on")"></span>main #@S.MainBest["height"] · @Registered() registered@(Pending() > 0 ? $" · {Pending()} pending" : "")</span> }
+        <span class="badge desk-only">@Platform.Label</span>
+    </a>
+    @if (Web)
+    {
+        <button class="small-btn desk-only @(updateReady ? "primary" : "")" title="Check for a new version of OpenTube and load it" @onclick="CheckUpdate">@updateText</button>
+        <a class="sub desk-only" href="../?classic=1" title="The older JavaScript page. “New site” there brings you back.">Classic page</a>
+    }
 </header>
+@if (updateMsg != null) { <div class="terms-banner">@updateMsg</div> }
 <TermsBanner />
 <main>@Body</main>
 @code {
     protected override void OnInitialized()
     {
         S.Changed += Poke;
+        _ = Task.Run(async () => { for (int i = 0; i < 300 && !S.Ready; i++) await Task.Delay(200); if (S.Ready && Web) S.Notes.Arrived += n => { if (S.Notes.Desktop) _ = JS.InvokeVoidAsync("otUi.notify", "OpenTube", n.Text, AppNav.LinkFor(n.Href, S.Site)).AsTask(); }; });
+        if (Web) _ = InvokeAsync(async () =>
+        {
+            build = await BuildNow();
+            while (true) { await Task.Delay(TimeSpan.FromMinutes(10)); var now = await BuildNow(); if (now != null && build != null && now != build && !updateReady) { updateReady = true; updateText = "⟳ Update ready"; StateHasChanged(); } }
+        });
         _ = Task.Run(async () => { for (int i = 0; i < 300 && !S.Ready; i++) await Task.Delay(200); if (S.Ready) MediaUi.ReseedOnce(S, Player); });
         AppNav.Go += Open;   // a tapped notification (phone)
         if (AppNav.Pending is { } p) _ = InvokeAsync(() => Open(p));
+    }
+    bool Web => Platform.Label.Contains("WebAssembly");
+    string? MyPic() { var c = S.Ready ? S.Social.MyPage : null; return c == null ? null : (string?)S.Chain(c)?.Profile["avatar"] is { Length: > 0 } a ? a : null; }
+    int MyChannelCount() => S.Directory().Count(c => c.Kind == "channel" && S.IsMine(c.Owner));
+    int Registered() => S.Engine.Read(e => e.Store.Directory.Count);
+    int Pending() => S.Engine.Read(e => e.Store.Mempool.Count);
+    string Health() => !S.Ready ? "warn" : S.Peers == 0 ? "error" : (Js.Num(S.MainBest["height"]) ?? 0) == 0 ? "warn" : "ok";
+    string HealthDot() => Health() switch { "ok" => "on", "warn" => "busy", _ => "bad" };
+    string HealthText() => Health() switch { "ok" => "Online", "warn" => "Limited", _ => "Problem" };
+    string StatusTitle() => $"{HealthText()} · {S.Peers} node(s) · main #{(S.Ready ? S.MainBest["height"] : 0)} — click for network & diagnostics";
+    // a new version of the site: index.html changes with every build (its import map names every fingerprinted file)
+    string? build, updateMsg; bool updateReady; string updateText = "⟳ Update";
+    async Task<string?> BuildNow() { try { return await JS.InvokeAsync<string>("otUi.buildId"); } catch { return null; } }
+    async Task CheckUpdate()
+    {
+        if (updateReady) { Nav.NavigateTo(Nav.Uri, forceLoad: true); return; }
+        updateText = "Checking…"; StateHasChanged();
+        var now = await BuildNow();
+        updateReady = now != null && build != null && now != build;
+        updateText = updateReady ? "⟳ Update ready" : "⟳ Update";
+        updateMsg = updateReady ? "A new version of OpenTube is ready: press “⟳ Update ready” to load it." : "You have the latest version.";
+        _ = Task.Delay(5000).ContinueWith(_ => InvokeAsync(() => { if (!updateReady) updateMsg = null; StateHasChanged(); }));
     }
     void Open(string href) { AppNav.Pending = null; var l = AppNav.LinkFor(href, S.Site); _ = InvokeAsync(() => Nav.NavigateTo(l)); }
     bool pending;
