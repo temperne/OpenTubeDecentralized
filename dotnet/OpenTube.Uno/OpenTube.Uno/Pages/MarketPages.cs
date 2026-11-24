@@ -89,7 +89,7 @@ public sealed partial class MarketPage : DataPage
             case "new": Sell(); break;
             case "adviews-mine": AdViews(); break;
             case "ads": AdBoard(); break;
-            case "places": Places(); break;
+            case "places": Col.Children.Add(Btn("🗺 Open the map", () => App.Open(typeof(PlacesPage)), primary: true)); Places(); break;
             default: Browse(); break;
         }
         Col.Children.Add(Status);

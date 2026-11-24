@@ -34,6 +34,7 @@ public sealed partial class ExplorePage : Page
         Empty.Visibility = items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         Empty.Text = query.Length > 0 ? $"Nothing matches “{query}”." : "Nothing ranked yet: the network is still arriving.";
     }
+    void OnMap(object sender, RoutedEventArgs e) => App.Open(typeof(PlacesPage));
     void OnMarket(object sender, RoutedEventArgs e) => App.Open(typeof(MarketPage));
     void OnExchange(object sender, RoutedEventArgs e) => App.Open(typeof(ExchangePage));
     void OnOrgs(object sender, RoutedEventArgs e) => App.Open(typeof(OrgsPage));

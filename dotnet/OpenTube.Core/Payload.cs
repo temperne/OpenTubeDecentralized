@@ -64,6 +64,8 @@ public static partial class Payload
                 if (!owner && work < commentDifficulty) return false;
                 if (type == "submit") return (Undef(p, "judge") || IsKey(Get(p, "judge"))) && Str(Get(p, "what")) is { } w && Filings.Contains(w) && IsStr(Get(p, "title"), Limits.Title) && Trim(Str(Get(p, "title"))!).Length > 0 && IsStr(Get(p, "text"), Limits.Text)
                     && (Undef(p, "case") || IsHex(Get(p, "case"), 64)) && (Undef(p, "listing") || IsHex(Get(p, "listing"), 64)) && (Undef(p, "sig") || IsString(Get(p, "sig"))) && (Undef(p, "buyerShare") || (IsFinite(Get(p, "buyerShare")) && Num(Get(p, "buyerShare")) is >= 0 and <= 1));
+                // reviews of the organization or place (and the owner's answers): comments on its chain
+                if (type == "comment") return IsHex(Get(p, "target"), 64) && chain.Ancestors(parents).Contains(Str(Get(p, "target"))!) && IsStr(Get(p, "text"), Limits.Comment) && Trim(Str(Get(p, "text"))!).Length > 0 && IsStr(OrEmpty(p, "name"), Limits.Name);
                 if (owner) return false;
                 if (type == "report") return RefShape(Get(p, "ref")) && SlugRe().IsMatch(JsToString(Get(p, "cls"), Has(p, "cls"))) && IsStr(OrEmpty(p, "note"), Limits.Comment);
                 if (type == "petition") return SlugRe().IsMatch(JsToString(Get(p, "id"), Has(p, "id"))) && IsStr(Get(p, "name"), 60) && IsStr(OrEmpty(p, "about"), Limits.About);

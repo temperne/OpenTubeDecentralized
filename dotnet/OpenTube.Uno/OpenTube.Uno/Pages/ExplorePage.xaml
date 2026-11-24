@@ -6,6 +6,7 @@
   <ScrollViewer>
     <StackPanel Padding="16" Spacing="14" MaxWidth="1400">
       <StackPanel Orientation="Horizontal" Spacing="8">
+        <Button Content="🗺 Map" Style="{StaticResource FilledButtonStyle}" Click="OnMap" />
         <Button Content="🛍 Market" Style="{StaticResource FilledTonalButtonStyle}" Click="OnMarket" />
         <Button Content="💱 Exchange" Style="{StaticResource FilledTonalButtonStyle}" Click="OnExchange" />
         <Button Content="🏛 Organizations" Style="{StaticResource FilledTonalButtonStyle}" Click="OnOrgs" />

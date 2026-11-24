@@ -31,6 +31,14 @@ public static class TestHooks
                 var outp = new JsonObject { ["grant"] = S.Trade.Grant("test computer"), ["chain"] = chain, ["user"] = S.Me.pub };
                 try { File.WriteAllText(Path.Combine(Svc.DataFolder, "test-setup.json"), outp.ToJsonString()); } catch { }
                 Console.WriteLine("[test] setup ready: " + chain);
+                if (opts.Contains("place") && !S.All().Any(x => x.Kind == "org"))
+                {
+                    while (S.Trade.Balance < 500) await Task.Delay(1000);
+                    var pid = await S.AddPlace("Test Café", "Café", "Coffee and cake.", 40.7128, -74.006, "1 Main St", "Mon–Fri 8–18", "555-0100", "https://example.com");
+                    while (S.Chain(pid)?.Profile["place"] == null) await Task.Delay(1000);
+                    await S.AddReview(pid, 4, "Good coffee, friendly staff.");
+                    Console.WriteLine("[test] place " + pid);
+                }
                 if (opts.Contains("market") && !S.Trade.Listings().Any(l => S.IsMine(l.Seller)))
                 {
                     while (S.Trade.Balance < S.Trade.Price("list") + 500) await Task.Delay(1000);

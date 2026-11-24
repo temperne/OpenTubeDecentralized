@@ -125,7 +125,7 @@ public sealed class Trade
     public async Task<string> CreateOrg(string name, string about, string orgType, string jurisdiction, JsonObject? extra = null)
     {
         if (name.Trim().Length == 0) throw new ArgumentException("Name it");
-        var p = new JsonObject { ["type"] = "genesis", ["kind"] = "org", ["name"] = name.Trim(), ["about"] = about.Trim(), ["avatar"] = "", ["orgType"] = orgType };
+        var p = new JsonObject { ["type"] = "genesis", ["kind"] = "org", ["name"] = name.Trim(), ["about"] = about.Trim(), ["avatar"] = "", ["orgType"] = orgType, ["comments"] = "anyone" };
         if (jurisdiction.Trim().Length > 0) p["jurisdiction"] = jurisdiction.Trim()[..Math.Min(120, jurisdiction.Trim().Length)];
         if (extra?["details"] is JsonObject dt) p["details"] = dt.DeepClone();
         if (extra?["people"] is JsonArray pe) p["people"] = pe.DeepClone();

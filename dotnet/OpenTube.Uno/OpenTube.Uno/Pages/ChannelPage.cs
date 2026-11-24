@@ -228,10 +228,71 @@ public sealed partial class ChannelPage : Page
             items.Add(lr);
         }
         if (who.Length > 0 && who != d.Owner) items.Add(Sub($"Owned by {S.NameOf(who)} (coins paid to this {d.Kind} go to them)"));
+        body.Children.Add(Card([.. items])); items = [];
+        PlaceAndOrg(d);
         items.Add(H("Technical details", 14));
         items.Add(Sub("Chain ID")); items.Add(Code(id)); items.Add(Sub("Channel key")); items.Add(Code(d.Owner ?? ""));
         items.Add(Sub($"Blocks: {d.BlockCount} · Registered: {(registered ? "yes" : "pending")}" + (d.Kind == "channel" ? $" · Default comments: {((string?)d.Profile["comments"] switch { "approved" => "Approved users only", "off" => "Off", _ => "Anyone" })}" : "")));
         body.Children.Add(Card([.. items]));
+    }
+
+    // ---- a place and an organization: where it is, its rating and reviews, what kind it is, its details and people
+    void PlaceAndOrg(Derived d)
+    {
+        var S = Svc.S; var g = S.Genesis(id)?["payload"];
+        if (d.Profile["place"] is JsonObject pl)
+        {
+            var m = new MapView { Height = 260 };
+            m.Loaded += (_, _) => { m.SetPins([new MapView.Pin(Js.Num(pl["lat"]) ?? 0, Js.Num(pl["lon"]) ?? 0, "📍", (string?)d.Profile["name"] ?? "")], false); m.CenterOn(Js.Num(pl["lat"]) ?? 0, Js.Num(pl["lon"]) ?? 0, 16); };
+            body.Children.Add(Card(m, Row(Sub("📍 " + ((string?)pl["label"] is { Length: > 0 } lb ? lb : $"{pl["lat"]}, {pl["lon"]}")), TradeUi.MapLink(pl, "Directions (OpenStreetMap)"))));
+        }
+        if (d.Kind == "org")
+        {
+            var t = OrgKinds.Of((string?)g?["orgType"]); var o = new List<UIElement> { H(t.Name) };
+            if ((string?)d.Profile["category"] is { Length: > 0 } cat) o.Add(Sub("Category: " + cat));
+            if ((string?)g?["jurisdiction"] is { Length: > 0 } j) o.Add(Row(Sub("Jurisdiction:"), Text(j, 14)));
+            if (g?["details"] is JsonObject det)
+                foreach (var (k, v) in det)
+                {
+                    var label = t.Fields.FirstOrDefault(f => f.Key == k)?.Label ?? k switch { "hours" => "Opening hours", "phone" => "Phone", "website" => "Website", "category" => "Category", _ => k };
+                    if (k == "category" && d.Profile["category"] != null) continue;
+                    var f = t.Fields.FirstOrDefault(f => f.Key == k);
+                    var text = f?.Type == "date" && Js.Num(v) is double ms ? DateTimeOffset.FromUnixTimeMilliseconds((long)ms).ToString("yyyy-MM-dd") : v?.ToString() ?? "";
+                    o.Add(k == "website" && Uri.TryCreate(text, UriKind.Absolute, out var wu) ? Row(Sub(label + ":"), new HyperlinkButton { Content = text, NavigateUri = wu }) : Row(Sub(label + ":"), Text(text, 14)));
+                }
+            var people = (g?["people"] as JsonArray ?? []).OfType<JsonObject>().ToList();
+            o.Add(H(t.People, 15));
+            if (people.Count == 0) o.Add(Sub("Nobody listed."));
+            foreach (var q in people)
+            {
+                var k = (string?)q["key"] ?? "";
+                o.Add(Row(Btn(S.NameOf(k), () => ProfilePage.Open(k)), Text(((string?)q["role"] ?? "") + (Js.Num(q["share"]) is double sh ? $" · {sh}%" : ""), 14)));
+            }
+            var roles = S.Trade.Roles(id);
+            if (roles.Count > 0) { o.Add(H("Roles on OpenTube", 15)); foreach (var (k, rs) in roles) o.Add(Row(Btn(S.NameOf(k), () => ProfilePage.Open(k)), Sub(string.Join(", ", rs.Select(Trade.RoleName))))); }
+            var listings = S.Trade.Listings().Where(l => l.Open && (string?)l.L["org"] == id).Count();
+            if ((string?)g?["orgType"] == "arbitration") o.Add(Sub($"Arbitrates marketplace disputes · {listings} open listing(s) use it for escrow."));
+            body.Children.Add(Card([.. o]));
+        }
+        if (d.Kind == "org" || d.Profile["place"] != null) Reviews(d);
+    }
+    void Reviews(Derived d)
+    {
+        var S = Svc.S; var rs = S.Reviews(id); var (avg, n) = S.Rating(id);
+        var c = new List<UIElement> { H("Reviews"), Text(Places.StarText(avg) + (n > 0 ? $" · {n} review{(n == 1 ? "" : "s")}" : ""), 16) };
+        foreach (var r in rs.Take(50))
+            c.Add(new StackPanel { Spacing = 2, Children = { Row(Btn(S.NameOf(r.Author), () => ProfilePage.Open(S.Engine.Read(e => e.Store.Ledger.Resolve(r.Author)))), Text(new string('★', r.Stars) + new string('☆', 5 - r.Stars), 14), Sub(Svc.Ago(r.Ts))), Text(r.Text, 14) } });
+        if (!S.IsMine(d.Owner))
+        {
+            var stars = 0; var bar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
+            void Paint() { for (int i = 0; i < bar.Children.Count; i++) ((Button)bar.Children[i]).Content = i < stars ? "★" : "☆"; }
+            for (int i = 1; i <= 5; i++) { var v = i; var b = new Button { Content = "☆", FontSize = 22, Padding = new Thickness(6, 0, 6, 0), Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent) }; Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(b, "star-" + v); b.Click += (_, _) => { stars = v; Paint(); }; bar.Children.Add(b); }
+            var text = new TextBox { PlaceholderText = "What was it like? (public)", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 60, MaxLength = 1500 };
+            c.Add(H(rs.Any(r => S.IsMine(r.Author)) ? "Update your review" : "Write a review", 15)); c.Add(bar); c.Add(text);
+            c.Add(Btn("Post review", () => _ = status.Do("Posting…", async () => { await S.AddReview(id, stars, text.Text); shown = ""; Refresh(); }, "Thanks: your review is public."), primary: true, id: "review-post"));
+            c.Add(status);
+        }
+        body.Children.Add(Card([.. c]));
     }
 
     // ---- manage your own: profile, picture, location, links, policies, people, @name
