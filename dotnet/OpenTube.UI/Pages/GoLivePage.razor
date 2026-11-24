@@ -40,6 +40,9 @@ else
                     @foreach (var u in ObsServers()) { <div class="mono">Server: @u</div> }
                     <div class="mono">Stream key: @((string?)obs["key"])</div>
                     @if ((string?)obs["portNote"] is { } pn) { <div class="sub">⚠ @pn</div> }
+                    <div class="row-actions"><label class="check"><input type="checkbox" checked="@Js.IsTrue(obs["youtube"]?["on"])" @onchange="e => ytOn = (bool)e.Value!" /> Also send it to YouTube</label>
+                        <input type="password" class="grow-input" @bind="ytKey" placeholder="@(Js.IsTrue(obs["youtube"]?["set"]) ? "•••••••• (saved; type to replace)" : "YouTube stream key")" />
+                        <button @onclick="SaveYouTube">Save</button></div>
                     <div class="row-actions"><button @onclick="LinkObs">Go live on “@(chans.FirstOrDefault(c => c.Id == chain)?.Name)” from OBS</button></div>
                 </div>
                 @if (obsNode != null && !S.MyNodes().First(x => x.Node == obsNode).Perms.Contains('g')) { <div class="panel"><GroupPanel Node="@obsNode" Title="true" /></div> }
@@ -68,6 +71,15 @@ else
     [Microsoft.JSInterop.JSInvokable] public void CamChunk(byte[] chunk) => live?.Chunk(chunk);
     async Task Stop() { await JS.InvokeVoidAsync("otUi.camStop"); if (live != null) { await live.Stop(); live.Changed -= Redraw; } msg = "The stream has ended. Your computer’s recording appears on the channel to publish."; live = null; }
     void Redraw() => InvokeAsync(StateHasChanged);
+    string ytKey = ""; bool? ytOn;
+    async Task SaveYouTube()
+    {
+        var y = new System.Text.Json.Nodes.JsonObject { ["on"] = ytOn ?? Js.IsTrue(obs?["youtube"]?["on"]) };
+        if (ytKey.Trim().Length > 0) y["key"] = ytKey.Trim();
+        obsMsg = "Saving…";
+        try { obs = await S.NodeCtl(obsNode!, "obs.set", new System.Text.Json.Nodes.JsonObject { ["youtube"] = y }); ytKey = ""; obsMsg = Js.IsTrue(obs["youtube"]?["on"]) ? "Saved: your streams also go to YouTube." : "Saved."; }
+        catch (Exception e) { obsMsg = e.Message; }
+    }
     async Task Obs(string n) { obsNode = n; obsMsg = "Asking your computer…"; try { obs = await S.NodeCtl(n, "obs"); obsMsg = null; } catch (Exception e) { obsMsg = e.Message; } }
     IEnumerable<string> ObsServers()
     {

@@ -28,6 +28,9 @@ const waitText = async (p, re, ms = 60000) => { const t0 = Date.now(); while (Da
   await X.goto(BASE + 'app/golive'); await X.waitForSelector('button:has-text("Show OBS settings")', { timeout: 120000 });
   await X.click('button:has-text("Show OBS settings")');
   check(await X.waitForSelector('.group-panel', { timeout: 60000 }).then(() => true, () => false), 'Go live shows your computer’s group stream');
+  await X.click('label.check:has-text("Also send it to YouTube") input'); await X.fill('input[placeholder="YouTube stream key"]', 'yt-test-key'); await X.click('button:has-text("Save")');
+  check(await waitText(X, /Saved: your streams also go to YouTube/, 30000), 'YouTube forwarding saved');
+  const ob = JSON.parse(fs.readFileSync(W + '/node/obs.json', 'utf8')); check(JSON.stringify(ob).includes('yt-test-key') && JSON.stringify(ob).includes('"on":true'), 'the computer keeps the YouTube key, switched on');
   await X.waitForSelector('.group-panel input[type=checkbox]', { timeout: 60000 });
   await X.click('.group-panel label.check:has-text("Off: one stream") input');
   check(await waitText(X, /On: everyone connected is combined/, 30000), 'switching the group stream on (the computer says it’s on)');
