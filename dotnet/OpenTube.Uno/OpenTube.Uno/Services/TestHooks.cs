@@ -37,6 +37,15 @@ public static class TestHooks
                     var pid = await S.AddPlace("Test Café", "Café", "Coffee and cake.", 40.7128, -74.006, "1 Main St", "Mon–Fri 8–18", "555-0100", "https://example.com");
                     while (S.Chain(pid)?.Profile["place"] == null) await Task.Delay(1000);
                     await S.AddReview(pid, 4, "Good coffee, friendly staff.");
+                    // a photo, and the place's answer to the review
+                    using (var bmp = new SkiaSharp.SKBitmap(320, 200)) using (var cv = new SkiaSharp.SKCanvas(bmp))
+                    {
+                        cv.Clear(new SkiaSharp.SKColor(150, 90, 40)); cv.DrawCircle(160, 100, 60, new SkiaSharp.SKPaint { Color = SkiaSharp.SKColors.White });
+                        using var jpg = SkiaSharp.SKImage.FromBitmap(bmp).Encode(SkiaSharp.SKEncodedImageFormat.Jpeg, 80);
+                        await S.AddPhoto(pid, "data:image/jpeg;base64," + Convert.ToBase64String(jpg.ToArray()), "Our espresso bar");
+                    }
+                    while (S.Reviews(pid).Count == 0) await Task.Delay(500);
+                    await S.ReplyToReview(pid, S.Reviews(pid)[0].Hash, "Thank you, come again!");
                     Console.WriteLine("[test] place " + pid);
                 }
                 if (opts.Contains("zone") && S.ZoneOf("example.test") == null)

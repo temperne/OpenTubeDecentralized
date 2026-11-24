@@ -18,27 +18,35 @@ public sealed partial class PlacesPage : Page
     readonly ComboBox cat = Pick([("", "All categories"), ("listing", "🛍 For sale"), ("housing", "🏠 Housing"), .. Places.Categories.Select(c => (c, c))]);
     readonly TextBlock status = Status();
     readonly DispatcherTimer tick = new() { Interval = TimeSpan.FromSeconds(5) };
-    string shown = ""; bool fitted, adding; (double Lat, double Lon)? picked;
+    string shown = ""; bool fitted, adding, settingHere; (double Lat, double Lon)? picked, here;
     public PlacesPage()
     {
         Background = Application.Current.Resources["BackgroundBrush"] as Brush;
         var (scroll, col) = Ui.Page(1200); Content = Ui.WithBack("Map", scroll);
         cat.MinWidth = 180;
         search.TextChanged += (_, _) => Refresh(true); cat.SelectionChanged += (_, _) => Refresh(true);
-        col.Children.Add(Row(search, cat, Btn("＋ Add a place", () => { adding = !adding; picked = null; DrawAdd(); }, primary: true, id: "places-add")));
+        col.Children.Add(Row(search, cat, Btn("📍 Near me", () => _ = NearMe(), id: "places-near"), Btn("＋ Add a place", () => { adding = !adding; picked = null; DrawAdd(); }, primary: true, id: "places-add")));
         col.Children.Add(add);
         col.Children.Add(map); col.Children.Add(sheet); col.Children.Add(list); col.Children.Add(status);
         map.PinTapped += p => Show((Places.Place)p.Tag!);
-        map.MapTapped += (la, lo) => { if (!adding) return; picked = (la, lo); DrawAdd(); Refresh(true); };
+        map.MapTapped += (la, lo) =>
+        {
+            if (settingHere) { settingHere = false; _ = SetHere(la, lo); return; }
+            if (!adding) return; picked = (la, lo); DrawAdd(); Refresh(true);
+        };
         tick.Tick += (_, _) => Refresh(false);
-        Loaded += (_, _) => { tick.Start(); Refresh(false); }; Unloaded += (_, _) => tick.Stop();
+        Loaded += async (_, _) =>
+        {
+            tick.Start(); Refresh(false);
+            try { if (await Svc.S.Social.Setting("here") is System.Text.Json.Nodes.JsonObject h && OpenTube.Core.Js.Num(h["lat"]) is double la && OpenTube.Core.Js.Num(h["lon"]) is double lo) { here = (la, lo); Refresh(true); } } catch { }
+        }; Unloaded += (_, _) => tick.Stop();
     }
     static string Icon(Places.Place p) => p.Kind switch { "housing" => "🏠", "listing" => "🛍", "channel" => "🏪", _ => p.Category switch { "Restaurant" => "🍽", "Café" => "☕", "Bar" => "🍺", "Shop" or "Grocery" => "🛒", "Hotel" => "🛏", "Health" => "⚕", "Auto" => "🚗", "Park" => "🌳", "Government" => "🏛", "Education" => "🎓", _ => "📍" } };
     List<Places.Place> Matching()
     {
         var q = search.Text.Trim(); var c = cat.Value();
         return Svc.S.All().Where(p => (c == "" || p.Kind == c || p.Category == c) && (q.Length == 0 || $"{p.Name} {p.Category} {p.Label} {p.About}".Contains(q, StringComparison.OrdinalIgnoreCase)))
-            .OrderByDescending(p => p.Stars * Math.Log(1 + p.Reviews)).ThenBy(p => p.Name).ToList();
+            .OrderBy(p => here is { } h ? Places.Km(h.Lat, h.Lon, p.Lat, p.Lon) : 0).ThenByDescending(p => p.Stars * Math.Log(1 + p.Reviews)).ThenBy(p => p.Name).ToList();
     }
     void Refresh(bool force)
     {
@@ -47,6 +55,7 @@ public sealed partial class PlacesPage : Page
         if (!force && key == shown) return; shown = key;
         var pins = ps.Select(p => new MapView.Pin(p.Lat, p.Lon, Icon(p), p.Name, p)).ToList();
         if (picked is { } pk) pins.Add(new MapView.Pin(pk.Lat, pk.Lon, "📌", "The new place"));
+        if (here is { } me) pins.Add(new MapView.Pin(me.Lat, me.Lon, "🔵", "You are here"));
         map.SetPins(pins, !fitted || force && picked == null); fitted = fitted || ps.Count > 0;
         list.Children.Clear();
         list.Children.Add(H($"{ps.Count} place{(ps.Count == 1 ? "" : "s")}", 16));
@@ -57,10 +66,31 @@ public sealed partial class PlacesPage : Page
     {
         var sp = new StackPanel { Spacing = 2 };
         sp.Children.Add(Text($"{Icon(p)} {p.Name}", 15));
-        sp.Children.Add(Sub($"{p.Category}{(p.Listing ? "" : " · " + Places.StarText(p.Stars) + (p.Reviews > 0 ? $" ({p.Reviews})" : ""))}{(p.Label.Length > 0 ? " · " + p.Label : "")}"));
+        sp.Children.Add(Sub($"{(here is { } h ? Dist(Places.Km(h.Lat, h.Lon, p.Lat, p.Lon)) + " · " : "")}{p.Category}{(p.Listing ? "" : " · " + Places.StarText(p.Stars) + (p.Reviews > 0 ? $" ({p.Reviews})" : ""))}{(p.Label.Length > 0 ? " · " + p.Label : "")}"));
         var b = new Button { Content = sp, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Left, Background = Surface, Foreground = (Brush)Application.Current.Resources["OnSurfaceBrush"], CornerRadius = new CornerRadius(10), Padding = new Thickness(12) };
         b.Click += (_, _) => { map.CenterOn(p.Lat, p.Lon, 16); Show(p); };
         return b;
+    }
+    static string Dist(double km) => km < 1 ? $"{km * 1000:0} m" : km < 10 ? $"{km:0.0} km" : $"{km:0} km";
+    /// <summary>Where you are: the device's location (asking first), else tap the map where you are. Kept on this device only.</summary>
+    async Task NearMe()
+    {
+        status.Say("Finding where you are…");
+        try
+        {
+            var access = await Windows.Devices.Geolocation.Geolocator.RequestAccessAsync();
+            if (access != Windows.Devices.Geolocation.GeolocationAccessStatus.Allowed) throw new InvalidOperationException("location isn’t allowed");
+            var pos = await new Windows.Devices.Geolocation.Geolocator { DesiredAccuracyInMeters = 100 }.GetGeopositionAsync();
+            await SetHere(pos.Coordinate.Point.Position.Latitude, pos.Coordinate.Point.Position.Longitude);
+        }
+        catch (Exception e) { settingHere = true; status.Say($"Couldn’t get this device’s location ({e.Message}). Tap the map where you are."); }
+    }
+    async Task SetHere(double la, double lo)
+    {
+        here = (Math.Round(la, 5), Math.Round(lo, 5)); map.CenterOn(here.Value.Lat, here.Value.Lon, 14); fitted = true;
+        try { await Svc.S.Social.SetSetting("here", new System.Text.Json.Nodes.JsonObject { ["lat"] = here.Value.Lat, ["lon"] = here.Value.Lon }); } catch { }
+        status.Say("Nearest first. (Your location stays on this device.)"); Refresh(true);
+        map.CenterOn(here.Value.Lat, here.Value.Lon, 14);
     }
     void Open(Places.Place p) { if (p.Listing) App.Open(typeof(MarketItemPage), p.Id); else ChannelPage.Open(p.Id); }
     void Show(Places.Place p)

@@ -14,7 +14,8 @@ static class TradeUi
     public static Image Pic(string? dataUri, double height)
     {
         var img = new Image { Height = height, Stretch = Stretch.UniformToFill, HorizontalAlignment = HorizontalAlignment.Stretch };
-        if (!string.IsNullOrEmpty(dataUri)) _ = Task.Run(async () => { var b = await Svc.Thumb(dataUri); img.DispatcherQueue.TryEnqueue(() => img.Source = b); });
+        if (!string.IsNullOrEmpty(dataUri)) _ = Load();   // (on the UI thread: pictures are made there)
+        async Task Load() => img.Source = await Svc.Thumb(dataUri);
         return img;
     }
     /// <summary>Editors for a kind's fields (text, number, date, yes/no, a choice), writing into <paramref name="values"/>.</summary>

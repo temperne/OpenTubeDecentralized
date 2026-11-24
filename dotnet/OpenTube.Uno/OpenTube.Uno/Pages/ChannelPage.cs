@@ -274,15 +274,40 @@ public sealed partial class ChannelPage : Page
             if ((string?)g?["orgType"] == "arbitration") o.Add(Sub($"Arbitrates marketplace disputes · {listings} open listing(s) use it for escrow."));
             body.Children.Add(Card([.. o]));
         }
-        if (d.Kind == "org" || d.Profile["place"] != null) Reviews(d);
+        if (d.Kind == "org" || d.Profile["place"] != null) { Photos(d); Reviews(d); }
+    }
+    void Photos(Derived d)
+    {
+        var S = Svc.S; var ph = S.Photos(id); var mine = S.IsMine(d.Owner);
+        if (ph.Count == 0 && !mine) return;
+        var row = new WrapRow { Gap = 8 };
+        foreach (var p in ph.Take(30)) row.Children.Add(new StackPanel { Width = 220, Spacing = 2, Children = { new Border { CornerRadius = new CornerRadius(8), Child = TradeUi.Pic(p.Image, 150) }, Sub(p.Caption == "📷" ? Svc.Ago(p.Ts) : p.Caption) } });
+        var c = new List<UIElement> { H($"Photos ({ph.Count})"), row };
+        if (ph.Count == 0) c.Add(Sub("No photos yet."));
+        if (mine)
+        {
+            var cap = Input("Caption (optional)", "", 200);
+            c.Add(Row(cap, Btn("Add a photo", () => _ = status.Do("Opening…", async () => { if (await Files.OpenImage(900, 60000) is { } img) { status.Say("Adding…"); await S.AddPhoto(id, img, cap.Text); shown = ""; Refresh(); } }, "Added."), primary: true)));
+        }
+        body.Children.Add(Card([.. c]));
     }
     void Reviews(Derived d)
     {
         var S = Svc.S; var rs = S.Reviews(id); var (avg, n) = S.Rating(id);
         var c = new List<UIElement> { H("Reviews"), Text(Places.StarText(avg) + (n > 0 ? $" · {n} review{(n == 1 ? "" : "s")}" : ""), 16) };
+        var owns = S.IsMine(d.Owner);
         foreach (var r in rs.Take(50))
-            c.Add(new StackPanel { Spacing = 2, Children = { Row(Btn(S.NameOf(r.Author), () => ProfilePage.Open(S.Engine.Read(e => e.Store.Ledger.Resolve(r.Author)))), Text(new string('★', r.Stars) + new string('☆', 5 - r.Stars), 14), Sub(Svc.Ago(r.Ts))), Text(r.Text, 14) } });
-        if (!S.IsMine(d.Owner))
+        {
+            var one = new StackPanel { Spacing = 2, Children = { Row(Btn(S.NameOf(r.Author), () => ProfilePage.Open(S.Engine.Read(e => e.Store.Ledger.Resolve(r.Author)))), Text(new string('★', r.Stars) + new string('☆', 5 - r.Stars), 14), Sub(Svc.Ago(r.Ts))), Text(r.Text, 14) } };
+            if (r.Reply != null) one.Children.Add(new Border { Padding = new Thickness(12, 4, 0, 4), BorderBrush = Muted, BorderThickness = new Thickness(2, 0, 0, 0), Child = new StackPanel { Children = { Sub("Reply from the owner"), Text(r.Reply, 14) } } });
+            if (owns)
+            {
+                var ans = Input(r.Reply == null ? "Reply to this review (public)" : "Change your reply", "", 1000);
+                one.Children.Add(Row(ans, Btn("Reply", () => _ = status.Do("Replying…", async () => { await S.ReplyToReview(id, r.Hash, ans.Text); shown = ""; Refresh(); }, "Replied."))));
+            }
+            c.Add(one);
+        }
+        if (!owns)
         {
             var stars = 0; var bar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
             void Paint() { for (int i = 0; i < bar.Children.Count; i++) ((Button)bar.Children[i]).Content = i < stars ? "★" : "☆"; }
