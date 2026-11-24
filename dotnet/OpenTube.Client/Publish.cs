@@ -28,7 +28,7 @@ public sealed class Publish
         .Select(n => (n.Node, s.Engine.Read(e => (string?)e.Nodes[n.Node]["info"]?["name"]) ?? "your computer")).ToList();
 
     /// <summary>"This channel is mine", signed by the channel's key, for that computer.</summary>
-    JsonObject ChanProof(string node, string chain)
+    internal JsonObject ChanProof(string node, string chain)
     {
         var owner = s.Engine.Read(e => e.Store.Chains.TryGetValue(chain, out var c) ? c.Owner : null);
         var key = owner == null ? null : s.KeyOf(owner);
@@ -95,16 +95,27 @@ public sealed class LiveBroadcast : IAsyncDisposable
     readonly List<string> pending = [];
 
     LiveBroadcast(ClientSession s, string chain, string mime, Identity key) { this.s = s; Chain = chain; Mime = mime; this.key = key; }
-    public static async Task<LiveBroadcast> Start(ClientSession s, string chain, string title, string mime)
+    /// <param name="group">Join this computer's group stream on camera (it pulls your stream into its picture) instead of going live alone.</param>
+    public static async Task<LiveBroadcast> Start(ClientSession s, string chain, string title, string mime, string? group = null)
     {
         var owner = s.Engine.Read(e => e.Store.Chains.TryGetValue(chain, out var c) ? c.Owner : null) ?? throw new InvalidOperationException("that channel isn’t loaded yet");
         var key = s.KeyOf(owner) ?? throw new InvalidOperationException("this device doesn’t hold that channel’s key");
         var b = new LiveBroadcast(s, chain, mime, key);
         _ = Task.Run(b.Run);
-        await Task.Run(() => s.Engine.Append(chain, new JsonObject { ["type"] = "live", ["title"] = title.Trim()[..Math.Min(140, Math.Max(1, title.Trim().Length))], ["stream"] = b.Stream, ["mime"] = mime }));
-        s.Publish.Relay(chain, b.Stream, title);
+        var lb = new JsonObject { ["type"] = "live", ["title"] = title.Trim()[..Math.Min(140, Math.Max(1, title.Trim().Length))], ["stream"] = b.Stream, ["mime"] = mime };
+        if (group != null) lb["group"] = group;
+        await Task.Run(() => s.Engine.Append(chain, lb));
+        if (group == null) s.Publish.Relay(chain, b.Stream, title);
+        else
+        {
+            b.Group = group;
+            var args = s.Publish.ChanProof(group, chain); args["stream"] = b.Stream; args["chain"] = chain; args["hub"] = null;
+            _ = Task.Run(async () => { try { await s.NodeCtl(group, "group.join", args); b.Say("You’re in the group stream."); } catch (Exception e) { b.Say("Group stream: " + e.Message); } });
+        }
         return b;
     }
+    /// <summary>The computer whose group stream this joined, if any.</summary>
+    public string? Group { get; private set; }
     void Say(string st) { Status = st; Changed?.Invoke(); }
     async Task Run()
     {

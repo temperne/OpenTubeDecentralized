@@ -8,7 +8,7 @@ else
 {
     var hash = (string)lb["hash"]!; var stream = (string?)lb["payload"]?["stream"] ?? ""; var mine = S.IsMine(d!.Owner);
     var ended = d.LiveEnds.ContainsKey(stream) || w?.Ended == true; var stats = d.LiveStats.GetValueOrDefault(stream) as JsonObject;
-    var v = w?.Viewers; var host = HostNode(d, lb);
+    var v = w?.Viewers; var host = HostNode(d, lb); var guestOf = GuestNode(d, lb);
     <div class="watch">
         <div class="watch-main">
             @if (!ended || src != null) { <div class="player">@if (src != null) { <video controls autoplay muted playsinline src="@src" style="width:100%"></video> }</div> }
@@ -18,6 +18,7 @@ else
                 <span class="sub">started @Ago(Js.Num(lb["ts"]) ?? 0)</span>
                 @if (v != null && !ended) { <span class="badge" id="viewer-count">👁 @Num(v["viewers"]) watching · peak @Num(v["peak"] ?? v["viewers"]) · @Num(v["seenCount"]) have watched</span> }
             </div>
+            @if (guestOf != null && !ended) { <div class="panel warn row-actions" id="join-banner"><span class="grow">🎥 <b>You’re invited to join this stream on camera.</b></span><a class="button primary-link" href="golive?group=@guestOf">Join on camera</a></div> }
             <div class="sub" id="live-status">@(ended ? "This stream has ended." : w?.Status ?? "Joining…")@(w != null && w.Bytes > 0 ? $" · {Bytes(w.Bytes)} received" : "")</div>
             @if (ended && d.LiveEnds.GetValueOrDefault(stream) == "published") { <p>The recording was published: see the channel’s <a href="c/@Chain">videos</a>.</p> }
             @if (stats != null)
@@ -100,6 +101,15 @@ else
         var mine = S.MyNodes().Where(n => n.Perms.Contains('o') && !n.Perms.Contains('g')).Select(n => n.Node).ToHashSet();
         var author = (string?)lb["author"];
         if (author != d.Owner && author != null) return mine.Contains(author) ? author : null;
+        return d.Relays.FirstOrDefault(mine.Contains);
+    }
+    /// <summary>The stream's group computer, when it's shared with you as a guest (you're invited on camera).</summary>
+    string? GuestNode(Derived d, JsonObject lb)
+    {
+        if (S.IsMine(d.Owner)) return null;
+        var mine = S.MyNodes().Where(n => n.Perms.Contains('g')).Select(n => n.Node).ToHashSet(); if (mine.Count == 0) return null;
+        var author = (string?)lb["author"];
+        if (author != d.Owner && author != null && mine.Contains(author)) return author;
         return d.Relays.FirstOrDefault(mine.Contains);
     }
     async Task Invite(string node, string key)

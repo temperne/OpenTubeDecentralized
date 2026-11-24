@@ -48,6 +48,23 @@ const waitText = async (p, re, ms = 60000) => { const t0 = Date.now(); while (Da
   check(!!obs.users?.[guest], 'the computer gave them a stream key of their own');
   await X.click(`.group-panel .row-item:has(a[href="u/${guest}"]) button:has-text("Cancel invite")`);
   check(await X.waitForSelector(`.group-panel a[href="u/${guest}"]`, { state: 'detached', timeout: 30000 }).then(() => true, () => false), 'cancelling the invitation');
+  // a real guest: Y (C# pages, own channel) is invited, sees "Join on camera" on the host's stream, and joins from Go live
+  const cy = await chromium.launchPersistentContext(W + '/y', { headless: true, args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] }); const YJ = cy.pages()[0];
+  await YJ.goto(BASE + '?folder=browser#/you/channels'); await YJ.waitForFunction(() => window.opentube?.engine, null, { timeout: 60000 }); await YJ.waitForTimeout(800);
+  await YJ.fill('input[placeholder=Name]', 'Guest Channel'); await YJ.click('text=Create & register');
+  await YJ.waitForFunction(() => location.hash.startsWith('#/c/'), null, { timeout: 180000 }); const ychain = await YJ.evaluate(() => location.hash.split('/')[2]);
+  await YJ.waitForFunction((c) => opentube.engine.directory.has(c), ychain, { timeout: 180000 });
+  const y = await YJ.evaluate(() => opentube.me.pub);
+  await X.fill('.group-panel input[placeholder^="Their"]', y); await X.click('.group-panel button:has-text("Invite")');
+  check(await X.waitForSelector(`.group-panel a[href="u/${y}"]`, { timeout: 30000 }).then(() => true, () => false), 'the host invites a real guest');
+  const Y = await cy.newPage(); Y.on('pageerror', e => errs.push(e.message));
+  await Y.goto(BASE + 'app/devices'); await Y.waitForTimeout(3000);
+  const nodeKey = JSON.parse(execSync(`curl -s localhost:${N}/status`)).node;
+  await Y.goto(BASE + `app/golive/${ychain}?group=${nodeKey}`); await Y.waitForSelector('text=Joining a group stream on camera', { timeout: 60000 });
+  await Y.fill('input[maxlength="140"]', 'Guest camera'); await Y.click('button:has-text("Go live")');
+  check(await waitText(Y, /You’re in the group stream|Live/, 60000), 'the guest goes live into the group: ' + (await Y.textContent('#golive-status').catch(() => '')));
+  check(await X.waitForSelector('.group-panel .studio-person:has-text("🌐")', { timeout: 90000 }).then(() => true, () => false), 'the host’s studio lists the guest’s camera (waiting room or on air)');
+  await cy.close();
   check(errs.length === 0, 'no page errors' + (errs.length ? ': ' + errs.slice(0, 3).join(' | ') : ''));
   await cx.close(); P.kill(); process.exit(fail);
 })().catch(e => { console.error(e); process.exit(1); });

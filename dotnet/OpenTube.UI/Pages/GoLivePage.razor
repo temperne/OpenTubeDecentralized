@@ -4,6 +4,7 @@
 @implements IAsyncDisposable
 @inject Microsoft.JSInterop.IJSRuntime JS
 <h2>Go live</h2>
+@if (Group != null) { <div class="panel warn">🎥 Joining a group stream on camera: your camera goes live on your channel below, and the host’s computer puts it into their stream (the host decides when you’re on air).</div> }
 @if (!S.Ready) { <p class="sub">Starting…</p> }
 else
 {
@@ -52,6 +53,7 @@ else
     }
 }
 @code {
+    [SupplyParameterFromQuery(Name = "group")] public string? Group { get; set; }
     [Parameter] public string? Chain { get; set; }
     string chain = "", title = "Live"; string? msg, obsMsg, obsNode; bool busy;
     LiveBroadcast? live; System.Text.Json.Nodes.JsonObject? obs;
@@ -64,7 +66,7 @@ else
         self ??= Microsoft.JSInterop.DotNetObjectReference.Create(this);
         var r = await JS.InvokeAsync<System.Text.Json.Nodes.JsonObject>("otUi.camStart", self, "cam-preview");
         if ((string?)r["error"] is { } err) { msg = err; busy = false; return; }
-        try { live = await LiveBroadcast.Start(S, chain, title, (string)r["mime"]!); live.Changed += Redraw; }
+        try { live = await LiveBroadcast.Start(S, chain, title, (string)r["mime"]!, Group); live.Changed += Redraw; }
         catch (Exception e) { msg = "Couldn’t go live: " + e.Message; await JS.InvokeVoidAsync("otUi.camStop"); }
         busy = false;
     }
