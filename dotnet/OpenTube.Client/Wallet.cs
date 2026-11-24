@@ -35,6 +35,49 @@ public static class Wallet
         }
         return res.Take(limit).ToList();
     });
+    /// <summary>One line of an account's history: +1 coins in, -1 out, 0 no amount; the amount (units); what it was.</summary>
+    public sealed record Line(int Sign, double Units, string Text);
+    /// <summary>What a history entry means for an account, in plain words (every UI shows these).</summary>
+    public static List<Line> Describe(this ClientSession s, Entry h, string key)
+    {
+        var o = new List<Line>();
+        if (h.Reward) { o.Add(new(1, Coin.Reward, "for confirming a main-chain block")); return o; }
+        var t = h.Tx!; var mine = (string?)t["from"] == key; var from = (string?)t["from"] ?? "";
+        string Ch(JsonNode? id) => (string?)id is { } c ? ((string?)s.Chain(c)?.Profile["name"] ?? (string?)s.Genesis(c)?["payload"]?["name"] ?? c[..Math.Min(8, c.Length)]) : "a channel";
+        double N(JsonNode? n) => Js.Num(n) ?? 0;
+        if (Js.IsTrue(t["starter"])) o.Add(new(1, Coin.Starter, "starter coins"));
+        foreach (var p in (t["pay"] as JsonArray ?? []).OfType<JsonObject>())
+        {
+            var to = (string?)p["to"] ?? "";
+            if (mine) o.Add(new(-1, N(p["amt"]), "to " + s.NameOf(to))); else if (to == key) o.Add(new(1, N(p["amt"]), "from " + s.NameOf(from)));
+        }
+        if ((string?)t["memo"] is { Length: > 0 } m) o.Add(new(0, 0, $"“{m}”"));
+        if (t["post"] is JsonObject po) o.Add(new(-1, N(po["amt"]), $"posted a video on {Ch(po["chain"])} (to the channel’s hosts)"));
+        if (t["view"] is JsonObject vw) o.Add(mine ? new(-1, N(vw["amt"]), $"watched a video on {Ch(vw["chain"])}") : new(1, N(vw["amt"]), $"{s.NameOf(from)} watched your video"));
+        if (t["vote"] is JsonObject vo)
+        {
+            var up = N(vo["v"]) > 0;
+            o.Add(mine ? new(-1, N(vo["amt"]), $"{(up ? "liked" : "disliked")} on {Ch(vo["chain"])}{(up ? "" : " (burned)")}") : new(1, N(vo["amt"]), $"{s.NameOf(from)} liked your post on {Ch(vo["chain"])}"));
+        }
+        foreach (var x in (t["tabs"] as JsonArray ?? []).OfType<JsonObject>())
+        {
+            if ((string?)x["payer"] == key) o.Add(new(-1, N(x["amt"]), $"watched {Ch(x["chain"])} ({x["n"]} pieces)"));
+            else if ((string?)x["payee"] == key) o.Add(new(1, N(x["amt"]), $"sent {s.NameOf((string?)x["payer"] ?? "")} {x["n"]} pieces of a video on {Ch(x["chain"])} (half to the creator)"));
+            else if ((string?)x["creator"] == key) o.Add(new(0, 0, $"your video on {Ch(x["chain"])} was watched ({x["n"]} pieces)"));
+        }
+        if (t["host"] is JsonObject ho) o.Add(new(0, 0, (Js.IsTrue(ho["on"]) ? "Registered as a host of " : "Stopped hosting ") + Ch(ho["chain"])));
+        if (t["name"] is JsonObject nm) o.Add(new(0, 0, (string?)nm["handle"] is { } hd ? $"Claimed {(string?)nm["space"]}{hd}" : "Released a name"));
+        if (t["bind"] != null) o.Add(new(0, 0, "Bound a channel key to this identity (its coins come here)"));
+        if (t["retire"] is JsonObject re) o.Add(new(0, 0, "Retired this key: everything moved to " + s.NameOf((string?)re["to"] ?? "")));
+        if (t["list"] is JsonObject li) o.Add(new(0, 0, $"Listed “{(string?)li["title"]}” on the market"));
+        if (t["buy"] != null) o.Add(new(0, 0, "Bought a market listing"));
+        if (t["bid"] is JsonObject bi) o.Add(new(-1, N(bi["amt"]), "bid on an auction (held until it ends)"));
+        if (t["unlist"] != null) o.Add(new(0, 0, "Withdrew a market listing"));
+        if (t["certs"] is JsonObject ce) o.Add(new(0, 0, "Gave ad-view certificates to " + s.NameOf((string?)ce["to"] ?? "")));
+        if (t["redeem"] != null) o.Add(new(0, 0, "Cashed in ad-view certificates"));
+        if (o.Count == 0) o.Add(new(0, 0, "Transaction"));
+        return o;
+    }
     /// <summary>A user ID, or a channel/list ID (pays its owner).</summary>
     public static string? Recipient(this ClientSession s, string text)
     {

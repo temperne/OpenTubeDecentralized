@@ -23,6 +23,8 @@ public partial class App : Application
     /// <summary>Open a page over the app frame (a video, a channel): back returns to where you were.</summary>
     public static void Open(Type page, object? arg = null) => root?.Navigate(page, arg);
     public static void Back() { if (root?.CanGoBack == true) root.GoBack(); }
+    /// <summary>True for a page opened over the app frame (it shows its own back bar); false for a tab's page.</summary>
+    public static bool IsOpened(Page p) => p.Frame != null && p.Frame == root;
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {

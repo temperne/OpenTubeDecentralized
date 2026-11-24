@@ -18,6 +18,7 @@ public sealed partial class MainPage : Page
     string? testStart = Svc.StartOption;
     void TestStart()
     {
+        if (testStart is { } ts && ts.StartsWith("you") && Svc.S is { Ready: true }) { testStart = null; App.Open(typeof(YouPage), ts.Contains(':') ? ts[(ts.IndexOf(':') + 1)..] : "profile"); return; }
         if (testStart != "first-video" || Svc.S is not { Ready: true } s) return;
         var top = s.Rank(null).Items.OrderByDescending(i => i.Score).FirstOrDefault(i => s.Chain(i.Chain)?.Videos.Any(v => (string?)v["hash"] == i.Video) == true);
         if (top == null) return;
@@ -26,7 +27,7 @@ public sealed partial class MainPage : Page
     void OnTab(global::Uno.Toolkit.UI.TabBar sender, global::Uno.Toolkit.UI.TabBarSelectionChangedEventArgs e)
     {
         var tag = (e.NewItem as FrameworkElement)?.Tag as string;
-        var page = tag switch { "explore" => typeof(ExplorePage), "home" => typeof(HomePage), _ => typeof(ComingPage) };
+        var page = tag switch { "explore" => typeof(ExplorePage), "home" => typeof(HomePage), "you" => typeof(YouPage), _ => typeof(ComingPage) };
         TabFrame.Navigate(page, tag);
     }
     void UpdateStatus()
