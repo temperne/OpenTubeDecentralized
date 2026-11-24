@@ -50,20 +50,30 @@ public sealed class Publish
         await s.Engine.SubmitTx(new JsonObject { ["post"] = new JsonObject { ["chain"] = chain, ["video"] = (string)b["hash"]!, ["size"] = size, ["amt"] = PostCost(size) } }, s.Me);
         return b;
     }
+    /// <summary>How handing a video to a computer is going (it downloads it from this device over BitTorrent).</summary>
+    public sealed record StoreProgress(string Phase, double Fraction, long Received, long Size, int Peers, bool Found, string? Note);
     /// <summary>Hand the video to a computer, which downloads it from this device and keeps it; waits until it has all of it.</summary>
-    public async Task Store(string node, string chain, string infohash, Action<string> status)
+    public async Task Store(string node, string chain, string infohash, Action<string> status, Action<StoreProgress>? progress = null)
     {
         JsonObject? p = null; Exception? last = null;
         for (int i = 0; i < 20 && p == null; i++)
             try { var args = ChanProof(node, chain); args["chain"] = chain; args["ih"] = infohash; p = await s.NodeCtl(node, "store", args); }
-            catch (Exception e) { last = e; status("Your computer: " + e.Message + " (retrying)"); await Task.Delay(3000); }
+            catch (Exception e) { last = e; status("Your computer didn’t answer yet: " + e.Message + $" (try {i + 1} of 20)"); progress?.Invoke(new("asking", 0, 0, 0, 0, false, "Asking your computer to keep it… " + e.Message)); await Task.Delay(3000); }
         if (p == null) throw new InvalidOperationException("your computer didn’t take the video: " + last?.Message);
+        var misses = 0;
         while (!Js.IsTrue(p["done"]))
         {
-            status($"Your computer has {Math.Round((Js.Num(p["progress"]) ?? 0) * 100)}% of it… keep this page open until it’s done");
-            await Task.Delay(3000);
-            try { p = await s.NodeCtl(node, "store.status", new JsonObject { ["ih"] = infohash }); } catch { }
+            var frac = Js.Num(p["progress"]) ?? 0; var size = (long)(Js.Num(p["size"]) ?? 0); var peers = (int)(Js.Num(p["peers"]) ?? 0); var found = Js.IsTrue(p["meta"]) || frac > 0;
+            var received = (long)(Js.Num(p["received"]) ?? frac * size);
+            var note = peers == 0 ? "Your computer is looking for this device (they meet through a tracker; this can take up to a minute)…"
+                : !found ? "Connected: your computer is getting the video’s details…" : null;
+            status($"Your computer has {Math.Round(frac * 100)}% of it… keep this page open until it’s done");
+            progress?.Invoke(new("sending", frac, received, size, peers, found, note));
+            await Task.Delay(2000);
+            try { p = await s.NodeCtl(node, "store.status", new JsonObject { ["ih"] = infohash }); misses = 0; }
+            catch (Exception e) { if (++misses % 3 == 0) progress?.Invoke(new("sending", frac, received, size, peers, found, "Your computer isn’t answering right now (" + e.Message + "): still trying…")); }
         }
+        progress?.Invoke(new("done", 1, (long)(Js.Num(p["size"]) ?? 0), (long)(Js.Num(p["size"]) ?? 0), (int)(Js.Num(p["peers"]) ?? 0), true, null));
     }
     /// <summary>Ask your computers to relay a live stream to viewers (one of them also records it).</summary>
     public void Relay(string chain, string stream, string title)

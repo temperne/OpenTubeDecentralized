@@ -43,10 +43,15 @@ let fail = 0; const check = (ok, what) => { log(ok ? 'ok  ' : 'FAIL', what); if 
   await C.waitForSelector('img.thumb-preview', { timeout: 20000 }).catch(() => {});
   check(await C.isVisible('img.thumb-preview'), 'a thumbnail from the chosen video');
   await C.fill('input[maxlength="140"]', 'Uploaded from C#');
+  const seen = new Set(); const poll = setInterval(async () => { const t = await C.textContent('#upload-steps').catch(() => null); if (t) seen.add(t.replace(/\s+/g, ' ')); }, 150);
   await C.click('button:has-text("Publish to channel")');
   const t0 = Date.now();
   await C.waitForURL(/\/app\/v\//, { timeout: 240000 }).catch(async () => log('upload status:', await C.textContent('#upload-status').catch(() => '?')));
   check(/\/app\/v\//.test(C.url()), `published; your computer has the whole file (${((Date.now() - t0) / 1000).toFixed(1)} s)`);
+  clearInterval(poll); const all = [...seen].join(' | ');
+  check(/Reading the file/.test(all) && /Making its torrent/.test(all) && /Adding it to your channel|Paying the posting fee/.test(all), 'the upload shows each step');
+  check(/Sending it to/.test(all) && /\d+% · [\d.]+ (KB|MB) of [\d.]+ (KB|MB)/.test(all), 'sending to your computer shows a percentage and sizes: ' + ([...seen].find(t => /Sending it to/.test(t)) || '').slice(0, 200));
+  check(/Connected to your computer|Not connected to your computer yet/.test(all), 'and whether it is connected to your computer');
   const crypto2 = require('crypto'); const hashOf = (f) => crypto2.createHash('sha256').update(fs.readFileSync(f)).digest('hex');
   const kept = (() => { const out = []; const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = d + '/' + e.name; if (e.isDirectory()) walk(p); else if (e.name === 'clip.mp4') out.push(p); } }; walk(W + '/videos'); return out; })();
   check(kept.some(f => hashOf(f) === hashOf(video)), 'the computer keeps an identical copy in the channel’s folder');

@@ -373,7 +373,7 @@ public sealed class Host : IAsyncDisposable
         lock (gate)
         {
             if (!torrents.TryGetValue(ih, out var x)) return null; var t = x.T;
-            return new JsonObject { ["progress"] = t.Meta == null ? 0 : (double)t.HaveCount / Math.Max(1, t.Meta.PieceCount), ["peers"] = Bt.PeersOf(ih), ["done"] = t.Complete, ["size"] = t.Meta?.Length };
+            return new JsonObject { ["progress"] = t.Meta == null ? 0 : (double)t.HaveCount / Math.Max(1, t.Meta.PieceCount), ["peers"] = Bt.PeersOf(ih), ["done"] = t.Complete, ["size"] = t.Meta?.Length, ["meta"] = t.Meta != null, ["received"] = Interlocked.Read(ref t.Downloaded), ["pieces"] = t.HaveCount, ["pieceCount"] = t.Meta?.PieceCount };
         }
     }
     /// <summary>Live chunks: a few seconds of a stream as one small torrent, shared for 6 hours.</summary>
