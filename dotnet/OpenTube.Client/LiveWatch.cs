@@ -56,12 +56,13 @@ public sealed class LiveWatch : IAsyncDisposable
         var addrs = hubNode == null ? [] : s.Engine.Read(e => e.Nodes.TryGetValue(hubNode, out var n) ? (n["addrs"] as JsonArray ?? []).Select(x => (string?)x).OfType<string>().ToList() : []);
         var list = addrs.Where(a => !https || a.StartsWith("https://")).OrderBy(a => a.StartsWith("https://") ? 0 : a.Contains("localhost") || a.Contains("127.") ? 2 : 1)
             .Select(a => a.TrimEnd('/').Replace("https://", "wss://").Replace("http://", "ws://") + "/live").ToList();
+        list.AddRange(s.LinkedUrls.Where(u => u != s.SiteSocket).Select(u => u.Replace("/ot", "/live")));   // the entry nodes this device is linked to
         list.Add(s.Site.TrimEnd('/').Replace("https://", "wss://").Replace("http://", "ws://") + "/live");
         list = list.Distinct().ToList();
         if (good != null && list.Remove(good)) list.Insert(0, good);
         return list;
     }
-    string? good;
+    string? good; bool nextHub;
 
     async Task Run(string? hubNode)
     {
@@ -73,11 +74,12 @@ public sealed class LiveWatch : IAsyncDisposable
             try
             {
                 using (var to = CancellationTokenSource.CreateLinkedTokenSource(cts.Token)) { to.CancelAfter(6000); await ws.ConnectAsync(new Uri(url), to.Token); }
-                good = url; attempt = 0;
+                var thisUrl = url;
                 Say("Waiting for the stream’s video…");
                 using var alive = new Timer(_ => _ = Send(new JsonObject { ["t"] = "alive", ["stream"] = Stream }), null, 15000, 15000);
                 var buf = new byte[1 << 16]; using var ms = new MemoryStream();
-                while (ws.State == WebSocketState.Open && !cts.IsCancellationRequested && !Ended)
+                nextHub = false;
+                while (ws.State == WebSocketState.Open && !cts.IsCancellationRequested && !Ended && !nextHub)
                 {
                     var r = await ws.ReceiveAsync(buf, cts.Token);
                     if (r.MessageType == WebSocketMessageType.Close) break;
@@ -91,7 +93,9 @@ public sealed class LiveWatch : IAsyncDisposable
                             await Send(new JsonObject { ["t"] = "auth", ["key"] = s.Me.pub, ["sig"] = s.Me.Sign("opentube-live-auth:" + (string?)o["nonce"]) });
                             await Send(new JsonObject { ["t"] = "watch", ["stream"] = Stream, ["segOnly"] = true, ["media"] = false, ["slots"] = 0, ["dcSlots"] = 0 });
                             break;
-                        case "seg" when o["seg"] is JsonObject g && (string?)g["stream"] == Stream: Seg(g); break;
+                        case "seg" when o["seg"] is JsonObject g && (string?)g["stream"] == Stream: good = thisUrl; attempt = 0; Seg(g); break;
+                        case "nostream" when attempt < urls.Count && good != thisUrl:   // not on this hub: try the next one
+                            nextHub = true; break;
                         case "nostream":
                             if (++tries >= 10) { End("This stream isn’t live right now."); break; }
                             Say("The stream hasn’t started yet (or is over): checking again…");

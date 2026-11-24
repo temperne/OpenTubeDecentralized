@@ -163,7 +163,7 @@ public sealed class LiveBroadcast : IAsyncDisposable
         {
             var live = l.Replace("/ot", "/live");
             var node = s.Engine.Read(e => e.Nodes.Values.FirstOrDefault(n => (n["addrs"] as JsonArray ?? []).Any(a => ((string?)a ?? "").TrimEnd('/').Replace("https://", "wss://").Replace("http://", "ws://") + "/ot" == l)) is { } nn ? (string?)nn["node"] : null);
-            if (node != null) cands.Add((node, live));
+            cands.Add((node, live));   // an entry node this device is linked to (named in the live block when it's known)
         }
         foreach (var (node, _, at) in s.MyNodes()) if (now - at < 120000) cands.AddRange(HubUrls(s, node).Select(u => ((string?)node, u)));   // your own computers
         foreach (var (node, url) in cands.DistinctBy(c => c.Item2)) if (await Reachable(url)) return (node, url);

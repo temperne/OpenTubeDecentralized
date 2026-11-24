@@ -126,7 +126,7 @@ public sealed class ClientSession : IAsyncDisposable
                 try
                 {
                     var j = JsonNode.Parse(await http.GetStringAsync(Site + f));
-                    foreach (var e in j?["entry"]?.AsArray() ?? []) if ((e is JsonValue v && v.TryGetValue<string>(out var u) ? u : (string?)e?["url"]) is { } eu && eu.StartsWith("https://")) { urls.Add(eu.TrimEnd('/').Replace("https://", "wss://") + "/ot"); lock (seedBases) seedBases.Add(eu.TrimEnd('/')); }
+                    foreach (var e in j?["entry"]?.AsArray() ?? []) if ((e is JsonValue v && v.TryGetValue<string>(out var u) ? u : (string?)e?["url"]) is { } eu && (eu.StartsWith("https://") || (Site.StartsWith("http://") && eu.StartsWith("http://")))) { urls.Add(eu.TrimEnd('/').Replace("https://", "wss://").Replace("http://", "ws://") + "/ot"); lock (seedBases) seedBases.Add(eu.TrimEnd('/')); }
                 }
                 catch { }
             if (on.IsCancellationRequested) return;

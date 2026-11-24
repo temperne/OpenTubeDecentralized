@@ -59,7 +59,7 @@ else
                 @if (live == null) { <button class="primary" disabled="@busy" @onclick="Start">● Go live</button> }
                 else { <button class="primary" @onclick="Stop">■ End stream</button> <a href="live/@live.Chain/@live.Stream" target="_blank">Open the viewer page</a> }
             </div>
-            <div class="sub" id="golive-status">@(live != null ? $"{(live.GroupStatus != null ? live.GroupStatus + " · " : "")}{live.Status} · {Bytes(live.Bytes)} sent · {live.Viewers} watching · hub: {(live.HubNode != null ? NodeName(live.HubNode) : "the site")}" : msg)</div>
+            <div class="sub" id="golive-status">@(live != null ? $"{(live.GroupStatus != null ? live.GroupStatus + " · " : "")}{live.Status} · {Bytes(live.Bytes)} sent · {live.Viewers} watching · hub: {(live.HubNode != null ? NodeName(live.HubNode) : live.HubUrl.Replace("wss://", "").Replace("ws://", "").Replace("/live", ""))}" : msg)</div>
             <p class="sub">Your computers relay it to viewers, and one records it so you can publish it afterwards.</p>
         </div>
         <div class="panel">
