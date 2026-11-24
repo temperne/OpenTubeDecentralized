@@ -6,7 +6,20 @@
 <div class="row-actions">
     <a class="button @(T == "book" ? "on" : "")" href="exchange">Order book</a>
     <a class="button @(T == "swaps" ? "on" : "")" href="exchange/swaps">Swaps</a>
+    <a class="button @(T == "how" ? "on" : "")" href="exchange/how">How it works</a>
 </div>
+@if (T == "how")
+{
+    <div class="panel"><h3>Getting value in and out</h3>
+        <ol>
+            <li><b>Bitcoin over Lightning (atomic).</b> Seller of coins: make a Lightning invoice for the agreed bitcoin, then Swaps → Lock coins with that invoice and the buyer’s user ID. Buyer: pay the invoice; your wallet shows the payment proof (preimage); paste it under Swaps → Claim. The seller is paid exactly when the buyer can claim. If the invoice isn’t paid before the deadline, the seller takes the coins back.</li>
+            <li><b>Other chains (atomic).</b> Any chain with hash-locked contracts (Bitcoin scripts, Ethereum HTLC contracts, …): the coin seller clicks “Make a secret for me” and locks the coins (longer deadline). The other side locks their crypto on their chain to the seller with the same hash (shorter deadline). The seller claims it there, which reveals the secret; the buyer uses the secret here to claim the coins.</li>
+            <li><b>Cash, PayPal, bank (escrow).</b> List coins (or buy them) in the Market under “Currency exchange” with an arbitration body: payment is held in escrow, and disputes go to its arbitrators.</li>
+            <li><b>Prices.</b> The order book shows what people ask and bid for each currency; there is no central price.</li>
+        </ol>
+        <p class="sub">Your swap secrets stay on this device. Never paste a preimage anywhere but the claim box of the swap it belongs to.</p>
+    </div>
+}
 @if (T == "swaps")
 {
     <div class="panel">
@@ -30,7 +43,10 @@
         <h3>Lock coins for a swap</h3>
         <input placeholder="Who gets the coins (their user ID)" @bind="lockTo" />
         <div class="row-actions"><input placeholder="Coins" @bind="lockAmt" inputmode="decimal" style="max-width:120px" /><input type="number" min="1" max="720" @bind="hours" style="max-width:90px" /><span class="sub">hours to claim</span></div>
-        <div class="row-actions"><input placeholder="sha256 hash (64 hex), e.g. a Lightning invoice’s payment hash" @bind="hash" class="grow-input" /><button @onclick="Secret">Make a secret for me</button></div>
+        <label>Lightning invoice</label>
+        <textarea rows="2" placeholder="Paste the Lightning invoice you created for this trade (lnbc…). Its payment hash locks the coins: the buyer claims them with the proof of paying it." @bind="invoice" @bind:event="oninput" @bind:after="ReadInvoice"></textarea>
+        @if (invoiceInfo != null) { <div class="sub" id="invoice-info">@invoiceInfo</div> }
+        <div class="row-actions"><input placeholder="…or a sha256 hash (64 hex) for a swap on another chain" @bind="hash" class="grow-input" /><button @onclick="Secret">Make a secret for me</button></div>
         <div class="row-actions"><button class="primary" @onclick="() => Run(() => S.Trade.Lock(lockTo, Trade.Units(lockAmt), hash, hours))">Lock coins</button></div>
         @if (mySecret != null) { <div class="sub">Your secret for this hash (reveal it only to claim the other side): <span class="mono">@mySecret</span></div> }
     </div>
@@ -67,9 +83,16 @@ else
 @if (msg != null) { <div class="sub" id="xchg-status">@msg</div> }
 @code {
     [Parameter] public string? Tab { get; set; }
-    string T => Tab ?? "book";
+    string T => Tab is "swaps" or "how" ? Tab : "book";
     string asset = "all", oside = "sell", oamt = "", oasset = "BTC", orate = "", onote = "", lockTo = "", lockAmt = "", hash = ""; int hours = 24; string? msg, mySecret;
     readonly HashSet<string> methods = ["lightning"]; readonly Dictionary<string, string> pre = new();
+    string invoice = ""; string? invoiceInfo;
+    void ReadInvoice()
+    {
+        if (invoice.Trim().Length == 0) { invoiceInfo = null; return; }
+        try { var d = Bolt11.Decode(invoice); hash = d.Hash; invoiceInfo = $"⚡ {(d.Sats != null ? d.Sats.Value.ToString("N0") + " sats" : "any amount")}{(d.Desc.Length > 0 ? " · “" + d.Desc + "”" : "")} · expires {d.Expires.LocalDateTime:g} · its payment hash is filled in below"; }
+        catch (Exception e) { invoiceInfo = "✗ " + e.Message; }
+    }
     async Task Secret() { hash = await S.Trade.MakeSecret(); mySecret = await S.Trade.SecretFor(hash); }
     async Task Run(Func<Task> f) { msg = "Sending (a little proof of work)…"; StateHasChanged(); try { await f(); msg = "Done: it counts once the next main-chain block includes it."; } catch (Exception e) { msg = e.Message; } }
 }

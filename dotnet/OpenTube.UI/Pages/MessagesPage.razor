@@ -5,13 +5,14 @@
 @* Private messages: encrypted end to end; whom they're for and who sent them aren't visible on the network *@
 @if (Who == null)
 {
-    <h2>Messages</h2>
+    <div class="head-row"><h2>Messages</h2><a href="you/keys">Message settings ›</a></div>
     <div class="panel">
         <div class="row-actions">
-            <input placeholder="Their user ID (or a channel’s owner key)" @bind="to" class="grow-input" />
+            <input placeholder="Their user ID, @@@@name, or a channel’s @@name" @bind="to" class="grow-input" />
             <button class="primary" @onclick="Start" disabled="@string.IsNullOrWhiteSpace(to)">New message</button>
         </div>
         <div class="sub">Messages are encrypted for the other person: on the network nobody can see who wrote to whom. Your messaging key stays on this device.</div>
+        @if (msg != null) { <div class="sub">@msg</div> }
     </div>
     @if (all == null) { <p class="sub">Reading your messages…</p> }
     else if (all.Count == 0) { <p class="sub">No messages yet. Open someone’s channel and tap Message, or start one above.</p> }
@@ -38,7 +39,7 @@ else
         {
             foreach (var m in all.Where(m => m.Other == Other))
             {
-                <div class="bubble @(m.Incoming ? "in" : "out")"><div>@m.Text</div><div class="sub">@Ago(m.At)</div></div>
+                <div class="bubble @(m.Incoming ? "in" : "out")"><Rich Text="@m.Text" Author="@(m.Incoming ? Other : S.Me.pub)" /><div class="sub">@Ago(m.At)</div></div>
             }
             if (!all.Any(m => m.Other == Other)) { <p class="sub">No messages with them yet.</p> }
         }
@@ -64,7 +65,13 @@ else
     }
     async Task Load() { all = await S.Mail.All(); }
     void Reload() => InvokeAsync(async () => { await Load(); StateHasChanged(); });
-    void Start() { var k = to.Trim(); if (k.Length > 0) Nav.NavigateTo("messages/" + k); }
+    void Start()
+    {
+        var k = to.Trim(); if (k.Length == 0) return;
+        var who = S.Recipient(k.StartsWith('@') && !k.StartsWith("@@") && S.NameHolder(k.ToLowerInvariant()) == null ? "@" + k : k);
+        if (who == null) { msg = "No one is called that. Paste their user ID."; return; }
+        Nav.NavigateTo("messages/" + S.Engine.Read(e => e.Store.Ledger.Resolve(who)));
+    }
     async Task Send()
     {
         busy = true; msg = "Sending (encrypting, then a little proof of work)…"; StateHasChanged();
