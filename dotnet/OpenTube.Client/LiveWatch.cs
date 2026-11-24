@@ -47,28 +47,33 @@ public sealed class LiveWatch : IAsyncDisposable
     }
     void Say(string st) { Status = st; Changed?.Invoke(); }
 
-    /// <summary>The hub viewers find the stream on: the node its live block names (by its public address), else the site's.</summary>
-    string HubUrl(string? hubNode)
+    /// <summary>The addresses to find the stream on, in order: each address of the node its live block names that this
+    /// device may open (from an https page: only https; a computer lists several: public, home network, localhost),
+    /// the one that worked last time first; then the site's own hub.</summary>
+    List<string> HubUrls(string? hubNode)
     {
-        var url = hubNode == null ? null : s.Engine.Read(e =>
-        {
-            if (!e.Nodes.TryGetValue(hubNode, out var n)) return null;
-            var addrs = (n["addrs"] as JsonArray ?? []).Select(x => (string?)x).Where(x => x != null).ToList();
-            return addrs.FirstOrDefault(x => x!.StartsWith("https:")) ?? addrs.FirstOrDefault(x => !x!.Contains("localhost") && !x.Contains("127."));
-        });
-        return (url ?? s.Site).TrimEnd('/').Replace("https://", "wss://").Replace("http://", "ws://") + "/live";
+        var https = s.Site.StartsWith("https://");
+        var addrs = hubNode == null ? [] : s.Engine.Read(e => e.Nodes.TryGetValue(hubNode, out var n) ? (n["addrs"] as JsonArray ?? []).Select(x => (string?)x).OfType<string>().ToList() : []);
+        var list = addrs.Where(a => !https || a.StartsWith("https://")).OrderBy(a => a.StartsWith("https://") ? 0 : a.Contains("localhost") || a.Contains("127.") ? 2 : 1)
+            .Select(a => a.TrimEnd('/').Replace("https://", "wss://").Replace("http://", "ws://") + "/live").ToList();
+        list.Add(s.Site.TrimEnd('/').Replace("https://", "wss://").Replace("http://", "ws://") + "/live");
+        list = list.Distinct().ToList();
+        if (good != null && list.Remove(good)) list.Insert(0, good);
+        return list;
     }
+    string? good;
 
     async Task Run(string? hubNode)
     {
-        int tries = 0;
+        int tries = 0, attempt = 0;
         while (!cts.IsCancellationRequested && !Ended)
         {
-            var url = HubUrl(hubNode);
+            var urls = HubUrls(hubNode); var url = urls[attempt++ % urls.Count];
             ws = new ClientWebSocket();
             try
             {
-                using (var to = CancellationTokenSource.CreateLinkedTokenSource(cts.Token)) { to.CancelAfter(15000); await ws.ConnectAsync(new Uri(url), to.Token); }
+                using (var to = CancellationTokenSource.CreateLinkedTokenSource(cts.Token)) { to.CancelAfter(6000); await ws.ConnectAsync(new Uri(url), to.Token); }
+                good = url; attempt = 0;
                 Say("Waiting for the stream’s video…");
                 using var alive = new Timer(_ => _ = Send(new JsonObject { ["t"] = "alive", ["stream"] = Stream }), null, 15000, 15000);
                 var buf = new byte[1 << 16]; using var ms = new MemoryStream();
@@ -100,7 +105,7 @@ public sealed class LiveWatch : IAsyncDisposable
             catch (Exception) when (!cts.IsCancellationRequested) { Say("Reconnecting to the stream…"); }
             catch { }
             try { ws.Abort(); } catch { }
-            if (!cts.IsCancellationRequested && !Ended) await Task.Delay(2000).ContinueWith(_ => { });
+            if (!cts.IsCancellationRequested && !Ended) await Task.Delay(attempt > 0 && attempt < HubUrls(hubNode).Count ? 200 : 2000).ContinueWith(_ => { });
         }
     }
     async Task Send(JsonObject m) { var w = ws; if (w?.State == WebSocketState.Open) try { await w.SendAsync(Encoding.UTF8.GetBytes(m.ToJsonString()), WebSocketMessageType.Text, true, cts.Token); } catch { } }

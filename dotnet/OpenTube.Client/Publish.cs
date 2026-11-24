@@ -36,13 +36,14 @@ public sealed class Publish
     }
 
     /// <summary>Publish a video file (already shared by this device: its infohash). Returns the video block.</summary>
-    public async Task<JsonObject> Video(string chain, TorrentMeta meta, string file, long size, string mime, string title, string desc, string thumb, Action<string> status, string tags = "", string comments = "")
+    public async Task<JsonObject> Video(string chain, TorrentMeta meta, string file, long size, string mime, string title, string desc, string thumb, Action<string> status, string tags = "", string comments = "", string? stream = null)
     {
         if (title.Trim().Length == 0) throw new ArgumentException("Add a title");
         var payload = new JsonObject { ["type"] = "video", ["title"] = title.Trim()[..Math.Min(140, title.Trim().Length)], ["desc"] = desc.Trim()[..Math.Min(5000, desc.Trim().Length)], ["infohash"] = meta.InfoHash, ["file"] = file[..Math.Min(200, file.Length)], ["size"] = size, ["mime"] = mime[..Math.Min(60, mime.Length)], ["thumb"] = thumb };
         var tagList = tags.ToLowerInvariant().Split([' ', ',', '#'], StringSplitOptions.RemoveEmptyEntries).Select(t => System.Text.RegularExpressions.Regex.Replace(t, "[^a-z0-9-]", "").TrimStart('-')).Where(t => t.Length is > 0 and <= 24).Distinct().Take(8).ToList();
         if (tagList.Count > 0) payload["tags"] = new JsonArray(tagList.Select(t => (JsonNode?)t).ToArray());
         if (comments is "anyone" or "approved" or "off") payload["comments"] = comments;
+        if (stream != null) payload["stream"] = stream;   // the recording of that live stream
         status("Adding it to your channel…");
         var b = await Task.Run(() => s.Engine.Append(chain, payload));
         status("Paying the posting fee…");
@@ -104,25 +105,71 @@ public sealed class LiveBroadcast : IAsyncDisposable
         var owner = s.Engine.Read(e => e.Store.Chains.TryGetValue(chain, out var c) ? c.Owner : null) ?? throw new InvalidOperationException("that channel isn’t loaded yet");
         var key = s.KeyOf(owner) ?? throw new InvalidOperationException("this device doesn’t hold that channel’s key");
         var b = new LiveBroadcast(s, chain, mime, key);
+        if (group == null && s.Publish.StorageNodes().Count == 0)
+        {   // none of your computers can record it: keep a copy on this device, to publish when it ends
+            var dir = Path.Combine(Path.GetTempPath(), "opentube-live"); Directory.CreateDirectory(dir);
+            b.LocalFile = Path.Combine(dir, b.Stream[..12] + ".webm"); b.local = File.Create(b.LocalFile);
+        }
+        var (hubNode, hubUrl) = await PickHub(s, group);   // the group's computer, an entry node, one of your computers, else the site
+        b.HubNode = hubNode; b.HubUrl = hubUrl;
         _ = Task.Run(b.Run);
         var lb = new JsonObject { ["type"] = "live", ["title"] = title.Trim()[..Math.Min(140, Math.Max(1, title.Trim().Length))], ["stream"] = b.Stream, ["mime"] = mime };
+        if (hubNode != null) lb["hub"] = hubNode;   // viewers find the stream there
         if (group != null) lb["group"] = group;
         await Task.Run(() => s.Engine.Append(chain, lb));
         if (group == null) s.Publish.Relay(chain, b.Stream, title);
         else
         {
             b.Group = group;
-            var args = s.Publish.ChanProof(group, chain); args["stream"] = b.Stream; args["chain"] = chain; args["hub"] = null;
+            var args = s.Publish.ChanProof(group, chain); args["stream"] = b.Stream; args["chain"] = chain; args["hub"] = b.HubNode;
             _ = Task.Run(async () => { try { await s.NodeCtl(group, "group.join", args); b.Say("You’re in the group stream."); } catch (Exception e) { b.Say("Group stream: " + e.Message); } });
         }
         return b;
+    }
+    /// <summary>This device's own recording of the stream (when none of your computers records it), and its writer.</summary>
+    public string? LocalFile { get; private set; }
+    FileStream? local;
+    /// <summary>The hub this stream is on: its node (null: the site's), and the address used.</summary>
+    public string? HubNode { get; private set; }
+    public string HubUrl { get; private set; } = "";
+    /// <summary>A node's /live addresses this device may open (from an https page: only wss).</summary>
+    static List<string> HubUrls(ClientSession s, string node)
+    {
+        var https = s.Site.StartsWith("https://");
+        return s.Engine.Read(e => e.Nodes.TryGetValue(node, out var n) ? (n["addrs"] as JsonArray ?? []).Select(x => (string?)x).OfType<string>()
+            .Where(a => https ? a.StartsWith("https://") : true).Select(a => a.TrimEnd('/').Replace("https://", "wss://").Replace("http://", "ws://") + "/live").ToList() : []);
+    }
+    static async Task<bool> Reachable(string url)
+    {
+        try { using var ws = new ClientWebSocket(); using var to = new CancellationTokenSource(6000); await ws.ConnectAsync(new Uri(url), to.Token); try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None); } catch { } return true; }
+        catch { return false; }
+    }
+    /// <summary>The hub to broadcast on, as the site does: the group's computer, else an entry node, else a computer this
+    /// device is linked to, else the site's own (the fallback).</summary>
+    static async Task<(string? Node, string Url)> PickHub(ClientSession s, string? group)
+    {
+        var siteLive = s.SiteSocket.Replace("/ot", "/live");
+        var cands = new List<(string?, string)>();
+        if (group != null) cands.AddRange(HubUrls(s, group).Select(u => ((string?)group, u)));
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var entries = s.Engine.Read(e => e.Nodes.Values.Where(n => (n["roles"] as JsonArray ?? []).Any(r => (string?)r == "entry") && now - (Js.Num(n["at"]) ?? 0) < 120000).Select(n => (string)n["node"]!).ToList());
+        foreach (var n in entries.OrderBy(_ => Random.Shared.Next())) cands.AddRange(HubUrls(s, n).Select(u => ((string?)n, u)));
+        foreach (var l in s.LinkedUrls.Where(u => u != s.SiteSocket))
+        {
+            var live = l.Replace("/ot", "/live");
+            var node = s.Engine.Read(e => e.Nodes.Values.FirstOrDefault(n => (n["addrs"] as JsonArray ?? []).Any(a => ((string?)a ?? "").TrimEnd('/').Replace("https://", "wss://").Replace("http://", "ws://") + "/ot" == l)) is { } nn ? (string?)nn["node"] : null);
+            if (node != null) cands.Add((node, live));
+        }
+        foreach (var (node, _, at) in s.MyNodes()) if (now - at < 120000) cands.AddRange(HubUrls(s, node).Select(u => ((string?)node, u)));   // your own computers
+        foreach (var (node, url) in cands.DistinctBy(c => c.Item2)) if (await Reachable(url)) return (node, url);
+        return (null, siteLive);
     }
     /// <summary>The computer whose group stream this joined, if any.</summary>
     public string? Group { get; private set; }
     void Say(string st) { Status = st; Changed?.Invoke(); }
     async Task Run()
     {
-        var url = s.Site.Replace("https://", "wss://").Replace("http://", "ws://") + "/live";
+        var url = HubUrl;
         while (!closed)
         {
             var ws = new ClientWebSocket();
@@ -164,6 +211,7 @@ public sealed class LiveBroadcast : IAsyncDisposable
         var g = new JsonObject { ["stream"] = Stream, ["n"] = n, ["o"] = o, ["h"] = h };
         g["sig"] = key.Sign($"opentube-live:{Stream}:{n}:{o}:{h}"); g["d"] = Convert.ToBase64String(bytes);
         n++; o += bytes.Length; Bytes = o;
+        try { local?.Write(bytes); } catch { }
         var m = new JsonObject { ["t"] = "seg", ["seg"] = g }.ToJsonString();
         lock (pending) { if (on) outbox.Writer.TryWrite(m); else { pending.Add(m); if (pending.Count > 60) pending.RemoveAt(0); } }
         Changed?.Invoke();
@@ -172,6 +220,7 @@ public sealed class LiveBroadcast : IAsyncDisposable
     {
         if (closed) return; closed = true;
         Out(new JsonObject { ["t"] = "leave", ["stream"] = Stream });
+        try { local?.Dispose(); } catch { } local = null;
         try { await Task.Run(() => s.Engine.Append(Chain, new JsonObject { ["type"] = "liveend", ["stream"] = Stream, ["outcome"] = "ended" })); } catch { }
         Say("Ended");
         _ = Task.Delay(1500).ContinueWith(_ => outbox.Writer.TryComplete());

@@ -164,7 +164,9 @@ public sealed class ChainStore
     public IEnumerable<JsonObject> Squares => squares.Values;
     public bool NameAllowedPublic(JsonObject t) => NameAllowed(t);
 
-    void Reject(Chain c, JsonObject b, string why) => Rejected[why] = Rejected.GetValueOrDefault(why) + 1;
+    void Reject(Chain c, JsonObject b, string why) { Rejected[why] = Rejected.GetValueOrDefault(why) + 1; BlockRejected?.Invoke(c, b, why); }
+    /// <summary>A block was refused: (chain, block, why). For the diagnostics page.</summary>
+    public event Action<Chain, JsonObject, string>? BlockRejected;
 
     /// <summary>
     /// insert(chainId, blocks, trusted): adds what is valid, keeps blocks whose parents are missing (orphans) until

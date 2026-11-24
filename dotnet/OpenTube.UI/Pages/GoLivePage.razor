@@ -12,6 +12,24 @@ else
     if (chans.Count == 0) { <p>You don’t have a channel yet. <a href="you">Create one</a> first.</p> }
     else
     {
+        @if (ended != null)
+        {
+            var nrec = S.NodeRecordings(ended.Chain).FirstOrDefault(r => r.Stream == ended.Stream);
+            var settled = S.Chain(ended.Chain)?.LiveEnds.GetValueOrDefault(ended.Stream) is "published" or "discarded";
+            <div class="panel" id="stream-ended">
+                <h3>Your stream has ended</h3>
+                @if (settled) { <p>@(S.Chain(ended.Chain)!.LiveEnds[ended.Stream] == "published" ? "The recording was published as a video." : "The recording was discarded.") <a href="c/@ended.Chain">Open the channel</a> · <button class="linkish" @onclick="() => ended = null">Go live again</button></p> }
+                else if (nrec != null) { <RecordingPanel Chain="@ended.Chain" R="nrec" /> }
+                else if (ended.LocalFile != null && File.Exists(ended.LocalFile))
+                {
+                    <p class="sub">This device kept the recording (@Bytes(new FileInfo(ended.LocalFile).Length)). Publish it as a video, or discard it. Keep this page open while it’s published: viewers get it from this device until one of your computers or members has it.</p>
+                    <label>Title</label><input @bind="recTitle" maxlength="140" />
+                    <label>Description</label><textarea @bind="recDesc" rows="2" maxlength="5000"></textarea>
+                    <div class="row-actions"><button class="primary" disabled="@busy" @onclick="() => SettleLocal(true)">Publish recording</button><button disabled="@busy" @onclick="() => SettleLocal(false)">Discard</button><span class="sub">@recMsg</span></div>
+                }
+                else { <p class="sub">Waiting for your computer’s recording (a few seconds)… It also appears on the <a href="c/@ended.Chain">channel</a> to publish.</p> }
+            </div>
+        }
         <div class="panel">
             <h3>With this device’s camera</h3>
             <label>Channel</label>
@@ -20,6 +38,12 @@ else
             <input @bind="title" maxlength="140" disabled="@(live != null)" />
             @if (live == null)
             {
+                var into = IntoOptions();
+                @if (into.Count > 0)
+                {
+                    <label>Where</label>
+                    <select @bind="where" id="golive-where"><option value="">Live on this channel</option>@foreach (var (v, l) in into) { <option value="@v">@l</option> }</select>
+                }
                 <div class="fields">
                     <div><label>Camera</label><select value="@cam" @onchange="e => Pick((string)e.Value!, mic)"><option value="">Default camera</option>@foreach (var c in cams) { <option value="@c.Id">@c.Label</option> }@if (screen) { <option value="screen">🖥 Share my screen or a window</option> }</select></div>
                     <div><label>Audio</label><select value="@mic" @onchange="e => Pick(cam, (string)e.Value!)"><option value="">Default microphone</option>@foreach (var m in mics) { <option value="@m.Id">@m.Label</option> }<option value="none">No microphone</option></select></div>
@@ -31,7 +55,7 @@ else
                 @if (live == null) { <button class="primary" disabled="@busy" @onclick="Start">● Go live</button> }
                 else { <button class="primary" @onclick="Stop">■ End stream</button> <a href="live/@live.Chain/@live.Stream" target="_blank">Open the viewer page</a> }
             </div>
-            <div class="sub" id="golive-status">@(live != null ? $"{live.Status} · {Bytes(live.Bytes)} sent · {live.Viewers} watching" : msg)</div>
+            <div class="sub" id="golive-status">@(live != null ? $"{live.Status} · {Bytes(live.Bytes)} sent · {live.Viewers} watching · hub: {(live.HubNode != null ? NodeName(live.HubNode) : "the site")}" : msg)</div>
             <p class="sub">Your computers relay it to viewers, and one records it so you can publish it afterwards.</p>
         </div>
         <div class="panel">
@@ -81,7 +105,17 @@ else
     string chain = "", title = "Live"; string? msg, obsMsg, obsNode; bool busy;
     LiveBroadcast? live; System.Text.Json.Nodes.JsonObject? obs;
     Microsoft.JSInterop.DotNetObjectReference<GoLivePage>? self;
-    protected override void OnParametersSet() { if (chain.Length == 0) chain = Chain ?? S.Publish.MyChannels().FirstOrDefault()?.Id ?? ""; }
+    protected override void OnParametersSet() { if (chain.Length == 0) chain = Chain ?? S.Publish.MyChannels().FirstOrDefault()?.Id ?? ""; if (Group != null) where = Group; }
+    string where = "";
+    /// <summary>Group streams this device can send its camera into: on your computers that receive OBS (switch it on there), and ones you're invited to.</summary>
+    List<(string Value, string Label)> IntoOptions()
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var o = S.MyNodes().Where(n => n.Perms.Contains('o') && now - n.At < 120000 && S.Engine.Read(e => e.Nodes.TryGetValue(n.Node, out var x) && (x["roles"] as System.Text.Json.Nodes.JsonArray ?? []).Any(r => (string?)r == "obs")))
+            .Select(n => (n.Node, n.Perms.Contains('g') ? $"Into the group stream I’m invited to on {NodeName(n.Node)}" : $"Into my group stream on {NodeName(n.Node)} (switch it on there)")).ToList();
+        if (Group != null && !o.Any(x => x.Item1 == Group)) o.Insert(0, (Group, $"Into the group stream on {NodeName(Group)}"));
+        return o;
+    }
     string NodeName(string n) => S.Engine.Read(e => e.Nodes.TryGetValue(n, out var x) ? (string?)x["info"]?["name"] : null) ?? "your computer";
     async Task Start()
     {
@@ -89,12 +123,40 @@ else
         self ??= Microsoft.JSInterop.DotNetObjectReference.Create(this);
         var r = await JS.InvokeAsync<System.Text.Json.Nodes.JsonObject>("otUi.camStart", self, "cam-preview");
         if ((string?)r["error"] is { } err) { msg = err; busy = false; return; }
-        try { live = await LiveBroadcast.Start(S, chain, title, (string)r["mime"]!, Group); live.Changed += Redraw; }
+        try { live = await LiveBroadcast.Start(S, chain, title, (string)r["mime"]!, where.Length > 0 ? where : null); live.Changed += Redraw; }
         catch (Exception e) { msg = "Couldn’t go live: " + e.Message; await JS.InvokeVoidAsync("otUi.camStop"); }
         busy = false;
     }
     [Microsoft.JSInterop.JSInvokable] public void CamChunk(byte[] chunk) => live?.Chunk(chunk);
-    async Task Stop() { await JS.InvokeVoidAsync("otUi.camStop"); if (live != null) { await live.Stop(); live.Changed -= Redraw; } msg = "The stream has ended. Your computer’s recording appears on the channel to publish."; live = null; }
+    async Task Stop()
+    {
+        await JS.InvokeVoidAsync("otUi.camStop");
+        if (live != null) { await live.Stop(); live.Changed -= Redraw; ended = live; recTitle = title; }
+        msg = null; live = null;
+        _ = Task.Run(async () => { for (int i = 0; i < 60 && ended != null; i++) { await Task.Delay(2000); await InvokeAsync(StateHasChanged); } });
+    }
+    LiveBroadcast? ended; string recTitle = "", recDesc = ""; string? recMsg;
+    [Inject] IVideoPlayer Player { get; set; } = null!;
+    async Task SettleLocal(bool publish)
+    {
+        var e = ended!; busy = true;
+        try
+        {
+            if (publish)
+            {
+                recMsg = "Sharing the recording…"; StateHasChanged();
+                var name = string.Concat((recTitle.Trim().Length > 0 ? recTitle.Trim() : "Live").Select(c => char.IsLetterOrDigit(c) || c is '-' or '_' ? c : '_')) + ".webm";
+                var path = Path.Combine(Path.GetDirectoryName(e.LocalFile!)!, name); File.Move(e.LocalFile!, path, true);
+                var meta = await Player.Share(path, name);
+                var vb = await S.Publish.Video(e.Chain, meta, name, new FileInfo(path).Length, "video/webm", recTitle.Trim().Length > 0 ? recTitle : "Live", recDesc, "", st => { recMsg = st; InvokeAsync(StateHasChanged); }, stream: e.Stream);
+            }
+            else try { File.Delete(e.LocalFile!); } catch { }
+            await Task.Run(() => S.Engine.Append(e.Chain, new System.Text.Json.Nodes.JsonObject { ["type"] = "liveend", ["stream"] = e.Stream, ["outcome"] = publish ? "published" : "discarded" }));
+            recMsg = publish ? "Recording published as a video." : "Recording discarded.";
+        }
+        catch (Exception x) { recMsg = "Failed: " + x.Message; }
+        busy = false;
+    }
     void Redraw() => InvokeAsync(StateHasChanged);
     string ytKey = ""; bool? ytOn;
     async Task SaveYouTube()

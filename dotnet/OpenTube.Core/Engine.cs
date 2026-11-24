@@ -34,11 +34,39 @@ public sealed class Engine
     public Engine(JsonObject mainGenesis, Identity signer, Action<string, string?> send, Func<IEnumerable<string>> peers, Func<string, Identity?>? keyFor = null)
     {
         Store = new ChainStore(mainGenesis); Signer = signer; sendRaw = send; this.peers = peers; this.keyFor = keyFor ?? (_ => null);
-        Store.BlockAdded += (c, b) => { if (persisting) Persist?.Invoke(c.Id, b); if (c == Store.Main) MaybeMineSoon(); };
+        Store.BlockAdded += (c, b) => { if (persisting) Persist?.Invoke(c.Id, b); Stat(c.Id).LastBlock = Now(); Stat(c.Id).Accepted++; if (c == Store.Main) MaybeMineSoon(); };
+        Store.BlockRejected += (c, b, why) => { var st = Stat(c.Id); st.Rejected++; st.LastReject = why; LogEvent("reject", $"{(c == Store.Main ? "main" : c.Id[..8])}: {why}"); };
+    }
+
+    // ---- diagnostics (the Network page): messages in and out, and per chain when it last grew and when peers last mentioned it
+    public sealed class ChainStat { public double LastBlock, LastAnnounce, LastRequest; public int Accepted, Announces, Rejected; public string? LastReject; public List<string> UnknownHeads = []; }
+    public sealed record EventRow(double Ts, string Kind, string Text);
+    static double Now() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    public long MsgsIn, MsgsOut; public double LastMsgIn;
+    readonly Dictionary<string, ChainStat> stats = [];
+    readonly LinkedList<EventRow> events = new();
+    public ChainStat Stat(string chainId) { lock (stats) return stats.TryGetValue(chainId, out var s) ? s : stats[chainId] = new ChainStat(); }
+    public void LogEvent(string kind, string text) { lock (events) { events.AddFirst(new EventRow(Now(), kind, text)); while (events.Count > 200) events.RemoveLast(); } }
+    public List<EventRow> Events() { lock (events) return events.ToList(); }
+    /// <summary>A plain-language verdict on whether a chain is in sync with the network: (level ok|warn|error, state, text).</summary>
+    public (string Level, string State, string Text) SyncState(Chain c)
+    {
+        var st = Stat(c.Id); var now = Now();
+        if (c.Orphans.Count > 0) return ("warn", "syncing", $"Fetching {c.Orphans.Count} block{(c.Orphans.Count == 1 ? "" : "s")} whose parents are still missing.");
+        var unknown = st.UnknownHeads.Count(x => !c.Has(x));
+        if (unknown > 0 && now - st.LastAnnounce < 30000) return ("warn", "syncing", $"A peer announced {unknown} newer block{(unknown == 1 ? "" : "s")}; downloading.");
+        if (st.LastRequest > 0 && st.LastRequest > st.LastAnnounce && now - st.LastRequest > 20000) return (c == Store.Main ? "error" : "warn", "no answer", "Asked the network for this chain, but no peer that has it answered. Whoever hosts it may be offline.");
+        if (st.LastAnnounce == 0) return ("warn", "unconfirmed", "No peer has mentioned this chain yet, so there is nothing to compare against.");
+        return ("ok", "synced", $"Matches what peers announced {Math.Round((now - st.LastAnnounce) / 1000)} s ago.");
     }
     bool persisting = true;
 
-    void Send(JsonObject m, string? to = null) { try { sendRaw(m.ToJsonString(), to); } catch { } }
+    void Send(JsonObject m, string? to = null)
+    {
+        Interlocked.Increment(ref MsgsOut);
+        if (Str(m["t"]) == "rq" && Str(m["c"]) is { } rc && m["w"] is JsonArray rw && rw.Count == 0) Stat(rc).LastRequest = Now();
+        try { sendRaw(m.ToJsonString(), to); } catch { }
+    }
     IEnumerable<string> HeadsOf(Chain c) => c == Store.Main ? [Str(Store.MainBest["hash"])!] : c.Heads;
     JsonArray Arr(IEnumerable<string> s) => new(s.Select(x => (JsonNode?)x).ToArray());
     public void Announce(Chain c, string? to = null) => Send(new JsonObject { ["t"] = "heads", ["c"] = c.Id, ["h"] = Arr(HeadsOf(c)) }, to);
@@ -84,6 +112,7 @@ public sealed class Engine
         lock (gate)
         {
             var t = Str(Get(m, "t")); if (t == null) return;
+            MsgsIn++; LastMsgIn = Now();
             Chain? chain = null;
             if (Str(Get(m, "c")) is { } cid) chain = Store.Chains.TryGetValue(cid, out var c) ? c : (TrackAll && Store.IsSquare(cid) ? Store.OpenChain(cid) : null);
             switch (t)
@@ -91,6 +120,7 @@ public sealed class Engine
                 case "heads" when chain != null && Get(m, "h") is JsonArray h:
                 {
                     var w = h.Where(x => IsHex(x, 64) && !chain.Has(Str(x)!) && !chain.Orphans.ContainsKey(Str(x)!)).Select(x => Str(x)!).Take(64).ToList();
+                    { var st = Stat(chain.Id); st.Announces++; st.LastAnnounce = Now(); st.UnknownHeads = w; }
                     if (w.Count > 0) Send(new JsonObject { ["t"] = "rq", ["c"] = chain.Id, ["w"] = Arr(w), ["h"] = Arr(HeadsOf(chain)) }, from);
                     break;
                 }
@@ -146,7 +176,6 @@ public sealed class Engine
             foreach (var t in Store.TxPool.Values) Send(new JsonObject { ["t"] = "tx", ["x"] = t.DeepClone() });
         }
     }
-    static double Now() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
     // ---- transactions
     public bool AddTx(JsonObject t)

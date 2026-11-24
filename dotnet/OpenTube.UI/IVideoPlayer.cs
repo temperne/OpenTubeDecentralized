@@ -20,4 +20,4 @@ public interface IVideoPlayer
     IReadOnlyList<string> TrackerList() => [];
 }
 public sealed record Playback(string? Src, string? Status);
-public sealed record Transfer(string InfoHash, string Name, double Progress, int Peers, bool Complete, long Size);
+public sealed record Transfer(string InfoHash, string Name, double Progress, int Peers, bool Complete, long Size, long Downloaded = 0, long Uploaded = 0);

@@ -150,3 +150,14 @@ window.otUi.notify = (title, body, href) => { try { if (window.Notification?.per
 window.otUi.persist = async () => !!(await navigator.storage?.persist?.());
 // a computer's /status, straight from this browser (Devices → Test connection)
 window.otUi.status = async (url) => { const r = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(4000) }); return await r.json(); };
+// can this browser discover its public address (a STUN reply)? the ICE candidate types it gathers (Network page)
+window.otUi.stun = () => new Promise((resolve) => {
+  if (!window.RTCPeerConnection) return resolve({ error: 'no WebRTC in this browser', types: [] });
+  const types = new Set(); let pc;
+  try { pc = new RTCPeerConnection({ iceServers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:global.stun.twilio.com:3478'] }] }); } catch (e) { return resolve({ error: e.message, types: [] }); }
+  const done = () => { try { pc.close(); } catch {} resolve({ types: [...types] }); };
+  pc.onicecandidate = (e) => { if (!e.candidate) return done(); const m = / typ (\w+)/.exec(e.candidate.candidate); if (m) types.add(m[1]); };
+  pc.createDataChannel('probe'); pc.createOffer().then(o => pc.setLocalDescription(o)).catch(e => resolve({ error: e.message, types: [] }));
+  setTimeout(done, 6000);
+});
+window.otUi.storageInfo = async () => { try { const e = await navigator.storage.estimate(); return { usage: e.usage || 0, quota: e.quota || 0, persisted: !!(await navigator.storage.persisted?.()) }; } catch { return null; } };

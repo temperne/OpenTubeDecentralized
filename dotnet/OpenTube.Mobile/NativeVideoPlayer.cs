@@ -33,17 +33,11 @@ public sealed class NativeVideoPlayer : IVideoPlayer
         _ = Task.Run(async () => { try { var d = new Dht(); d.Start(0); await d.Bootstrap(); bt.UseDht(d); dht = d; } catch { } });
     }
 
-    List<string> Trackers()
-    {
-        var list = new List<string> { s.Site.Replace("https://", "wss://").Replace("http://", "ws://") + "/tracker" };
-        list.AddRange(s.LinkedUrls.Select(u => u.EndsWith("/ot") ? u[..^3] + "/tracker" : u));
-        foreach (var t in JsonNode.Parse(Network.MainGenesisJson)?["payload"]?["trackers"]?.AsArray() ?? []) if ((string?)t is { } u) list.Add(u);
-        return list.Distinct().ToList();
-    }
+    List<string> Trackers() => s.TrackerUrls();
 
 
 
-    public IReadOnlyList<Transfer> Transfers() => bt.Torrents.Values.Select(t => new Transfer(t.InfoHashHex, t.Meta?.Name ?? "", t.Have.Length == 0 ? 0 : (double)t.HaveCount / t.Have.Length, bt.PeersOf(t.InfoHashHex), t.Complete, t.Meta?.Length ?? 0)).ToList();
+    public IReadOnlyList<Transfer> Transfers() => bt.Torrents.Values.Select(t => new Transfer(t.InfoHashHex, t.Meta?.Name ?? "", t.Have.Length == 0 ? 0 : (double)t.HaveCount / t.Have.Length, bt.PeersOf(t.InfoHashHex), t.Complete, t.Meta?.Length ?? 0, Interlocked.Read(ref t.Downloaded), Interlocked.Read(ref t.Uploaded))).ToList();
     public IReadOnlyList<string> TrackerList() => Trackers();
     public async Task<byte[]?> Fetch(string infoHash, string file, double size, TimeSpan timeout)
     {

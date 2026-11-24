@@ -126,7 +126,7 @@ public sealed class ClientSession : IAsyncDisposable
                 try
                 {
                     var j = JsonNode.Parse(await http.GetStringAsync(Site + f));
-                    foreach (var e in j?["entry"]?.AsArray() ?? []) if ((e is JsonValue v && v.TryGetValue<string>(out var u) ? u : (string?)e?["url"]) is { } eu && eu.StartsWith("https://")) urls.Add(eu.TrimEnd('/').Replace("https://", "wss://") + "/ot");
+                    foreach (var e in j?["entry"]?.AsArray() ?? []) if ((e is JsonValue v && v.TryGetValue<string>(out var u) ? u : (string?)e?["url"]) is { } eu && eu.StartsWith("https://")) { urls.Add(eu.TrimEnd('/').Replace("https://", "wss://") + "/ot"); lock (seedBases) seedBases.Add(eu.TrimEnd('/')); }
                 }
                 catch { }
             if (on.IsCancellationRequested) return;
@@ -134,6 +134,32 @@ public sealed class ClientSession : IAsyncDisposable
             await Task.Delay(60000, on.Token).ContinueWith(_ => { });
         }
     }
+    readonly HashSet<string> seedBases = [];
+    /// <summary>The trackers (meet places) videos are announced to, as the site picks them: every OpenTube computer seen
+    /// in the last 10 minutes that this device can reach (from an https page: its https address; your own also on
+    /// localhost when the page is), the seed entries, the computers this device is linked to, the site's own, and
+    /// the network's public trackers.</summary>
+    public List<string> TrackerUrls()
+    {
+        var https = Site.StartsWith("https://"); var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        string Tr(string a) => a.TrimEnd('/').Replace("https://", "wss://").Replace("http://", "ws://") + "/tracker";
+        var list = new List<string>();
+        foreach (var l in LinkedUrls) list.Add(l.EndsWith("/ot") ? l[..^3] + "/tracker" : l);
+        lock (seedBases) list.AddRange(seedBases.Select(Tr));
+        var mine = MyNodes().Select(n => n.Node).ToHashSet();
+        list.AddRange(Engine.Read(e => e.Nodes.Values.Where(n => now - (Js.Num(n["at"]) ?? 0) < 10 * 60000).Select(n =>
+        {
+            var addrs = (n["addrs"] as JsonArray ?? []).Select(x => (string?)x).OfType<string>().ToList();
+            var a = addrs.FirstOrDefault(x => x.StartsWith("https://")) ?? (https ? null : addrs.FirstOrDefault(x => mine.Contains((string?)n["node"] ?? "") || !System.Text.RegularExpressions.Regex.IsMatch(x, @"//(localhost|127\.)")));
+            return a == null ? null : Tr(a);
+        }).OfType<string>().ToList()));
+        list.Add(Tr(Site));
+        foreach (var t in JsonNode.Parse(Network.MainGenesisJson)?["payload"]?["trackers"]?.AsArray() ?? []) if ((string?)t is { } u) list.Add(u);
+        return list.Where(u => !https || u.StartsWith("wss://")).Distinct().Take(24).ToList();
+    }
+    static string Short(string u) => u.Replace("wss://", "").Replace("ws://", "").Replace("/ot", "");
+    /// <summary>The site's own node, the fallback way in.</summary>
+    public string SiteSocket => Site.Replace("https://", "wss://").Replace("http://", "ws://") + "/ot";
     async Task Dial(Link l, CancellationToken on)
     {
         var tries = 0;
@@ -144,7 +170,7 @@ public sealed class ClientSession : IAsyncDisposable
             {
                 await ws.ConnectAsync(new Uri(l.Url), on);
                 l.Open = true; tries = 0; Log?.Invoke("linked to " + l.Url);
-                Engine.PeerJoined(l.Url); Changed?.Invoke();
+                Engine.PeerJoined(l.Url); Engine.LogEvent("net", "node " + Short(l.Url) + " connected"); Changed?.Invoke();
                 var writer = Task.Run(async () => { await foreach (var m in l.Out.Reader.ReadAllAsync(on)) { if (ws.State != WebSocketState.Open) break; await ws.SendAsync(Encoding.UTF8.GetBytes(m), WebSocketMessageType.Text, true, on); } });
                 var buf = new byte[1 << 16]; using var ms = new MemoryStream();
                 while (ws.State == WebSocketState.Open && !on.IsCancellationRequested)
@@ -159,7 +185,7 @@ public sealed class ClientSession : IAsyncDisposable
                 }
             }
             catch { }
-            if (l.Open) { l.Open = false; Changed?.Invoke(); }
+            if (l.Open) { l.Open = false; Engine.LogEvent("net", "node " + Short(l.Url) + " left"); Changed?.Invoke(); }
             if (on.IsCancellationRequested) { try { ws.Abort(); } catch { } return; }
             await Task.Delay(TimeSpan.FromSeconds(Math.Min(300, 3 * Math.Pow(2, tries++))), on).ContinueWith(_ => { });
         }
