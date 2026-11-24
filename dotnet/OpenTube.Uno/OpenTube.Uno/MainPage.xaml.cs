@@ -43,6 +43,7 @@ public sealed partial class MainPage : Page
         var unread = s.Ready ? s.Notes.Unread : 0;
         BellBadge.Visibility = unread > 0 ? Visibility.Visible : Visibility.Collapsed; BellCount.Text = unread > 99 ? "99+" : unread.ToString();
     }
+    void OnNetwork(object sender, RoutedEventArgs e) => App.Open(typeof(Pages.NetworkPage));
     void OnUpload(object sender, RoutedEventArgs e) => App.Open(typeof(UploadPage));
     void OnGoLive(object sender, RoutedEventArgs e) => App.Open(typeof(ComingPage), "golive");
     void OnNotifications(object sender, RoutedEventArgs e) => App.Open(typeof(NotificationsPage));

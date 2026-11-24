@@ -24,6 +24,8 @@ public static class Router
             case "wallet": App.Open(typeof(YouPage), "wallet"); break;
             case "notifications": App.Open(typeof(NotificationsPage), p.Length >= 2 ? p[1] : null); break;
             case "upload": App.Open(typeof(UploadPage), p.Length >= 2 ? p[1] : null); break;
+            case "devices": case "me": App.Open(typeof(DevicesPage)); break;
+            case "network": App.Open(typeof(NetworkPage)); break;
             default: App.Open(typeof(ComingPage), p[0]); break;
         }
     }

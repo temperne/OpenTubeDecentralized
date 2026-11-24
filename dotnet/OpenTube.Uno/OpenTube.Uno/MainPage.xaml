@@ -23,7 +23,7 @@
       </StackPanel>
       <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Spacing="6" Margin="8,0,0,0">
         <Ellipse x:Name="NetDot" Width="8" Height="8" Fill="Gray" />
-        <TextBlock x:Name="NetText" Text="Connecting…" FontSize="13" Foreground="{ThemeResource OnSurfaceVariantBrush}" />
+        <HyperlinkButton Padding="0" Click="OnNetwork"><TextBlock x:Name="NetText" Text="Connecting…" FontSize="13" Foreground="{ThemeResource OnSurfaceVariantBrush}" /></HyperlinkButton>
       </StackPanel>
       <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4">
         <Button x:Name="UploadButton" Style="{StaticResource IconButtonStyle}" Click="OnUpload" ToolTipService.ToolTip="Add a video" AutomationProperties.Name="Add a video">
