@@ -137,3 +137,5 @@ a.net:hover { text-decoration: none; } .net > span { display: inline-flex; align
 .ustep { display: flex; gap: 10px; align-items: flex-start; } .ustep.todo { opacity: .5; } .ustep.bad .ustep-dot { color: var(--accent); }
 .ustep-dot { width: 20px; text-align: center; font-weight: 700; } .ustep.done .ustep-dot { color: #16a34a; } .ustep.now .ustep-dot { color: #f59e0b; }
 .bar { height: 8px; border-radius: 999px; background: var(--line); overflow: hidden; margin: 4px 0; } .bar-fill { height: 100%; background: var(--accent, #e5484d); transition: width .3s; }
+/* phones and narrow windows: the watch page is one column (the side list below the video, not squeezed beside it) */
+@media (max-width: 900px) { .watch > .watch-side, .watch-main-extra { grid-column: 1; } }
