@@ -38,8 +38,8 @@
   </PropertyGroup>
   <ItemGroup>
     <!-- keep OpenTube's own code whole when trimming (its JSON records need their constructors' parameter names) -->
-    <TrimmerRootAssembly Include="OpenTube.Core" />
-    <TrimmerRootAssembly Include="OpenTube.Client" />
+    <TrimmerRootAssembly Include="OpenTube.Core" RootMode="All" />
+    <TrimmerRootAssembly Include="OpenTube.Client" RootMode="All" />
     <ProjectReference Include="..\..\OpenTube.Client\OpenTube.Client.csproj" />
   </ItemGroup>
   <ItemGroup Condition="'$(TargetFramework)' != 'net10.0-browserwasm'">

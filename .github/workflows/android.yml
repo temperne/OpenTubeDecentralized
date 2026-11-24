@@ -47,3 +47,28 @@ jobs:
           gh release view android-latest >/dev/null 2>&1 || gh release create android-latest --title "OpenTube for Android" --notes "The newest build of the Android app (all C#). Install opentube.apk on your phone." --prerelease
           gh release upload android-latest opentube.apk --clobber
           gh release edit android-latest --notes "The newest build of the Android app (all C#), from ${GITHUB_SHA::8}. Install opentube.apk on your phone."
+  # The new shared C# UI (dotnet/OpenTube.Uno, Uno Platform) as a separate preview app ("OpenTube preview"), installable
+  # next to the current one, published as the "android-uno-preview" release while its screens are being converted.
+  uno-preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet workload install android
+      - name: Build
+        working-directory: dotnet/OpenTube.Uno
+        run: dotnet publish OpenTube.Uno/OpenTube.Uno.csproj -f net10.0-android -c Release -o ../../uno-out -p:AndroidSdkDirectory="$ANDROID_HOME" -p:ApplicationId=org.opentube.preview -p:ApplicationTitle="OpenTube preview" -p:ApplicationVersion=${{ github.run_number }} -p:AndroidPackageFormat=apk
+      - name: Publish the preview release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp "$(ls uno-out/*-Signed.apk | head -1)" opentube-preview.apk
+          gh release view android-uno-preview >/dev/null 2>&1 || gh release create android-uno-preview --title "OpenTube preview (new shared UI)" --notes "Preview of the new app built on the shared C# UI (Uno Platform). Installs next to the current app." --prerelease
+          gh release upload android-uno-preview opentube-preview.apk --clobber
+          gh release edit android-uno-preview --notes "Preview of the new app on the shared C# UI (Uno Platform), from ${GITHUB_SHA::8}. Installs next to the current app. Done so far: app frame, Home, Explore, watching videos."
