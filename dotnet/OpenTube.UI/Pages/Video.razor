@@ -93,6 +93,30 @@ else
             <div class="panel">@if ((string?)p["desc"] is { Length: > 0 } desc) { <Rich Text="@desc" Author="@d.Owner" /> } else { <span class="sub">No description.</span> }</div>
             <div class="sub">@(Js.Num(v["ts"]) < Coin.Epoch || mineCh ? "Free for you." : $"Watching pays {ChainActions.Coins(S.Engine.Read(e => e.Store.Ledger.Prices.GetValueOrDefault("piece")))} coins per piece to whoever sends it (half goes to the creator).")</div>
 
+            @{
+                var pre = $"view:{Hash}:"; var stats = S.Engine.Read(e => e.Store.Ledger.Paid.Where(kv => kv.Key.StartsWith(pre)).Select(kv => ((string?)kv.Value["from"] ?? "", Js.Num(kv.Value["amt"]) ?? 0)).ToList());
+                var watchers = stats.Select(x => x.Item1).Where(x => x.Length > 0).Distinct().ToList(); var earned = stats.Sum(x => x.Item2);
+                var peersNow = Player.Transfers().FirstOrDefault(t => t.InfoHash == (string?)p["infohash"])?.Peers;
+                var ncomments = d.CommentsFor(Hash).Count(c => !d.Hidden.Contains((string)c["hash"]!));
+            }
+            <div class="panel" id="video-stats">
+                <h3>📊 Statistics</h3>
+                <div class="row-actions stats">
+                    <div><b>@Math.Max(S.Views(Hash), watchers.Count)</b><div class="sub">views</div></div>
+                    <div><b>@votes.Up</b><div class="sub">likes</div></div>
+                    <div><b>@votes.Down</b><div class="sub">dislikes</div></div>
+                    <div><b>@ncomments</b><div class="sub">comments</div></div>
+                    <div><b>@ChainActions.Coins(earned)</b><div class="sub">coins from views</div></div>
+                    @if (peersNow != null) { <div><b>@peersNow</b><div class="sub">peers sharing now</div></div> }
+                </div>
+                @if (watchers.Count > 0)
+                {
+                    <button class="linkish" @onclick="() => whoOpen = !whoOpen">@(whoOpen ? "▾" : "▸") Who watched (@watchers.Count)</button>
+                    @if (whoOpen) { <div class="row-actions">@foreach (var k in watchers.Take(200)) { <a class="person" href="u/@S.Engine.Read(e => e.Store.Ledger.Resolve(k))">@S.NameOf(k)</a> }</div> }
+                }
+                @if ((string?)p["stream"] is { } vs && d.LiveStats.GetValueOrDefault(vs) is JsonObject ls) { <div class="sub">🔴 When it was live: peak @ls["peak"] viewers · @ls["unique"] unique</div> }
+                <div class="sub">Public on OpenTube: anyone can see these, not only the creator.</div>
+            </div>
             <div class="head-row"><h3>Comments</h3>
                 @if (mineCh)
                 {
@@ -144,7 +168,7 @@ else
 @code {
     [Parameter] public string Chain { get; set; } = ""; [Parameter] public string Hash { get; set; } = "";
     string? status, src, started, msg, blockAsk; string comment = ""; bool posting, busy, tipOpen; double tipAmt = 1;
-    HashSet<string>? friends; List<Orgs.FlagOn> flags = []; bool shownAnyway, reportOpen; string reportOrg = "", reportCls = "", reportNote = "";
+    bool whoOpen; HashSet<string>? friends; List<Orgs.FlagOn> flags = []; bool shownAnyway, reportOpen; string reportOrg = "", reportCls = "", reportNote = "";
     protected override async Task OnInitializedAsync()
     {
         base.OnInitialized(); friends = (await S.Social.Friends()).Select(f => f.Key).ToHashSet();

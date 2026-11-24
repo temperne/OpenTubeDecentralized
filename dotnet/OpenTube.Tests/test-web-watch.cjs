@@ -42,6 +42,7 @@ const waitText = async (p, re, ms = 120000) => { const t0 = Date.now(); while (D
   await X.click('.watch-main > .row-actions button:has-text("👍")');
   check(await until(O, ({ c, v, me }) => (opentube.engine.derive(c).votes.get(v)?.blocks || []).some(b => b.author === me && opentube.engine.isPaid('vote:' + b.hash, b.author)), { c: chain, v: video, me: x }, 180000), 'liking the video: a vote, paid to the creator (the JavaScript page counts it)');
   check(await waitText(X, /👍 1/, 120000), 'and the C# page shows 👍 1');
+  check(/1\s*likes/.test(await X.textContent('#video-stats').catch(() => '')) && /2\s*comments/.test(await X.textContent('#video-stats').catch(() => '')), 'the statistics panel counts the like and the comments');
   const owner = await O.evaluate((c) => opentube.engine.derive(c).owner, chain);
   const ownerComment = await O.evaluate(({ c, v }) => opentube.engine.derive(c).commentsFor(v).find(b => b.payload.text === 'Owner reply').hash, { c: chain, v: video });
   await X.click('.comment:has-text("Owner reply") button:has-text("👍")');
