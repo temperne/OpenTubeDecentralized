@@ -47,7 +47,7 @@ runs:
   on the meet places (every public computer's tracker) and with other computers over BitTorrent, found through
   trackers and the BitTorrent DHT (BEP 5, so any BitTorrent app can find them by infohash; `--no-dht` turns it off);
   `--cap-gb=5` limits each channel you joined (your own channels are never trimmed);
-- **the C# website** (Blazor WebAssembly) at `/app/`, built by the node itself the first time and after each update.
+- **the C# website** (the Uno app in WebAssembly) at `/app/`, built by the node itself the first time and after each update.
   It runs the same C# engine in the browser and shares the browser's key and channels with the JavaScript page;
 - **an OBS receiver** (`rtmp://this-computer/live`, a stream key per person), with recordings, group streams,
   YouTube forwarding and flash computers;
@@ -66,13 +66,12 @@ Everything is moving to C#, one codebase (`dotnet/`):
 
 - **OpenTube.Core**: the network's rules, chains, the coin and BitTorrent (peer wire, encryption, the DHT).
 - **OpenTube.Client**: the engine for apps, linked to OpenTuber computers over WebSockets.
-- **OpenTube.UI**: the pages (Razor), shared by the website and the phone app.
-- **OpenTube.Web**: the website in WebAssembly at `/app/` (the site's and every node's). JavaScript is only thin bindings to the browser.
-- **OpenTube.Mobile**: the Android app (.NET MAUI). Its pages are the same, the rest is native C#: the engine, the
+- **OpenTube.Uno**: the app, one set of C# screens (Uno Platform) for the website at `/app/` (WebAssembly), Android
+  and desktop. In the browser JavaScript is only thin bindings; on phones the rest is native C#: the engine, the
   chains and keys in the app's files, and videos over BitTorrent (WebRTC with browsers and nodes, TCP, the DHT),
-  streamed to the player as they arrive. Get it from the
+  streamed to the player as they arrive. Get the Android app from the
   [android-latest release](https://github.com/temperne/OpenTubeDecentralized/releases/download/android-latest/opentube.apk),
-  built by `.github/workflows/android.yml`. iOS comes from the same project and needs a Mac to build.
+  built by `.github/workflows/android.yml`.
 - **OpenTube.Node** / **OpenTube.App**: the computers' node (all its parts) and its window/terminal/service.
 
 ## How peers connect (no central node)

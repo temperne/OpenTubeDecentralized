@@ -9,7 +9,7 @@ public sealed class NodeOptions
     public string DataDir { get; set; } = DefaultDataDir();
     /// <summary>The website it serves (index.html and its files). Default: the folder above, or next to the program.</summary>
     public string? SiteDir { get; set; }
-    /// <summary>The C# website (the published OpenTube.Web, its wwwroot), served at /app/: --app-dir=DIR, default SITE/app.</summary>
+    /// <summary>The C# website (the published OpenTube.Uno for the browser, its wwwroot), served at /app/: --app-dir=DIR, default SITE/app.</summary>
     public string? AppDir { get; set; }
     /// <summary>Other nodes to connect to (ws://host:port/ot), e.g. an entry node or a friend's IP address.</summary>
     public List<string> Peers { get; set; } = [];

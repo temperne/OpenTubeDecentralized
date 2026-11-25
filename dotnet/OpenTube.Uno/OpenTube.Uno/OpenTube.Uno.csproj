@@ -6,7 +6,7 @@
     <UnoSingleProject>true</UnoSingleProject>
 
     <!-- Display name -->
-    <ApplicationTitle>OpenTube</ApplicationTitle>
+    <ApplicationTitle>OpenTuber</ApplicationTitle>
     <!-- App Identifier -->
     <ApplicationId>org.opentube.app</ApplicationId>
     <!-- Versions -->

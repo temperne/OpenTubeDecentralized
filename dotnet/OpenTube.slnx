@@ -5,7 +5,4 @@
   <Project Path="OpenTube.Net/OpenTube.Net.csproj" />
   <Project Path="OpenTube.Node/OpenTube.Node.csproj" />
   <Project Path="OpenTube.Tests/OpenTube.Tests.csproj" />
-  <Project Path="OpenTube.UI/OpenTube.UI.csproj" />
-  <Project Path="OpenTube.Wasm/OpenTube.Wasm.csproj" />
-  <Project Path="OpenTube.Web/OpenTube.Web.csproj" />
 </Solution>

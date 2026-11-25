@@ -1,3 +1,0 @@
-@inject OpenTube.Client.ClientSession S
-@if (Id != null) { <a href="c/@Id">@((string?)S.Chain(Id)?.Profile["name"] ?? (string?)S.Genesis(Id)?["payload"]?["name"] ?? Id[..Math.Min(8, Id.Length)] + "…")</a> }
-@code { [Parameter] public string? Id { get; set; } }

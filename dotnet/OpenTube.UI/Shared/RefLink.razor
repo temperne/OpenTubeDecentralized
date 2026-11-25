@@ -1,6 +1,0 @@
-@inject OpenTube.Client.ClientSession S
-@if (Chain != null && Block != null)
-{
-    <a href="v/@Chain/@Block">@((string?)S.Chain(Chain)?.Videos.FirstOrDefault(v => (string?)v["hash"] == Block)?["payload"]?["title"] ?? "video " + Block[..Math.Min(8, Block.Length)])</a>
-}
-@code { [Parameter] public string? Chain { get; set; } [Parameter] public string? Block { get; set; } }
