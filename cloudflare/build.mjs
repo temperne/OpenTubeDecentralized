@@ -31,7 +31,7 @@ try {
   }
   const env = { ...process.env, DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1' };
   // the Uno app (the same C# screens as the phone app); it needs the WebAssembly build tools
-  try { execSync(`"${dotnet}" workload install wasm-tools --skip-manifest-update`, { stdio: 'inherit', env }); } catch (e) { console.log('opentube: wasm-tools: ' + (e.message || e)); }
+  try { execSync(`"${dotnet}" workload install wasm-tools --skip-manifest-update`, { stdio: 'inherit', env, cwd: path.join(here, '..', 'dotnet', 'OpenTube.Uno') }); } catch (e) { console.log('opentube: wasm-tools: ' + (e.message || e)); }
   fs.rmSync(out, { recursive: true, force: true });
   let from = path.join(out, 'wwwroot');
   try { execSync(`"${dotnet}" publish "${path.join(here, '..', 'dotnet', 'OpenTube.Uno', 'OpenTube.Uno', 'OpenTube.Uno.csproj')}" -f net10.0-browserwasm -c Release -o "${out}" -p:WasmShellWebAppBasePath=/app/ -p:OpenTuberWeb=true --nologo`, { stdio: 'inherit', env }); }

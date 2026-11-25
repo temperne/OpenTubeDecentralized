@@ -26,6 +26,7 @@ jobs:
         with:
           dotnet-version: 10.0.x
       - run: dotnet workload install android
+        working-directory: dotnet/OpenTube.Uno
       - name: Signing key
         env:
           KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
@@ -58,6 +59,7 @@ jobs:
         with:
           dotnet-version: 10.0.x
       - run: dotnet workload install wasm-tools
+        working-directory: dotnet/OpenTube.Uno
       - name: Build
         working-directory: dotnet/OpenTube.Uno
         run: dotnet publish OpenTube.Uno/OpenTube.Uno.csproj -f net10.0-browserwasm -c Release -o ../../web-out -p:WasmShellWebAppBasePath=/app/ -p:OpenTuberWeb=true
