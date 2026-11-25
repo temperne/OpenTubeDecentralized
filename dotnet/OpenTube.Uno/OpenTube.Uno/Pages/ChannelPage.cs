@@ -36,6 +36,8 @@ public sealed partial class ChannelPage : Page
         "group" => [.. new[] { "discussion", "members", "about" }, .. mine ? new[] { "manage" } : []],
         _ when d.Profile["ranking"] != null => [.. new[] { "ranking", "about" }, .. mine ? new[] { "manage" } : []],
         "list" => [.. new[] { "feed", "channels", "about" }, .. mine ? new[] { "manage" } : []],
+        "org" => [.. new[] { "about", "flags", "reports", "rules", "filings", "cases", "courts", "people" }, .. mine ? new[] { "manage" } : []],
+        "case" => [.. new[] { "docket", "about" }, .. mine ? new[] { "manage" } : []],
         _ => [.. new[] { "about" }, .. mine ? new[] { "manage" } : []],
     };
     static string TabName(string t) => t switch { "feed" => "Feed", "discussion" => "Discussion", _ => char.ToUpperInvariant(t[0]) + t[1..] };
@@ -100,6 +102,8 @@ public sealed partial class ChannelPage : Page
             case "channels": ListChannels(d, mine); break;
             case "ranking": Ranking(); break;
             case "manage": Manage(d); break;
+            case "flags": case "reports": case "rules": case "filings": case "cases": case "courts": case "people": OrgTab(tab); break;
+            case "docket": Docket(d); break;
             default: About(d, name, who, registered); break;
         }
     }
