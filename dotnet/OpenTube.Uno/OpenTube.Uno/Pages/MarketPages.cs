@@ -217,7 +217,8 @@ public sealed partial class MarketPage : DataPage
                 c.Add(cb);
             }
         }
-        c.Add(Row(Btn("List it", () => _ = Status.Do("Listing (a little proof of work)…", async () => { await S.ListDraft(d); d = new(); tab = "mine"; Redraw(); }, "Listed: it shows once the next main-chain block includes it."), primary: true, id: "market-list"),
+        var attach = new AttachBox(); c.Add(Sub("More pictures and videos (from My media, up to 10)")); c.Add(attach);
+        c.Add(Row(Btn("List it", () => _ = Status.Do("Listing (a little proof of work)…", async () => { if (attach.Count > 0) d.Media = await attach.Refs(false); await S.ListDraft(d); d = new(); tab = "mine"; Redraw(); }, "Listed: it shows once the next main-chain block includes it."), primary: true, id: "market-list"),
             Sub($"Listing costs {Trade.Coins(S.Trade.Price("list"))} coins.")));
         Col.Children.Add(Card([.. c]));
     }
@@ -253,6 +254,7 @@ public sealed partial class MarketItemPage : DataPage
         if (l.Kind == "auction") c.Add(Sub(l.L["high"] != null ? $"high bid · {Js.Num(l.L["bids"])} bid(s)" : "starting bid"));
         if (l.Kind == "auction" && l.State == "open") c.Add(Sub($"Ends {DateTimeOffset.FromUnixTimeMilliseconds((long)(Js.Num(l.L["ends"]) ?? 0)).LocalDateTime:g}"));
         if ((string?)l.L["about"] is { Length: > 0 } ab) c.Add(Text(ab, 14));
+        if (l.L["media"] is JsonArray { Count: > 0 } lm) c.Add(new MediaView(lm));
         if ((string?)l.L["contact"] is { Length: > 0 } ct) c.Add(Sub("Contact: " + ct));
         if ((string?)l.L["org"] is { } org) c.Add(Sub($"🛡 Payment held in escrow; disputes heard by {S.Genesis(org)?["payload"]?["name"]} (released after {Js.Num(l.L["hold"]) ?? 14} days unless disputed)."));
         if (escrow != null)

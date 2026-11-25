@@ -56,6 +56,41 @@ public static class Files
         }
     }
     public sealed record Picked(string Path, string Name, long Size, string Type);
+    public sealed record Media(string Name, string Mime, byte[] Data, string? Thumb);
+    /// <summary>Pictures or videos the person picks (for My media), with a small JPEG thumbnail for pictures.</summary>
+    public static async Task<List<Media>> OpenMedia()
+    {
+        var o = new List<Media>();
+        if (TestDir is { } d && Environment.GetEnvironmentVariable("OPENTUBE_OPEN_IMAGE") is { } tf)
+        { var b = await File.ReadAllBytesAsync(Path.Combine(d, tf)); o.Add(new(tf, MimeOf(tf), b, Thumb(b))); return o; }
+        var picker = new FileOpenPicker { SuggestedStartLocation = PickerLocationId.PicturesLibrary };
+        foreach (var t in new[] { ".jpg", ".jpeg", ".png", ".webp", ".gif", ".mp4", ".webm", ".mov", ".m4v" }) picker.FileTypeFilter.Add(t);
+        Init(picker);
+        foreach (var file in await picker.PickMultipleFilesAsync())
+        {
+            using var s = await file.OpenStreamForReadAsync(); using var ms = new MemoryStream(); await s.CopyToAsync(ms); var bytes = ms.ToArray();
+            var mime = MimeOf(file.Name); o.Add(new(file.Name, mime, bytes, mime.StartsWith("image/") ? Thumb(bytes) : null));
+        }
+        return o;
+    }
+    static string MimeOf(string name) => Path.GetExtension(name).ToLowerInvariant() switch
+    {
+        ".jpg" or ".jpeg" => "image/jpeg", ".png" => "image/png", ".webp" => "image/webp", ".gif" => "image/gif",
+        ".mp4" or ".m4v" => "video/mp4", ".webm" => "video/webm", ".mov" => "video/quicktime", _ => "application/octet-stream",
+    };
+    /// <summary>A small JPEG of a picture, as a data: URI (null if it isn't one this app can read).</summary>
+    public static string? Thumb(byte[] bytes, int side = 240)
+    {
+        try
+        {
+            using var bmp = SkiaSharp.SKBitmap.Decode(bytes); if (bmp == null) return null;
+            var k = Math.Min(1.0, (double)side / Math.Max(bmp.Width, bmp.Height));
+            using var small = bmp.Resize(new SkiaSharp.SKImageInfo(Math.Max(1, (int)(bmp.Width * k)), Math.Max(1, (int)(bmp.Height * k))), SkiaSharp.SKSamplingOptions.Default) ?? bmp;
+            using var img = SkiaSharp.SKImage.FromBitmap(small); using var jpg = img.Encode(SkiaSharp.SKEncodedImageFormat.Jpeg, 75);
+            return "data:image/jpeg;base64," + Convert.ToBase64String(jpg.ToArray());
+        }
+        catch { return null; }
+    }
     /// <summary>A video the person picks, copied into the app's own folder (where it's shared from), reporting bytes copied.</summary>
     public static async Task<Picked?> OpenVideo(Action<long, long> progress)
     {

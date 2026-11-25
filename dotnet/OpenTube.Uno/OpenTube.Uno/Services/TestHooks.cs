@@ -56,6 +56,16 @@ public static class TestHooks
                     await S.SetRecord(zid, "home", "", "");
                     Console.WriteLine("[test] zone " + zid);
                 }
+                if (opts.Contains("media") && (await S.Media.List()).Count == 0)
+                {
+                    using var bmp = new SkiaSharp.SKBitmap(400, 260); using var cv = new SkiaSharp.SKCanvas(bmp);
+                    cv.Clear(new SkiaSharp.SKColor(40, 110, 170)); cv.DrawRect(120, 60, 160, 140, new SkiaSharp.SKPaint { Color = SkiaSharp.SKColors.Gold });
+                    using var jpg = SkiaSharp.SKImage.FromBitmap(bmp).Encode(SkiaSharp.SKEncodedImageFormat.Jpeg, 85); var bytes = jpg.ToArray();
+                    var it = await S.Media.Add("test-picture.jpg", "image/jpeg", bytes, Files.Thumb(bytes));
+                    var refs = new System.Text.Json.Nodes.JsonArray(await S.Media.Share(it, false, OpenTube.Uno.Controls.MediaNet.Seed));
+                    await S.Social.PostTo(Social.Month(DateTimeOffset.UtcNow), "A post with a picture", null, refs);
+                    Console.WriteLine("[test] media posted");
+                }
                 if (opts.Contains("market") && !S.Trade.Listings().Any(l => S.IsMine(l.Seller)))
                 {
                     while (S.Trade.Balance < S.Trade.Price("list") + 500) await Task.Delay(1000);

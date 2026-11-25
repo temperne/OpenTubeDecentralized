@@ -38,6 +38,7 @@ public static class Router
             case "tag" when p.Length >= 2: App.Open(typeof(TagPage), p[1]); break;
             case "n" when p.Length >= 2: App.Open(typeof(NamePage), p[1]); break;
             case var x when x.StartsWith('@') || x.StartsWith('~'): App.Open(typeof(NamePage), x); break;
+            case "media": case "mine": App.Open(typeof(MediaPage)); break;
             case "domains": App.Open(typeof(DomainsPage), p.Length >= 2 ? p[1] : null); break;
             case "map": case "places": App.Open(typeof(PlacesPage)); break;
             default: App.Open(typeof(ComingPage), p[0]); break;

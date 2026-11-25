@@ -43,7 +43,7 @@ public sealed partial class PostsPage : DataPage
 {
     string month = Social.Month(DateTimeOffset.UtcNow); string? post; bool popular;
     public PostsPage() : base("Posts") { }
-    protected override void Param(object? p) { if (p is string s) { var a = s.Split('/'); month = a[0]; post = a.Length > 1 ? a[1] : null; } }
+    protected override void Param(object? p) { if (p is string s && System.Text.RegularExpressions.Regex.IsMatch(s, @"^\d{4}-\d{2}(/|$)")) { var a = s.Split('/'); month = a[0]; post = a.Length > 1 ? a[1] : null; } }
     protected override string Key() => post != null ? $"{month}/{post}/{Svc.S.Social.Replies(month, post).Count}/{Svc.S.Social.PostOf(month, post)?.Likes}" : $"{month}/{popular}/{string.Join(",", Svc.S.Social.Posts(month, popular).Select(p => $"{(string?)p.Block["hash"]}{p.Likes}{p.Replies}"))}";
     protected override void Build()
     {
@@ -66,7 +66,8 @@ public sealed partial class PostsPage : DataPage
         {
             var text = new TextBox { PlaceholderText = "What’s happening?", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 80, MaxLength = 1000 };
             AutomationProperties.SetAutomationId(text, "posts-text");
-            Col.Children.Add(Card(text, Row(Btn("Post", () => { if (string.IsNullOrWhiteSpace(text.Text)) return; _ = Status.Do("Doing anti-spam work…", async () => { await S.Social.PostTo(month, text.Text, null, null); text.Text = ""; Redraw(); }, "Posted."); }, primary: true, id: "posts-send"), Sub("Public: anyone can read it, forever.")), Status));
+            var attach = new AttachBox();
+            Col.Children.Add(Card(text, attach, Row(Btn("Post", () => { if (string.IsNullOrWhiteSpace(text.Text) && attach.Count == 0) return; _ = Status.Do("Doing anti-spam work…", async () => { var media = attach.Count > 0 ? await attach.Refs(false) : null; await S.Social.PostTo(month, text.Text, null, media); text.Text = ""; attach.Clear(); Redraw(); }, "Posted."); }, primary: true, id: "posts-send"), Sub("Public: anyone can read it, forever.")), Status));
         }
         var (bar, _) = Segments([("recent", "Recent"), ("popular", "Popular")], popular ? "popular" : "recent", k => { popular = k == "popular"; Redraw(); });
         Col.Children.Add(bar);
@@ -80,6 +81,7 @@ public sealed partial class PostsPage : DataPage
         var sp = new StackPanel { Spacing = 6 };
         sp.Children.Add(Row(Text(p.Name), Sub(Svc.Ago(p.Ts))));
         sp.Children.Add(Text(p.Text));
+        if (p.Block["payload"]?["media"] is System.Text.Json.Nodes.JsonArray { Count: > 0 } pm) sp.Children.Add(new MediaView(pm));
         var like = Btn($"👍 {p.Likes}", () => _ = Status.Do("Liking (pays the author)…", async () => { await S.Social.Like(p.Chain, p.Block); Redraw(); })); like.IsEnabled = !p.Mine;
         var acts = new WrapRow(); acts.Children.Add(like);
         if (!full) acts.Children.Add(Btn($"{p.Replies} repl{(p.Replies == 1 ? "y" : "ies")}", () => { post = hash; Redraw(); }));
@@ -119,7 +121,8 @@ public sealed partial class FriendsPage : DataPage
         {
             var text = new TextBox { PlaceholderText = "Share with your friends…", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 80 };
             var audience = Pick([("acquaintances", "All friends"), ("friends", "Friends and close friends"), ("close", "Close friends only")]);
-            Col.Children.Add(Card(text, audience, Btn("Post to friends", () => { if (string.IsNullOrWhiteSpace(text.Text)) return; _ = Status.Do("Encrypting…", async () => { await S.Social.PostToFriends(text.Text, audience.Value(), null); text.Text = ""; await Load(); Redraw(); }, "Shared."); }, primary: true), Status));
+            var fattach = new AttachBox();
+            Col.Children.Add(Card(text, fattach, audience, Btn("Post to friends", () => { if (string.IsNullOrWhiteSpace(text.Text) && fattach.Count == 0) return; _ = Status.Do("Encrypting…", async () => { await S.Social.PostToFriends(text.Text, audience.Value(), fattach.Count > 0 ? () => fattach.Refs(true) : null); fattach.Clear(); text.Text = ""; await Load(); Redraw(); }, "Shared."); }, primary: true), Status));
             if (feed == null) Col.Children.Add(Sub("Opening your friends’ pages…"));
             else if (feed.Count == 0) Col.Children.Add(Sub("Nothing yet. Posts from you and your friends show up here."));
             else foreach (var x in feed.Take(100))
@@ -129,6 +132,7 @@ public sealed partial class FriendsPage : DataPage
                 else
                 {
                     items.Add(Text((string?)x.Content["text"] ?? ""));
+                    if (x.Content["media"] is System.Text.Json.Nodes.JsonArray { Count: > 0 } fm) items.Add(new MediaView(fm));
                     foreach (var r in x.Replies) items.Add(new Border { Padding = new Thickness(14, 2, 0, 2), BorderBrush = Ui.Muted, BorderThickness = new Thickness(2, 0, 0, 0), Child = new StackPanel { Children = { Row(Text(Name(r.Author), 13), Sub(Svc.Ago(r.Ts))), Text(r.Content == null ? "🔒 not shared with you" : (string?)r.Content["text"] ?? "") } } });
                     var reply = Input("Reply (sealed to the same friends)…", max: 1000); var xx = x;
                     items.Add(Row(reply, Btn("Reply", () => _ = Status.Do("Encrypting…", async () => { await S.Social.ReplyToFriends(xx.Page, xx.Block, xx.Content!, reply.Text); reply.Text = ""; await Load(); Redraw(); }))));
@@ -261,4 +265,34 @@ public sealed partial class NotificationsPage : DataPage
             Col.Children.Add(b);
         }
     }
+}
+
+/// <summary>My media: your private library of pictures and videos (kept on this device, shared only when attached).</summary>
+public sealed partial class MediaPage : DataPage
+{
+    List<OpenTube.Client.Media.Item>? lib; string? confirm;
+    public MediaPage() : base("My media") { }
+    protected override string Key() { _ = Load(); return $"{lib?.Count}|{string.Join(",", lib?.Select(i => i.Id + i.Shared.Count) ?? [])}|{confirm}"; }
+    bool loading; async Task Load() { if (loading) return; loading = true; try { lib = await Svc.S.Media.List(); } catch { } loading = false; }
+    protected override void Build()
+    {
+        var S = Svc.S;
+        Col.Children.Add(Row(H("My media", 22), Btn("＋ Add pictures or videos", () => _ = Status.Do("Adding…", async () => { foreach (var f in await Files.OpenMedia()) await S.Media.Add(f.Name, f.Mime, f.Data, f.Thumb); await Load(); Redraw(); }, ""), primary: true, id: "media-add")));
+        Col.Children.Add(Sub("Private: kept on this device and shared only when you attach them to something. To friends they go encrypted, readable only by that audience."));
+        Col.Children.Add(Status);
+        if (lib == null) { Col.Children.Add(Sub("Loading…")); return; }
+        if (lib.Count == 0) { Col.Children.Add(Sub("No pictures or videos yet.")); return; }
+        var grid = new WrapRow { Gap = 10 };
+        foreach (var it in lib)
+        {
+            var img = new Image { Height = 140, Stretch = Stretch.UniformToFill };
+            if (it.Thumb is { Length: > 0 } th) _ = SetThumb(img, th);
+            var cell = new StackPanel { Width = 200, Spacing = 4, Children = { new Border { CornerRadius = new CornerRadius(8), Height = 140, Background = (Brush)Application.Current.Resources["BackgroundBrush"], Child = it.Thumb != null ? img : Sub(it.Name) }, Text(it.Name, 13),
+                Sub($"{Svc.Bytes(it.Size)} · {Svc.Ago(it.Ts)} · {(it.Shared.Count > 0 ? $"shared {it.Shared.Count}×" : "private")}"),
+                Btn(confirm == it.Id ? "Really delete?" : "Delete", () => { if (confirm != it.Id) { confirm = it.Id; Redraw(); return; } confirm = null; _ = Status.Do("Deleting…", async () => { await S.Media.Remove(it); await Load(); Redraw(); }, "Deleted."); }) } };
+            grid.Children.Add(Card(cell));
+        }
+        Col.Children.Add(grid);
+    }
+    static async Task SetThumb(Image img, string th) => img.Source = await Svc.Thumb(th);
 }
