@@ -32,7 +32,7 @@ public sealed partial class ChannelPage : Page
 
     static List<string> Tabs(Derived d, bool mine) => d.Kind switch
     {
-        "channel" => mine ? ["videos", "posts", "about", "manage"] : ["videos", "posts", "about"],
+        "channel" => mine ? ["videos", "posts", "about", "advertise", "manage"] : ["videos", "posts", "about"],
         "group" => [.. new[] { "discussion", "members", "about" }, .. mine ? new[] { "manage" } : []],
         _ when d.Profile["ranking"] != null => [.. new[] { "ranking", "about" }, .. mine ? new[] { "manage" } : []],
         "list" => [.. new[] { "feed", "channels", "about" }, .. mine ? new[] { "manage" } : []],
@@ -104,6 +104,7 @@ public sealed partial class ChannelPage : Page
             case "manage": Manage(d); break;
             case "flags": case "reports": case "rules": case "filings": case "cases": case "courts": case "people": OrgTab(tab); break;
             case "docket": Docket(d); break;
+            case "advertise": Advertise(d); break;
             default: About(d, name, who, registered); break;
         }
     }
@@ -324,6 +325,30 @@ public sealed partial class ChannelPage : Page
         body.Children.Add(Card([.. c]));
     }
 
+    /// <summary>Where it is on the map (tap to set; a business, venue or organization) and, for an organization, its jurisdiction.</summary>
+    void PlaceEditor(Derived d)
+    {
+        var S = Svc.S; var pl = d.Profile["place"] as JsonObject; var st = Status();
+        (double Lat, double Lon)? at = pl != null ? (Js.Num(pl["lat"]) ?? 0, Js.Num(pl["lon"]) ?? 0) : null;
+        var label = Input("Address or place name (shown with it)", (string?)pl?["label"] ?? "", 160);
+        var m = new MapView { Height = 280 };
+        void Pin() => m.SetPins(at is { } a ? [new MapView.Pin(a.Lat, a.Lon, "📍", "here")] : [], false);
+        m.Loaded += (_, _) => { Pin(); if (at is { } a) m.CenterOn(a.Lat, a.Lon, 15); };
+        m.MapTapped += (la, lo) => { at = (Math.Round(la, 5), Math.Round(lo, 5)); Pin(); st.Say($"Picked {at.Value.Lat:0.00000}, {at.Value.Lon:0.00000}: Save to use it."); };
+        var items = new List<UIElement> { H(d.Kind == "org" ? "On the map (where this organization is)" : "On the map (for a business or venue; optional)", 16), Sub("Zoom in and tap where it is."), m, label };
+        TextBox? jur = null;
+        if (d.Kind == "org") { jur = Input("Jurisdiction", (string?)d.Profile["jurisdiction"] ?? "", 120); items.Add(jur); }
+        items.Add(Row(Btn("Save", () => _ = st.Do("Saving…", async () =>
+        {
+            var ch = new JsonObject();
+            if (at is { } a) ch["place"] = new JsonObject { ["lat"] = a.Lat, ["lon"] = a.Lon, ["label"] = label.Text.Trim() };
+            if (jur != null) ch["jurisdiction"] = jur.Text.Trim();
+            if (ch.Count > 0) await S.UpdateProfile(id, ch);
+        }, "Saved."), primary: true), pl != null ? Btn("Remove from the map", () => _ = st.Do("Saving…", () => S.UpdateProfile(id, new JsonObject { ["place"] = null }), "Removed.")) : null!));
+        items.Add(st);
+        body.Children.Add(Card([.. items]));
+    }
+
     // ---- manage your own: profile, picture, location, links, policies, people, @name
     void Manage(Derived d)
     {
@@ -378,6 +403,7 @@ public sealed partial class ChannelPage : Page
         // the @name (channels), ~name (lists): a short link
         var handle = S.NameOfChain(id); var space = d.Kind == "channel" ? "@" : d.Kind == "circle" ? "@@" : "~";
         var want = Input("name (3–30: a–z, 0–9, . _ -)", handle?.TrimStart('@', '~') ?? "", 30); var nst = Status();
+        PlaceEditor(d);
         body.Children.Add(Card(H("Short name", 16), Sub(handle != null ? $"This {d.Kind} is {handle}: {Svc.Site}/{handle}" : $"Claim a {space}name so people can find this {d.Kind} at {Svc.Site}/{space}name."), want,
             Row(Btn(handle != null ? "Change" : "Claim", () => _ = nst.Do("Claiming (a little proof of work)…", async () => { await S.ClaimName(id, want.Text.Trim().ToLowerInvariant()); shown = ""; }, "Claimed: it’s yours once the next main-chain block includes it."), primary: true),
                 handle != null ? Btn("Release", () => _ = nst.Do("Releasing…", () => S.ClaimName(id, null), "Released.")) : null!), nst));
