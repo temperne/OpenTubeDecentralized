@@ -121,6 +121,7 @@ public sealed partial class ChannelPage : Page
     void Videos(Derived d, bool mine, string name)
     {
         var S = Svc.S;
+        if (mine) foreach (var rec in S.NodeRecordings(id)) body.Children.Add(Recording(rec));
         if (d.LiveNow.Count > 0) { var g = new VideoGrid { Items = d.LiveNow.Select(b => VideoItem.From(id, name, (JsonObject)b.DeepClone(), live: true)).ToList() }; body.Children.Add(g); }
         if (mine) body.Children.Add(Row(Btn("＋ Add video", () => App.Open(typeof(UploadPage), id), primary: true), Btn("● Go live", () => App.Open(typeof(GoLivePage), id))));
         var vids = d.Videos.OrderByDescending(v => Js.Num(v["ts"])).ToList();
@@ -347,6 +348,24 @@ public sealed partial class ChannelPage : Page
         }, "Saved."), primary: true), pl != null ? Btn("Remove from the map", () => _ = st.Do("Saving…", () => S.UpdateProfile(id, new JsonObject { ["place"] = null }), "Removed.")) : null!));
         items.Add(st);
         body.Children.Add(Card([.. items]));
+    }
+
+    /// <summary>A recording one of your computers made of a live stream: publish it as a video, or discard it.</summary>
+    UIElement Recording(ChainActions.NodeRecording R)
+    {
+        var S = Svc.S; var st = Status(); var confirm = false;
+        var by = S.Engine.Read(e => (string?)e.Nodes.GetValueOrDefault((string?)R.R["by"] ?? "")?["info"]?["name"]) ?? "Your computer";
+        var title = Input("Title", R.Title, 140); var desc = new TextBox { PlaceholderText = "Description", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 60, MaxLength = 5000 };
+        var pic = new Image { Width = 160, Height = 90, Stretch = Stretch.UniformToFill };
+        if ((string?)R.R["thumb"] is { Length: > 0 } th) _ = Svc.Thumb(th).ContinueWith(t => DispatcherQueue.TryEnqueue(() => pic.Source = t.Result));
+        Button discard = null!;
+        discard = Btn("Discard", () =>
+        {
+            if (!confirm) { confirm = true; discard.Content = "Really discard?"; return; }
+            _ = st.Do("Discarding…", () => S.SettleRecording(id, R, false, title.Text, desc.Text), "Recording discarded.");
+        });
+        return Card(Row(pic, new StackPanel { Children = { H("📼 Recording ready: " + R.Title, 15), Sub($"{by} recorded this stream ({(Js.Num(R.R["size"]) ?? 0) / 1e6:0.0} MB) and is sharing it. Publish it as a video, or discard it.") } }),
+            title, desc, Row(Btn("Publish recording", () => _ = st.Do("Publishing…", () => S.SettleRecording(id, R, true, title.Text, desc.Text), "Recording published as a video."), primary: true), discard), st);
     }
 
     // ---- manage your own: profile, picture, location, links, policies, people, @name

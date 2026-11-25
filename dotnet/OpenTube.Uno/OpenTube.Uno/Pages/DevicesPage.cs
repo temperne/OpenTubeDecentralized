@@ -14,7 +14,7 @@ namespace OpenTube.Uno.Pages;
 /// </summary>
 public sealed partial class DevicesPage : DataPage
 {
-    string? openNode, openWhat; JsonObject? view; string? grant; string? domainFor, groupFor;
+    string? openNode, openWhat; JsonObject? view; string? grant; string? domainFor, groupFor, flashFor;
     /// <summary>A computer of yours answering DNS for a domain (its name servers point at it): set it from here.</summary>
     UIElement DomainForm(string node)
     {
@@ -59,12 +59,14 @@ public sealed partial class DevicesPage : DataPage
                 acts.Children.Add(pubMode);
                 acts.Children.Add(Btn("Domain…", () => { domainFor = domainFor == n ? null : n; Redraw(); }));
                 acts.Children.Add(Btn("👥 Group stream", () => { groupFor = groupFor == n ? null : n; Redraw(); }));
+                acts.Children.Add(Btn("⚡ Flash computers", () => { flashFor = flashFor == n ? null : n; Redraw(); }));
             }
             items.Add(acts);
             if (tests.TryGetValue(n, out var tr)) items.Add(Sub(tr));
             if (openNode == n && view != null) items.Add(ViewOf(node));
             if (owner && domainFor == n) items.Add(DomainForm(node));
             if (owner && groupFor == n) items.Add(new OpenTube.Uno.Controls.GroupPanel(node));
+            if (owner && flashFor == n) items.Add(new OpenTube.Uno.Controls.FlashPanel(node));
             Col.Children.Add(Card([.. items]));
         }
         Col.Children.Add(Status);
