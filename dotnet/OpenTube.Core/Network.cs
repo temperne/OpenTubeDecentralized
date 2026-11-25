@@ -10,7 +10,7 @@ namespace OpenTube.Core;
 public static partial class Network
 {
     public const string MainGenesisJson = """
-{"v":1,"chain":null,"parents":[],"height":0,"ts":1794960000000,"author":null,"nonce":0,"payload":{"type":"genesis","kind":"main","name":"OpenTuber Main Chain","difficulty":18,"commentDifficulty":10,"maxEntries":16,"trackers":["wss://tracker.openwebtorrent.com","wss://tracker.webtorrent.dev","wss://tracker.btorrent.xyz","wss://tracker.files.fm:7073/announce"]}}
+{"v":1,"chain":null,"parents":[],"height":0,"ts":1794960000000,"author":null,"nonce":0,"payload":{"type":"genesis","kind":"main","name":"OpenTube Main Chain","difficulty":18,"commentDifficulty":10,"maxEntries":16,"trackers":["wss://tracker.openwebtorrent.com","wss://tracker.webtorrent.dev","wss://tracker.btorrent.xyz","wss://tracker.files.fm:7073/announce"]}}
 """;
     public static JsonObject MainGenesis() => JsonNode.Parse(MainGenesisJson)!.AsObject();
     public static string MainId { get; } = Blocks.Hash(MainGenesis());
