@@ -64,3 +64,30 @@ public sealed partial class NamePage : DataPage
         Col.Children.Add(Row(Btn("Explore", () => App.Open(typeof(ExplorePage))), Btn("Create one", () => App.Open(typeof(YouPage), "channels"))));
     }
 }
+
+/// <summary>Terms: how disputes about transactions are settled (the network's arbitration), and agreeing to them.</summary>
+public sealed partial class TermsPage : DataPage
+{
+    bool? agreed;
+    public TermsPage() : base("Terms") { }
+    protected override string Key() { if (agreed == null) _ = Task.Run(async () => { try { agreed = await Svc.S.Social.Pref("termsAgreed") != null; } catch { agreed = false; } }); return $"{agreed}"; }
+    protected override void Build()
+    {
+        Col.Children.Add(Card(H("Terms: arbitration", 22),
+            Text("OpenTuber is run by the people who use it; there is no company behind a transaction. By using it you agree to the following.", 14),
+            Text("1. Any dispute about a transaction made through OpenTuber (a sale, an auction, a payment held in escrow) is resolved through the network’s own arbitration: the arbitration body named on the listing, and on appeal the levels above it. It is not a public court.", 14),
+            Text("2. Filings, case dockets and orders are public records on the network. Don’t file anything you need to keep private.", 14),
+            Text("3. A ruling decides how coins held in escrow are split. When that body’s appeal window passes, or the highest level has ruled, the ruling is final as far as the network is concerned.", 14),
+            Text("4. Goods, services and payments outside the network are between the parties; the arbitrators’ rulings and records are what the network provides.", 14),
+            Sub("This is a plain description of how the system works, not legal advice. Whether it binds you outside the network depends on where you live."),
+            agreed == true ? Sub("Agreed ✓") : Btn("I agree", () => _ = Status.Do("Saving…", async () => { await Svc.S.Social.SetPref("termsAgreed", DateTimeOffset.UtcNow.ToString("o")); agreed = true; Redraw(); }, ""), primary: true), Status));
+    }
+    /// <summary>"By using OpenTuber you agree…" until you have (null once agreed).</summary>
+    public static async Task<UIElement?> Banner(Action agreedNow)
+    {
+        try { if (await Svc.S.Social.Pref("termsAgreed") != null) return null; } catch { return null; }
+        var st = Status();
+        return Card(Text("By using OpenTuber you agree that disputes about transactions made through it are resolved by the network’s arbitration, as described in the terms.", 14),
+            Row(Btn("I agree", () => _ = st.Do("Saving…", async () => { await Svc.S.Social.SetPref("termsAgreed", DateTimeOffset.UtcNow.ToString("o")); agreedNow(); }, ""), primary: true), Btn("Read the terms", () => App.Open(typeof(TermsPage)))), st);
+    }
+}

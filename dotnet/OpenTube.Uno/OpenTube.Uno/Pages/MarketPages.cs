@@ -70,7 +70,7 @@ static class TradeUi
 /// </summary>
 public sealed partial class MarketPage : DataPage
 {
-    string tab = "items", q = "", kindFilter = "all", deal = "all"; Market.Draft d = new();
+    string tab = "items", q = "", kindFilter = "all", deal = "all"; Market.Draft d = new(); bool? termsAgreed;
     public MarketPage() : base("Market", 1200) { }
     protected override void Param(object? p) { if (p is string s && s.Length > 0) tab = s == "browse" ? "items" : s; }
     protected override string Key()
@@ -84,6 +84,7 @@ public sealed partial class MarketPage : DataPage
     {
         var S = Svc.S;
         Col.Children.Add(Row(H("Market", 22), Sub($"You have {Trade.Coins(S.Trade.Balance)} coins")));
+        if (termsAgreed != true) { var holder = new StackPanel(); Col.Children.Add(holder); _ = TermsPage.Banner(() => { termsAgreed = true; holder.Children.Clear(); }).ContinueWith(t => DispatcherQueue.TryEnqueue(() => { if (t.Result is { } b) holder.Children.Add(b); else termsAgreed = true; })); }
         var (bar, _) = Segments(Tabs, tab, k => { tab = k; Redraw(); }); Col.Children.Add(bar);
         switch (tab)
         {
