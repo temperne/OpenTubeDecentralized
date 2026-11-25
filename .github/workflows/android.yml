@@ -2,7 +2,7 @@
 # which the site links to (Devices → Get the app). Signing: the ANDROID_KEYSTORE secret (base64 of a .keystore) with
 # ANDROID_KEYSTORE_PASSWORD and ANDROID_KEY_ALIAS keeps one signature across versions, so phones can update in place;
 # without it, each build is signed with a throwaway debug key (installing a new one means uninstalling the old first).
-name: Android app
+name: Apps (Android and website)
 on:
   push:
     branches: [ccr-500677da-r1uf50]
@@ -48,3 +48,24 @@ jobs:
           gh release view android-latest >/dev/null 2>&1 || gh release create android-latest --title "OpenTuber for Android" --notes "The newest build of the Android app (all C#). Install opentube.apk on your phone." --prerelease
           gh release upload android-latest opentube.apk --clobber
           gh release edit android-latest --title "OpenTuber for Android" --notes "The newest build of the Android app (all C#, the same screens as the website), from ${GITHUB_SHA::8}. Install opentube.apk on your phone."
+  # The website's app (/app/: the same Uno app for the browser), built here too and published as the "web-latest"
+  # release: the Cloudflare build uses it when it can't build the app itself.
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet workload install wasm-tools
+      - name: Build
+        working-directory: dotnet/OpenTube.Uno
+        run: dotnet publish OpenTube.Uno/OpenTube.Uno.csproj -f net10.0-browserwasm -c Release -o ../../web-out -p:WasmShellWebAppBasePath=/app/
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tar -czf opentube-web.tar.gz -C web-out/wwwroot --exclude='*.br' --exclude='*.gz' .
+          gh release view web-latest >/dev/null 2>&1 || gh release create web-latest --title "OpenTuber website app" --notes "The website's app (/app/), built from ${GITHUB_SHA::8}." --prerelease
+          gh release upload web-latest opentube-web.tar.gz --clobber
+          gh release edit web-latest --notes "The website's app (/app/), built from ${GITHUB_SHA::8}."

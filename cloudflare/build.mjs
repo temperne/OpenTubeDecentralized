@@ -33,10 +33,23 @@ try {
   // the Uno app (the same C# screens as the phone app); it needs the WebAssembly build tools
   try { execSync(`"${dotnet}" workload install wasm-tools --skip-manifest-update`, { stdio: 'inherit', env }); } catch (e) { console.log('opentube: wasm-tools: ' + (e.message || e)); }
   fs.rmSync(out, { recursive: true, force: true });
-  execSync(`"${dotnet}" publish "${path.join(here, '..', 'dotnet', 'OpenTube.Uno', 'OpenTube.Uno', 'OpenTube.Uno.csproj')}" -f net10.0-browserwasm -c Release -o "${out}" -p:WasmShellWebAppBasePath=/app/ --nologo`, { stdio: 'inherit', env });
-  const from = path.join(out, 'wwwroot');
+  let from = path.join(out, 'wwwroot');
+  try { execSync(`"${dotnet}" publish "${path.join(here, '..', 'dotnet', 'OpenTube.Uno', 'OpenTube.Uno', 'OpenTube.Uno.csproj')}" -f net10.0-browserwasm -c Release -o "${out}" -p:WasmShellWebAppBasePath=/app/ --nologo`, { stdio: 'inherit', env }); }
+  catch (e) {
+    // couldn't build it here: the one GitHub Actions built (the "web-latest" release)
+    console.log('opentube: the app didn’t build here (' + (e.message || e) + '); using the latest one GitHub built');
+    fs.rmSync(out, { recursive: true, force: true }); fs.mkdirSync(from, { recursive: true });
+    execSync(`curl -fsSL https://github.com/temperne/OpenTubeDecentralized/releases/download/web-latest/opentube-web.tar.gz | tar -xz -C "${from}"`, { stdio: 'inherit' });
+  }
   fs.rmSync(dist, { recursive: true, force: true });
   fs.cpSync(from, dist, { recursive: true, filter: (f) => !/\.(br|gz)$/.test(f) });   // Cloudflare compresses by itself
   console.log('opentube: built the C# website into cloudflare/dist/app');
-} catch (e) { console.log('opentube: skipped the C# website (/app/): ' + (e.message || e)); }
+} catch (e) {
+  console.log('opentube: couldn’t build the app (' + (e.message || e) + '); using the latest one GitHub built');
+  try {
+    const { execSync } = await import('node:child_process'); const dist = path.join(here, 'dist', 'app');
+    fs.rmSync(dist, { recursive: true, force: true }); fs.mkdirSync(dist, { recursive: true });
+    execSync(`curl -fsSL https://github.com/temperne/OpenTubeDecentralized/releases/download/web-latest/opentube-web.tar.gz | tar -xz -C "${dist}"`, { stdio: 'inherit' });
+  } catch (e2) { console.log('opentube: skipped the C# website (/app/): ' + (e2.message || e2)); }
+}
 console.log('opentube: built cloudflare/core.gen.mjs, cloudflare/dist/index.html and cloudflare/dist/sw.js');
