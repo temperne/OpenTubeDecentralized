@@ -34,7 +34,7 @@ try {
   try { execSync(`"${dotnet}" workload install wasm-tools --skip-manifest-update`, { stdio: 'inherit', env }); } catch (e) { console.log('opentube: wasm-tools: ' + (e.message || e)); }
   fs.rmSync(out, { recursive: true, force: true });
   let from = path.join(out, 'wwwroot');
-  try { execSync(`"${dotnet}" publish "${path.join(here, '..', 'dotnet', 'OpenTube.Uno', 'OpenTube.Uno', 'OpenTube.Uno.csproj')}" -f net10.0-browserwasm -c Release -o "${out}" -p:WasmShellWebAppBasePath=/app/ --nologo`, { stdio: 'inherit', env }); }
+  try { execSync(`"${dotnet}" publish "${path.join(here, '..', 'dotnet', 'OpenTube.Uno', 'OpenTube.Uno', 'OpenTube.Uno.csproj')}" -f net10.0-browserwasm -c Release -o "${out}" -p:WasmShellWebAppBasePath=/app/ -p:OpenTuberWeb=true --nologo`, { stdio: 'inherit', env }); }
   catch (e) {
     // couldn't build it here: the one GitHub Actions built (the "web-latest" release)
     console.log('opentube: the app didn’t build here (' + (e.message || e) + '); using the latest one GitHub built');

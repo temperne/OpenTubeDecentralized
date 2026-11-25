@@ -40,7 +40,7 @@ public sealed class WebApp(OpenTubeNode node)
         {
             node.Log("[web] building the C# website (WebAssembly) for /app/ …");
             var psi = new ProcessStartInfo("dotnet") { ArgumentList = { "publish", proj, "-c", "Release", "-o", built, "--nologo" }, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
-            foreach (var a in new[] { "-f", "net10.0-browserwasm", "-p:WasmShellWebAppBasePath=/app/" }) psi.ArgumentList.Add(a);
+            foreach (var a in new[] { "-f", "net10.0-browserwasm", "-p:WasmShellWebAppBasePath=/app/", "-p:OpenTuberWeb=true" }) psi.ArgumentList.Add(a);
             using var p = Process.Start(psi)!; var output = await p.StandardOutput.ReadToEndAsync(); await p.WaitForExitAsync();
             if (p.ExitCode != 0) { node.Log("[web] the C# website didn’t build: " + output.Split('\n').LastOrDefault(l => l.Contains("error"))?.Trim()); return; }
             File.WriteAllText(mark, commit);

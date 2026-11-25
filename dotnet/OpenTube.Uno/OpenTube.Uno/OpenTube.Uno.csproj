@@ -1,6 +1,8 @@
 <Project Sdk="Uno.Sdk">
   <PropertyGroup>
-    <TargetFrameworks>net10.0-android;net10.0-browserwasm;net10.0-desktop</TargetFrameworks>
+    <TargetFrameworks Condition="'$(OpenTuberWeb)' != 'true'">net10.0-android;net10.0-browserwasm;net10.0-desktop</TargetFrameworks>
+    <!-- (the website's build: only the browser, so it needs no Android tools) -->
+    <TargetFrameworks Condition="'$(OpenTuberWeb)' == 'true'">net10.0-browserwasm</TargetFrameworks>
 
     <OutputType>Exe</OutputType>
     <UnoSingleProject>true</UnoSingleProject>
