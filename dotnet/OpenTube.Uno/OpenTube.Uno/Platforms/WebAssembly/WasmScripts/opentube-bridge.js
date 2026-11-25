@@ -1,3 +1,5 @@
+// the browser tab's name
+try { document.title = 'OpenTuber'; } catch {}
 // The thin bindings the C# app needs from the browser, for videos: WebRTC data channels (the C# BitTorrent client's
 // peers) and the service worker's relay (the player asks /webtorrent/<infohash>/<name>; sw.js passes each request
 // here and C# answers with the bytes). Everything else is C# (WebAssembly). Calls into C# go through the app's

@@ -19,7 +19,7 @@
       </Grid.ColumnDefinitions>
       <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
         <TextBlock Text="Open" FontSize="22" FontWeight="Bold" />
-        <TextBlock Text="Tube" FontSize="22" FontWeight="Bold" Foreground="{ThemeResource PrimaryBrush}" />
+        <TextBlock Text="Tuber" FontSize="22" FontWeight="Bold" Foreground="{ThemeResource PrimaryBrush}" />
       </StackPanel>
       <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Spacing="6" Margin="8,0,0,0">
         <Ellipse x:Name="NetDot" Width="8" Height="8" Fill="Gray" />

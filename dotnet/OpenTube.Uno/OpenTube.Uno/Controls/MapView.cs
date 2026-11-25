@@ -71,7 +71,7 @@ public sealed partial class MapView : Grid
     readonly Dictionary<string, Image> cache = [];
     // (OpenStreetMap's tile servers want an app to say who it is; in a browser the browser does)
     static readonly HttpClient http = MakeHttp();
-    static HttpClient MakeHttp() { var h = new HttpClient(); try { h.DefaultRequestHeaders.UserAgent.ParseAdd("OpenTube/1.0 (+https://github.com/temperne/OpenTubeDecentralized)"); } catch { } return h; }
+    static HttpClient MakeHttp() { var h = new HttpClient(); try { h.DefaultRequestHeaders.UserAgent.ParseAdd("OpenTuber/1.0 (+https://github.com/temperne/OpenTubeDecentralized)"); } catch { } return h; }
     static async Task Load(Image img, string key)
     {
         try

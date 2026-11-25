@@ -14,6 +14,7 @@ public static class Router
         var p = h.Split('/', StringSplitOptions.RemoveEmptyEntries);
         if (p.Length == 0) return;
         Console.WriteLine("[route] " + h);
+        if (p.Length == 1 && p[0] is "home" or "explore" or "posts" or "messages" or "you" && MainPage.Current?.SelectTab(p[0]) == true) return;
         switch (p[0])
         {
             case "v" when p.Length >= 3: App.Open(typeof(WatchPage), new WatchArgs(p[1], p[2])); break;

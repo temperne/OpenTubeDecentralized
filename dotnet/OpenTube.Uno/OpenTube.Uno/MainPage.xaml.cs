@@ -8,9 +8,18 @@ namespace OpenTube.Uno;
 public sealed partial class MainPage : Page
 {
     readonly DispatcherTimer tick = new() { Interval = TimeSpan.FromSeconds(2) };
+    /// <summary>The app frame (to switch its tabs from a link).</summary>
+    public static MainPage? Current { get; private set; }
+    /// <summary>Show a tab: home, explore, posts, messages, you. False if there's no such tab.</summary>
+    public bool SelectTab(string tag)
+    {
+        var i = Tabs.Items.Cast<object>().ToList().FindIndex(x => (x as FrameworkElement)?.Tag as string == tag);
+        if (i < 0) return false;
+        Tabs.SelectedIndex = i; return true;
+    }
     public MainPage()
     {
-        this.InitializeComponent();
+        this.InitializeComponent(); Current = this;
         TabFrame.Navigate(typeof(HomePage));
         tick.Tick += (_, _) => { UpdateStatus(); TestStart(); }; tick.Start(); UpdateStatus();
     }

@@ -5,6 +5,6 @@
   <StackPanel Padding="24" Spacing="12" VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="480">
     <TextBlock x:Name="Title" FontSize="22" FontWeight="Bold" HorizontalAlignment="Center" />
     <TextBlock TextWrapping="Wrap" TextAlignment="Center" Foreground="{ThemeResource OnSurfaceVariantBrush}"
-               Text="This screen is next in the conversion to the shared C# app. Until then it’s on the website." />
+               Text="This link doesn’t open anything in the app. Try Explore, or check the link." />
   </StackPanel>
 </Page>
