@@ -1,8 +1,6 @@
 {
   "note": "Entry nodes: public OpenTube computers (started with --public) that browsers use first as their way into the network, trackers and live hubs. The site's own node is only a fallback. Add yours: its https address.",
-  "entry": [
-    "https://probe-berkeley-tech-agreement.trycloudflare.com"
-  ],
+  "entry": [],
   "network": "abdcfc1c8f660f01f103f93ead8f0a6b66be3f9136ebb7190e77ea6944c5e00c",
   "updated": "2026-11-25T17:16:35.249Z"
 }
